@@ -1,6 +1,7 @@
 """
 PyQtGraph-based main view displaying vertically stacked, synchronized plots for selected channels.
 Normalizes lap X-axis data for accurate lap overlay comparisons.
+Features aligned left axes and automatic auto-ranging on view updates.
 """
 
 from typing import Dict, List, Set, Tuple, Optional
@@ -20,7 +21,6 @@ class GraphViewWidget(QWidget):
         super().__init__(parent)
         self.sessions: Dict[str, Session] = {}
         self.selected_channels: List[str] = []
-        # List of (session_id, lap_num, color_hex)
         self.selected_laps_info: List[Tuple[str, int, str]] = []
         self.x_axis_channel: str = STD_CHANNEL_TIME
 
@@ -77,7 +77,6 @@ class GraphViewWidget(QWidget):
         self.rebuild_plots()
 
     def set_selected_laps(self, laps_info: List[Tuple[str, int, str]]):
-        """Sets list of selected (session_id, lap_number, color_hex)."""
         self.selected_laps_info = laps_info
         self.rebuild_plots()
 
@@ -86,12 +85,12 @@ class GraphViewWidget(QWidget):
         self.rebuild_plots()
 
     def rebuild_plots(self):
-        """Clears and rebuilds stacked plot items with lap X-axis overlay normalization."""
+        """Clears and rebuilds stacked plot items with lap X-axis overlay normalization and auto-ranging."""
         self.glw.clear()
         self.plot_widgets.clear()
         self.v_lines.clear()
 
-        # If no channels or no laps selected, display helpful overlay text
+        # Display helpful placeholder if no selection
         if not self.selected_channels or not self.selected_laps_info:
             label = pg.LabelItem(
                 text="Select laps and channels from the left sidebar to display graphs.",
@@ -106,6 +105,9 @@ class GraphViewWidget(QWidget):
             plot = self.glw.addPlot(row=row, col=0)
             plot.setLabel("left", channel_name)
             plot.showGrid(x=True, y=True, alpha=0.3)
+
+            # FIX 1: Set fixed width for left axis to align all plot canvases perfectly on the left
+            plot.getAxis('left').setWidth(75)
 
             # Synchronize X-axis across stacked plots
             if first_plot is None:
@@ -139,11 +141,13 @@ class GraphViewWidget(QWidget):
                 raw_y = lap.get_channel(channel_name)
 
                 if raw_x is not None and raw_y is not None and len(raw_x) > 0:
-                    # OVERLAY FIX: Normalize X-axis to start at 0.0 for every lap
                     x_normalized = raw_x - raw_x[0]
-
                     pen = pg.mkPen(color=color, width=1.8)
                     plot.plot(x_normalized, raw_y, pen=pen, name=f"{session.name} - Lap {lap.lap_number}")
+
+            # FIX 2: Auto-range every plot on update
+            plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
+            plot.autoRange()
 
     def _on_mouse_moved(self, evt):
         if not self.plot_widgets:

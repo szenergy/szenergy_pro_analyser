@@ -1,5 +1,6 @@
 """
 Entry point for SZenergy Pro Analyser desktop application.
+Includes modern stylesheet with smooth, thin scrollbars and system OS theme adaptation.
 """
 
 import sys
@@ -34,6 +35,45 @@ def main():
             QMenu { background-color: #22252A; border: 1px solid #3A3F47; }
             QMenu::item:selected { background-color: #353A40; }
             QSplitter::handle { background-color: #2C3036; }
+
+            /* Modern Thin Scrollbars (Dark Theme) */
+            QScrollBar:vertical {
+                background: #16181B;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #3A3F47;
+                min-height: 25px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #00E676;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+                height: 0px;
+            }
+
+            QScrollBar:horizontal {
+                background: #16181B;
+                height: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #3A3F47;
+                min-width: 25px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #00E676;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+                width: 0px;
+            }
         """
     else:
         stylesheet = """
@@ -49,6 +89,45 @@ def main():
             QMenu { background-color: #FFFFFF; border: 1px solid #CED4DA; }
             QMenu::item:selected { background-color: #E9ECEF; }
             QSplitter::handle { background-color: #DEE2E6; }
+
+            /* Modern Thin Scrollbars (Light Theme) */
+            QScrollBar:vertical {
+                background: #F8F9FA;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #CED4DA;
+                min-height: 25px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #00C853;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+                height: 0px;
+            }
+
+            QScrollBar:horizontal {
+                background: #F8F9FA;
+                height: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #CED4DA;
+                min-width: 25px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #00C853;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+                width: 0px;
+            }
         """
 
     app.setStyleSheet(stylesheet)

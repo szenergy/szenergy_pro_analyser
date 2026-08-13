@@ -3,11 +3,12 @@ Dialog wizard for mapping raw log file channels to standard internal channel nam
 Also includes PresetPreviewDialog for inspecting detected presets before importing.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import pandas as pd
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QComboBox, QPushButton, QLabel, QLineEdit, QMessageBox, QHeaderView
+    QComboBox, QPushButton, QLabel, QLineEdit, QMessageBox, QHeaderView,
+    QAbstractItemView
 )
 from PySide6.QtCore import Qt
 
@@ -67,6 +68,8 @@ class PresetPreviewDialog(QDialog):
 
         # Mapping Table
         table = QTableWidget(len(self.mapping), 3)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         table.setHorizontalHeaderLabels(["Raw Channel (File)", "Mapped Channel Name", "Preview Data"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -140,8 +143,10 @@ class ImportWizardDialog(QDialog):
         instruction.setTextFormat(Qt.RichText)
         layout.addWidget(instruction)
 
-        # Mapping Table
+        # Mapping Table with smooth pixel scrolling
         self.table = QTableWidget(len(self.raw_columns), 3)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setHorizontalHeaderLabels(["Raw Channel (File)", "Mapped Channel Name", "Preview Data"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -152,6 +157,7 @@ class ImportWizardDialog(QDialog):
         preset_map = presets.get(initial_preset, {}) if initial_preset else {}
 
         self.combos: Dict[str, QComboBox] = {}
+        suggested_used: Set[str] = set()
 
         for row, raw_col in enumerate(self.raw_columns):
             raw_item = QTableWidgetItem(raw_col)
@@ -164,9 +170,11 @@ class ImportWizardDialog(QDialog):
 
             mapped_val = preset_map.get(raw_col)
             if not mapped_val:
-                mapped_val = self._auto_guess_mapping(raw_col)
+                # FIX: Don't suggest duplicate channel mappings across rows
+                mapped_val = self._auto_guess_mapping(raw_col, suggested_used)
 
             if mapped_val:
+                suggested_used.add(mapped_val)
                 idx = combo.findText(mapped_val)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
@@ -216,18 +224,29 @@ class ImportWizardDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _auto_guess_mapping(self, raw_col: str) -> Optional[str]:
+    def _auto_guess_mapping(self, raw_col: str, already_used: Set[str]) -> Optional[str]:
+        """Guesses mapping based on common column name substrings while skipping already assigned targets."""
         name = raw_col.lower().replace("_", "").replace(" ", "")
+        
+        candidates = []
         if "lap" in name:
-            return STD_CHANNEL_LAP
-        elif "time" in name or name == "t":
-            return STD_CHANNEL_TIME
-        elif "dist" in name or name == "d" or "pos" in name:
-            return STD_CHANNEL_DISTANCE
-        elif "speed" in name or "velocity" in name or "spd" in name:
-            return "Speed"
-        elif "rpm" in name:
-            return "RPM"
+            candidates.append(STD_CHANNEL_LAP)
+        if "time" in name or name == "t":
+            candidates.append(STD_CHANNEL_TIME)
+        if "dist" in name or name == "d" or "pos" in name:
+            candidates.append(STD_CHANNEL_DISTANCE)
+        if "speed" in name or "velocity" in name or "spd" in name:
+            candidates.append("Speed")
+        if "rpm" in name:
+            candidates.append("RPM")
+        if "volt" in name or "v" in name:
+            candidates.append("Voltage")
+        if "curr" in name or "amp" in name or "a" in name:
+            candidates.append("Current")
+
+        for cand in candidates:
+            if cand not in already_used:
+                return cand
         return None
 
     def _get_current_mapping(self) -> Dict[str, str]:
