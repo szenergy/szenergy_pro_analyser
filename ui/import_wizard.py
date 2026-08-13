@@ -1,5 +1,6 @@
 """
 Dialog wizard for mapping raw log file channels to standard internal channel names and saving presets.
+Also includes PresetPreviewDialog for inspecting detected presets before importing.
 """
 
 from typing import Dict, List, Optional
@@ -33,6 +34,84 @@ SUGGESTED_TARGETS = [
 ]
 
 
+class PresetPreviewDialog(QDialog):
+    """Preview dialog showing how a detected preset maps channels before applying."""
+
+    ACTION_APPLY = 1
+    ACTION_EDIT = 2
+
+    def __init__(self, file_path: str, preset_name: str, mapping: Dict[str, str],
+                 preview_df: pd.DataFrame, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Preset Detected - {preset_name}")
+        self.setMinimumSize(600, 400)
+        self.selected_action = QDialog.Rejected
+
+        self.file_path = file_path
+        self.preset_name = preset_name
+        self.mapping = mapping
+        self.preview_df = preview_df
+
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        instruction = QLabel(
+            f"<b>Preset '{self.preset_name}' matched file:</b><br>"
+            f"<i>{self.file_path}</i><br><br>"
+            "Review channel mappings below:"
+        )
+        instruction.setTextFormat(Qt.RichText)
+        layout.addWidget(instruction)
+
+        # Mapping Table
+        table = QTableWidget(len(self.mapping), 3)
+        table.setHorizontalHeaderLabels(["Raw Channel (File)", "Mapped Channel Name", "Preview Data"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+        for row, (raw_col, mapped_col) in enumerate(self.mapping.items()):
+            table.setItem(row, 0, QTableWidgetItem(raw_col))
+            table.setItem(row, 1, QTableWidgetItem(mapped_col))
+
+            preview_str = ""
+            if raw_col in self.preview_df.columns:
+                vals = self.preview_df[raw_col].dropna().tolist()[:4]
+                preview_str = ", ".join(str(v) for v in vals)
+            table.setItem(row, 2, QTableWidgetItem(preview_str))
+
+        layout.addWidget(table)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        edit_btn = QPushButton("Edit Mapping in Wizard")
+        edit_btn.clicked.connect(self._on_edit)
+        btn_layout.addWidget(edit_btn)
+
+        apply_btn = QPushButton("Apply Preset & Import")
+        apply_btn.setStyleSheet("font-weight: bold; background-color: #00E676; color: black;")
+        apply_btn.clicked.connect(self._on_apply)
+        btn_layout.addWidget(apply_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _on_apply(self):
+        self.selected_action = self.ACTION_APPLY
+        self.accept()
+
+    def _on_edit(self):
+        self.selected_action = self.ACTION_EDIT
+        self.done(self.ACTION_EDIT)
+
+
 class ImportWizardDialog(QDialog):
     """Wizard dialog for mapping raw channels to internal standard names."""
 
@@ -53,11 +132,10 @@ class ImportWizardDialog(QDialog):
     def _init_ui(self, initial_preset: Optional[str]):
         layout = QVBoxLayout(self)
 
-        # Header instructions
         instruction = QLabel(
             "<b>Map channels for import:</b><br>"
             "Assign raw channels to standard internal names. "
-            "<b>Must map at least 'Lap' and 'Time' or 'Distance'.</b>"
+            "<b>Must map 'Lap' and 'Time' or 'Distance'. Duplicate channel assignments are not allowed.</b>"
         )
         instruction.setTextFormat(Qt.RichText)
         layout.addWidget(instruction)
@@ -76,17 +154,14 @@ class ImportWizardDialog(QDialog):
         self.combos: Dict[str, QComboBox] = {}
 
         for row, raw_col in enumerate(self.raw_columns):
-            # Raw name item
             raw_item = QTableWidgetItem(raw_col)
             raw_item.setFlags(Qt.ItemIsEnabled)
             self.table.setItem(row, 0, raw_item)
 
-            # Editable combo box for mapped channel
             combo = QComboBox()
             combo.setEditable(True)
             combo.addItems(SUGGESTED_TARGETS)
 
-            # Try auto-matching or using preset
             mapped_val = preset_map.get(raw_col)
             if not mapped_val:
                 mapped_val = self._auto_guess_mapping(raw_col)
@@ -98,12 +173,11 @@ class ImportWizardDialog(QDialog):
                 else:
                     combo.setEditText(mapped_val)
             else:
-                combo.setCurrentIndex(0)  # Default to Skip
+                combo.setCurrentIndex(0)
 
             self.combos[raw_col] = combo
             self.table.setCellWidget(row, 1, combo)
 
-            # Preview string
             preview_str = ""
             if raw_col in self.preview_df.columns:
                 vals = self.preview_df[raw_col].dropna().tolist()[:4]
@@ -143,7 +217,6 @@ class ImportWizardDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _auto_guess_mapping(self, raw_col: str) -> Optional[str]:
-        """Guesses mapping based on common column name substrings."""
         name = raw_col.lower().replace("_", "").replace(" ", "")
         if "lap" in name:
             return STD_CHANNEL_LAP
@@ -165,6 +238,20 @@ class ImportWizardDialog(QDialog):
                 mapping[raw_col] = text
         return mapping
 
+    def _validate_no_duplicates(self, mapping: Dict[str, str]) -> bool:
+        """Ensures no target channel name is assigned to multiple raw channels."""
+        targets = list(mapping.values())
+        duplicates = set([t for t in targets if targets.count(t) > 1])
+        if duplicates:
+            dup_str = ", ".join(duplicates)
+            QMessageBox.critical(
+                self, "Duplicate Channels Error",
+                f"The following channel names are mapped multiple times: {dup_str}.\n"
+                "Each target channel name must be unique."
+            )
+            return False
+        return True
+
     def _on_save_preset(self):
         preset_name = self.preset_input.text().strip()
         if not preset_name:
@@ -173,6 +260,8 @@ class ImportWizardDialog(QDialog):
         mapping = self._get_current_mapping()
         if not mapping:
             QMessageBox.warning(self, "Warning", "No mapped channels to save in preset.")
+            return
+        if not self._validate_no_duplicates(mapping):
             return
 
         self.state_manager.save_preset(preset_name, mapping)
@@ -191,6 +280,9 @@ class ImportWizardDialog(QDialog):
                 self, "Validation Error",
                 f"You must map an X-Axis channel (either '{STD_CHANNEL_TIME}' or '{STD_CHANNEL_DISTANCE}')."
             )
+            return
+
+        if not self._validate_no_duplicates(mapping):
             return
 
         self.result_mapping = mapping

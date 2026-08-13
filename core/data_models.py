@@ -15,8 +15,6 @@ class Lap:
     lap_number: int
     duration: float = 0.0  # Total lap time in seconds
     distance: float = 0.0  # Total lap distance in meters/km
-    color: str = "#00E676"  # Color assigned for plotting UI
-    is_visible: bool = False
     
     # Storage for channel arrays specific to this lap: {channel_name: np.ndarray}
     data: Dict[str, np.ndarray] = field(default_factory=dict)

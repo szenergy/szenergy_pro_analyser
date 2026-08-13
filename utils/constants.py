@@ -13,16 +13,18 @@ STD_CHANNEL_DISTANCE = "Distance"
 
 REQUIRED_CHANNELS = [STD_CHANNEL_LAP]
 
-# Distinct palette of colors for laps (Hex format)
+# Pool of distinct colors for dynamic assignment to selected laps
 LAP_COLORS = [
     "#00E676",  # Bright Green
-    "#FF5252",  # Red
+    "#FF5252",  # Bright Red
     "#40C4FF",  # Light Blue
     "#FFD740",  # Yellow
     "#E040FB",  # Purple
     "#FF6E40",  # Orange
     "#1DE9B6",  # Teal
     "#FF4081",  # Pink
-    "#A7FF83",  # Light Green
     "#7C4DFF",  # Deep Purple
+    "#A7FF83",  # Mint
+    "#FFAB40",  # Amber
+    "#00B0FF",  # Vivid Blue
 ]

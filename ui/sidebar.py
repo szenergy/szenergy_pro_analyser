@@ -1,22 +1,31 @@
 """
 Left Sidebar widget containing Session/Lap tree and Channels selection list.
+Supports drag multi-selection, row highlighting (no checkboxes), and dynamic color allocation.
 """
 
 from typing import Dict, List, Set, Tuple
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QHeaderView, QAbstractItemView, QPushButton, QHBoxLayout
+    QHeaderView, QAbstractItemView
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QPixmap, QIcon
 
 from core.data_models import Session, Lap
+from utils.constants import LAP_COLORS
 
 
 def create_color_icon(hex_color: str, size: int = 14) -> QIcon:
-    """Utility to create a small colored square icon for lap trees."""
+    """Utility to create a small colored square icon for selected laps."""
     pixmap = QPixmap(size, size)
     pixmap.fill(QColor(hex_color))
+    return QIcon(pixmap)
+
+
+def create_empty_icon(size: int = 14) -> QIcon:
+    """Utility to create a subtle gray square icon for unselected laps."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor("#4A4E57"))
     return QIcon(pixmap)
 
 
@@ -32,17 +41,18 @@ def format_lap_time(seconds: float) -> str:
 class SidebarWidget(QWidget):
     """Left sidebar managing sessions, laps selection, and channel visibility."""
 
-    # Signal (session_id, lap_number, is_selected)
-    lap_visibility_changed = Signal(str, int, bool)
+    # Signal (list of tuples: [(session_id, lap_number, color_hex)])
+    laps_selection_changed = Signal(list)
     # Signal (set of selected channel names)
     channels_selection_changed = Signal(set)
-    # Signal (session_id)
-    session_remove_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.sessions: Dict[str, Session] = {}
-        self.selected_channels: Set[str] = set()
+
+        # Dynamic color pool tracking
+        self.available_colors: List[str] = list(LAP_COLORS)
+        self.allocated_colors: Dict[Tuple[str, int], str] = {}  # (session_id, lap_num) -> hex_color
 
         self._init_ui()
 
@@ -57,7 +67,10 @@ class SidebarWidget(QWidget):
         self.session_tree.setHeaderLabels(["Session / Lap", "Time"])
         self.session_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.session_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.session_tree.itemChanged.connect(self._on_tree_item_changed)
+        
+        # Extended selection: supports Click, Ctrl+Click, Shift+Click, and Click-and-Drag
+        self.session_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.session_tree.itemSelectionChanged.connect(self._on_lap_selection_changed)
         layout.addWidget(self.session_tree)
 
         # 2. Channels Section
@@ -66,11 +79,14 @@ class SidebarWidget(QWidget):
         self.channel_tree = QTreeWidget()
         self.channel_tree.setHeaderLabels(["Channel Name"])
         self.channel_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.channel_tree.itemChanged.connect(self._on_channel_item_changed)
+        
+        # Extended selection for channels as well
+        self.channel_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.channel_tree.itemSelectionChanged.connect(self._on_channel_selection_changed)
         layout.addWidget(self.channel_tree)
 
     def add_session(self, session: Session):
-        """Adds a session to the sidebar tree."""
+        """Adds a session to the sidebar tree without selecting any laps by default."""
         self.sessions[session.id] = session
 
         # Add top-level Session item
@@ -84,14 +100,21 @@ class SidebarWidget(QWidget):
             lap_item = QTreeWidgetItem(session_item)
             lap_item.setText(0, f"Lap {lap.lap_number}")
             lap_item.setText(1, format_lap_time(lap.duration))
-            lap_item.setIcon(0, create_color_icon(lap.color))
-            lap_item.setCheckState(0, Qt.Checked if lap.is_visible else Qt.Unchecked)
+            lap_item.setIcon(0, create_empty_icon())
             lap_item.setData(0, Qt.UserRole, ("lap", session.id, lap.lap_number))
 
+        # Clear tree selection so nothing is selected by default
+        self.session_tree.clearSelection()
         self.update_available_channels()
 
     def remove_session(self, session_id: str):
-        """Removes a session from the sidebar."""
+        """Removes a session from the sidebar and releases allocated colors."""
+        # Release colors for removed session's laps
+        to_release = [key for key in self.allocated_colors if key[0] == session_id]
+        for key in to_release:
+            color = self.allocated_colors.pop(key)
+            self.available_colors.append(color)
+
         if session_id in self.sessions:
             del self.sessions[session_id]
 
@@ -102,9 +125,10 @@ class SidebarWidget(QWidget):
                 break
 
         self.update_available_channels()
+        self._on_lap_selection_changed()
 
     def update_available_channels(self):
-        """Rebuilds the list of available channels across all loaded sessions."""
+        """Rebuilds available channels list."""
         self.channel_tree.blockSignals(True)
         self.channel_tree.clear()
 
@@ -115,33 +139,58 @@ class SidebarWidget(QWidget):
         for channel_name in sorted(all_channels):
             item = QTreeWidgetItem(self.channel_tree)
             item.setText(0, channel_name)
-            # Default check first 3 common channels like Speed, RPM
-            is_checked = channel_name in self.selected_channels
-            item.setCheckState(0, Qt.Checked if is_checked else Qt.Unchecked)
 
+        self.channel_tree.clearSelection()
         self.channel_tree.blockSignals(False)
 
-    def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int):
-        data = item.data(0, Qt.UserRole)
-        if not data or data[0] != "lap":
-            return
+    def _on_lap_selection_changed(self):
+        selected_items = self.session_tree.selectedItems()
+        currently_selected_laps: Set[Tuple[str, int]] = set()
 
-        session_id, lap_number = data[1], data[2]
-        is_checked = (item.checkState(0) == Qt.Checked)
+        for item in selected_items:
+            data = item.data(0, Qt.UserRole)
+            if data and data[0] == "lap":
+                session_id, lap_num = data[1], data[2]
+                currently_selected_laps.add((session_id, lap_num))
 
-        if session_id in self.sessions:
-            lap = self.sessions[session_id].get_lap(lap_number)
-            if lap:
-                lap.is_visible = is_checked
-                self.lap_visibility_changed.emit(session_id, lap_number, is_checked)
+        # 1. Release colors of deselected laps
+        deselected = set(self.allocated_colors.keys()) - currently_selected_laps
+        for key in deselected:
+            color = self.allocated_colors.pop(key)
+            self.available_colors.insert(0, color)  # Put color back at front of pool
 
-    def _on_channel_item_changed(self, item: QTreeWidgetItem, column: int):
-        channel_name = item.text(0)
-        is_checked = (item.checkState(0) == Qt.Checked)
+        # 2. Allocate colors to newly selected laps
+        newly_selected = currently_selected_laps - set(self.allocated_colors.keys())
+        for key in sorted(list(newly_selected)):
+            if self.available_colors:
+                color = self.available_colors.pop(0)
+            else:
+                # Fallback generator if pool runs out
+                color = "#%06x" % (hash(key) & 0xFFFFFF)
+            self.allocated_colors[key] = color
 
-        if is_checked:
-            self.selected_channels.add(channel_name)
-        else:
-            self.selected_channels.discard(channel_name)
+        # 3. Update icons in the tree widget
+        root_count = self.session_tree.topLevelItemCount()
+        for r in range(root_count):
+            session_item = self.session_tree.topLevelItem(r)
+            for c in range(session_item.childCount()):
+                child = session_item.child(c)
+                data = child.data(0, Qt.UserRole)
+                if data and data[0] == "lap":
+                    key = (data[1], data[2])
+                    if key in self.allocated_colors:
+                        child.setIcon(0, create_color_icon(self.allocated_colors[key]))
+                    else:
+                        child.setIcon(0, create_empty_icon())
 
-        self.channels_selection_changed.emit(set(self.selected_channels))
+        # 4. Emit signal with list of selected (session_id, lap_num, color)
+        result = [
+            (session_id, lap_num, color)
+            for (session_id, lap_num), color in self.allocated_colors.items()
+        ]
+        self.laps_selection_changed.emit(result)
+
+    def _on_channel_selection_changed(self):
+        selected_items = self.channel_tree.selectedItems()
+        selected_channels = set(item.text(0) for item in selected_items)
+        self.channels_selection_changed.emit(selected_channels)

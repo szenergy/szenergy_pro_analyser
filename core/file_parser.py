@@ -9,7 +9,7 @@ import pandas as pd
 from nptdms import TdmsFile
 
 from core.data_models import Session, Lap
-from utils.constants import STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE, LAP_COLORS
+from utils.constants import STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
 
 
 def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFrame]:
@@ -33,10 +33,8 @@ def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFram
         data_dict = {}
         for group in tdms.groups():
             for channel in group.channels():
-                # Format: GroupName/ChannelName or just ChannelName if unique
                 chan_name = f"{group.name}/{channel.name}"
                 all_channels.append(chan_name)
-                # Load first 5 values for preview
                 data_dict[chan_name] = channel[:5]
         df_preview = pd.DataFrame(data_dict)
         return all_channels, df_preview
@@ -105,18 +103,14 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str) -> S
             lap_number=lap_num,
             duration=duration,
             distance=distance,
-            color=LAP_COLORS[0],
-            is_visible=True,
             data=channel_data
         )
         session.laps.append(single_lap)
         return session
 
     # Group by Lap channel values while preserving order
-    # Handle lap numbers (e.g. 0, 1, 2, 3...)
     unique_laps = df[STD_CHANNEL_LAP].dropna().unique()
     
-    color_index = 0
     for lap_val in unique_laps:
         try:
             lap_num = int(lap_val)
@@ -135,16 +129,12 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str) -> S
             distance = float(lap_df[STD_CHANNEL_DISTANCE].iloc[-1] - lap_df[STD_CHANNEL_DISTANCE].iloc[0])
 
         channel_data = {col: lap_df[col].to_numpy() for col in lap_df.columns}
-        color = LAP_COLORS[color_index % len(LAP_COLORS)]
-        color_index += 1
 
         lap_obj = Lap(
             session_id=session_id,
             lap_number=lap_num,
             duration=duration,
             distance=distance,
-            color=color,
-            is_visible=True,  # Default selected/visible
             data=channel_data
         )
         session.laps.append(lap_obj)

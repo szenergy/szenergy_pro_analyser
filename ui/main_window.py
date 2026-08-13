@@ -1,22 +1,21 @@
 """
-Main application window organizing the toolbar, left sidebar, and stacked graph views.
+Main application window organizing the menu bar, left sidebar, and stacked graph views.
 """
 
 import uuid
 from typing import Dict
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QSplitter, QFileDialog,
-    QMessageBox, QMenuBar, QMenu, QStatusBar
+    QMainWindow, QSplitter, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication, QAction
 
 from core.state_manager import StateManager
 from core.file_parser import get_file_columns_and_preview, parse_session
 from core.data_models import Session
 from ui.sidebar import SidebarWidget
 from ui.graph_view import GraphViewWidget
-from ui.import_wizard import ImportWizardDialog
+from ui.import_wizard import ImportWizardDialog, PresetPreviewDialog
 from utils.constants import APP_NAME, APP_VERSION
 
 
@@ -31,10 +30,11 @@ class MainWindow(QMainWindow):
         self.state_manager = StateManager()
         self.sessions: Dict[str, Session] = {}
 
-        self._init_menu_and_toolbar()
+        self._init_menu()
         self._init_ui()
+        self.update_system_theme()
 
-    def _init_menu_and_toolbar(self):
+    def _init_menu(self):
         menu_bar = self.menuBar()
 
         # File Menu
@@ -52,17 +52,12 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        # Status Bar
-        self.statusBar = QStatusBar()
-        self.setStatusBar(self.statusBar)
-        self.statusBar.showMessage("Ready")
-
     def _init_ui(self):
         main_splitter = QSplitter(Qt.Horizontal)
 
         # Left Sidebar
         self.sidebar = SidebarWidget()
-        self.sidebar.lap_visibility_changed.connect(self._on_lap_visibility_changed)
+        self.sidebar.laps_selection_changed.connect(self._on_laps_selection_changed)
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
         main_splitter.addWidget(self.sidebar)
 
@@ -70,10 +65,18 @@ class MainWindow(QMainWindow):
         self.graph_view = GraphViewWidget()
         main_splitter.addWidget(self.graph_view)
 
-        # Set initial splitter ratio (25% left sidebar, 75% main graph view)
+        # Set initial splitter ratio
         main_splitter.setSizes([300, 900])
-
         self.setCentralWidget(main_splitter)
+
+    def update_system_theme(self):
+        """Detects system light/dark theme and updates graph views accordingly."""
+        hints = QGuiApplication.styleHints()
+        is_dark = True
+        if hasattr(hints, "colorScheme"):
+            is_dark = (hints.colorScheme() == Qt.ColorScheme.Dark)
+        
+        self.graph_view.apply_theme(is_dark)
 
     def _on_open_file(self):
         """File open dialog handler supporting CSV, XLSX, and TDMS."""
@@ -88,7 +91,7 @@ class MainWindow(QMainWindow):
             self._import_file(path)
 
     def _import_file(self, file_path: str):
-        """Processes file import with preset detection and mapping wizard."""
+        """Processes file import with preset preview and mapping wizard."""
         try:
             raw_columns, preview_df = get_file_columns_and_preview(file_path)
         except Exception as e:
@@ -99,20 +102,25 @@ class MainWindow(QMainWindow):
         chosen_mapping = None
 
         if matching_preset:
-            # Prompt user to confirm detected preset
-            reply = QMessageBox.question(
-                self,
-                "Preset Detected",
-                f"Matching preset '{matching_preset}' detected for file:\n{file_path}\n\nDo you want to apply this preset?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes
+            presets = self.state_manager.load_presets()
+            preset_map = presets.get(matching_preset, {})
+
+            # Open Preset Preview Dialog
+            preview_dialog = PresetPreviewDialog(
+                file_path=file_path,
+                preset_name=matching_preset,
+                mapping=preset_map,
+                preview_df=preview_df,
+                parent=self
             )
 
-            if reply == QMessageBox.Cancel:
-                return
-            elif reply == QMessageBox.Yes:
-                presets = self.state_manager.load_presets()
-                chosen_mapping = presets.get(matching_preset)
+            res = preview_dialog.exec()
+            if preview_dialog.selected_action == PresetPreviewDialog.ACTION_APPLY:
+                chosen_mapping = preset_map
+            elif preview_dialog.selected_action == PresetPreviewDialog.ACTION_EDIT:
+                chosen_mapping = None  # Fall through to Wizard with initial_preset
+            else:
+                return  # Cancelled
 
         # If no preset applied, launch wizard dialog
         if not chosen_mapping:
@@ -127,7 +135,7 @@ class MainWindow(QMainWindow):
             if wizard.exec() == ImportWizardDialog.Accepted:
                 chosen_mapping = wizard.result_mapping
             else:
-                return  # User cancelled wizard
+                return
 
         if not chosen_mapping:
             return
@@ -143,10 +151,9 @@ class MainWindow(QMainWindow):
         self.sessions[session_id] = session
         self.sidebar.add_session(session)
         self.graph_view.set_sessions(self.sessions)
-        self.statusBar.showMessage(f"Successfully loaded '{session.name}' ({len(session.laps)} laps)")
 
-    def _on_lap_visibility_changed(self, session_id: str, lap_number: int, is_visible: bool):
-        self.graph_view.update_lap_visibility(session_id, lap_number, is_visible)
+    def _on_laps_selection_changed(self, selected_laps_info: list):
+        self.graph_view.set_selected_laps(selected_laps_info)
 
     def _on_channels_selection_changed(self, selected_channels: set):
         self.graph_view.set_selected_channels(selected_channels)
