@@ -16,25 +16,6 @@ from core.state_manager import StateManager
 from utils.constants import STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
 
 
-SUGGESTED_TARGETS = [
-    "-- Skip --",
-    STD_CHANNEL_LAP,
-    STD_CHANNEL_TIME,
-    STD_CHANNEL_DISTANCE,
-    "Speed",
-    "RPM",
-    "Current",
-    "Voltage",
-    "Power",
-    "Energy",
-    "Throttle",
-    "SteeringAngle",
-    "Temperature",
-    "GPS_Lat",
-    "GPS_Lon"
-]
-
-
 class PresetPreviewDialog(QDialog):
     """Preview dialog showing how a detected preset maps channels before applying."""
 
@@ -130,6 +111,7 @@ class ImportWizardDialog(QDialog):
         self.state_manager = state_manager
         self.result_mapping: Dict[str, str] = {}
 
+        self.suggested_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
         self._init_ui(initial_preset)
 
     def _init_ui(self, initial_preset: Optional[str]):
@@ -143,7 +125,7 @@ class ImportWizardDialog(QDialog):
         instruction.setTextFormat(Qt.RichText)
         layout.addWidget(instruction)
 
-        # Mapping Table with smooth pixel scrolling
+        # Mapping Table
         self.table = QTableWidget(len(self.raw_columns), 3)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -152,7 +134,6 @@ class ImportWizardDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
-        # Load existing preset if provided
         presets = self.state_manager.load_presets()
         preset_map = presets.get(initial_preset, {}) if initial_preset else {}
 
@@ -166,11 +147,10 @@ class ImportWizardDialog(QDialog):
 
             combo = QComboBox()
             combo.setEditable(True)
-            combo.addItems(SUGGESTED_TARGETS)
+            combo.addItems(self.suggested_targets)
 
             mapped_val = preset_map.get(raw_col)
             if not mapped_val:
-                # FIX: Don't suggest duplicate channel mappings across rows
                 mapped_val = self._auto_guess_mapping(raw_col, suggested_used)
 
             if mapped_val:
@@ -225,7 +205,6 @@ class ImportWizardDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _auto_guess_mapping(self, raw_col: str, already_used: Set[str]) -> Optional[str]:
-        """Guesses mapping based on common column name substrings while skipping already assigned targets."""
         name = raw_col.lower().replace("_", "").replace(" ", "")
         
         candidates = []
@@ -245,7 +224,7 @@ class ImportWizardDialog(QDialog):
             candidates.append("Current")
 
         for cand in candidates:
-            if cand not in already_used:
+            if cand not in already_used and cand in self.suggested_targets:
                 return cand
         return None
 
@@ -258,7 +237,6 @@ class ImportWizardDialog(QDialog):
         return mapping
 
     def _validate_no_duplicates(self, mapping: Dict[str, str]) -> bool:
-        """Ensures no target channel name is assigned to multiple raw channels."""
         targets = list(mapping.values())
         duplicates = set([t for t in targets if targets.count(t) > 1])
         if duplicates:

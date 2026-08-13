@@ -66,10 +66,13 @@ def load_full_dataframe(file_path: str) -> pd.DataFrame:
         raise ValueError(f"Unsupported file format: {ext}")
 
 
-def parse_session(file_path: str, mapping: Dict[str, str], session_id: str) -> Session:
+def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
+                  lap_label: str = STD_CHANNEL_LAP,
+                  time_label: str = STD_CHANNEL_TIME,
+                  dist_label: str = STD_CHANNEL_DISTANCE) -> Session:
     """
     Parses a log file using the provided column mapping dictionary (raw_col -> mapped_col).
-    Splits the data into Lap objects based on the mapped Lap channel.
+    Splits data into Lap objects using configured lap, time, and distance channel labels.
     """
     df = load_full_dataframe(file_path)
     
@@ -82,20 +85,19 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str) -> S
         id=session_id,
         name=session_name,
         file_path=file_path,
-        channels=[col for col in df.columns if col != STD_CHANNEL_LAP],
+        channels=[col for col in df.columns if col != lap_label],
         raw_df=df
     )
 
-    if STD_CHANNEL_LAP not in df.columns:
-        # Fallback: treat entire file as Lap 1 if Lap channel wasn't mapped
+    if lap_label not in df.columns:
         lap_df = df
         lap_num = 1
         duration = 0.0
         distance = 0.0
-        if STD_CHANNEL_TIME in lap_df.columns:
-            duration = float(lap_df[STD_CHANNEL_TIME].iloc[-1] - lap_df[STD_CHANNEL_TIME].iloc[0])
-        if STD_CHANNEL_DISTANCE in lap_df.columns:
-            distance = float(lap_df[STD_CHANNEL_DISTANCE].iloc[-1] - lap_df[STD_CHANNEL_DISTANCE].iloc[0])
+        if time_label in lap_df.columns:
+            duration = float(lap_df[time_label].iloc[-1] - lap_df[time_label].iloc[0])
+        if dist_label in lap_df.columns:
+            distance = float(lap_df[dist_label].iloc[-1] - lap_df[dist_label].iloc[0])
         
         channel_data = {col: lap_df[col].to_numpy() for col in lap_df.columns}
         single_lap = Lap(
@@ -108,8 +110,7 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str) -> S
         session.laps.append(single_lap)
         return session
 
-    # Group by Lap channel values while preserving order
-    unique_laps = df[STD_CHANNEL_LAP].dropna().unique()
+    unique_laps = df[lap_label].dropna().unique()
     
     for lap_val in unique_laps:
         try:
@@ -117,16 +118,16 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str) -> S
         except (ValueError, TypeError):
             continue
             
-        lap_df = df[df[STD_CHANNEL_LAP] == lap_val].copy()
+        lap_df = df[df[lap_label] == lap_val].copy()
         if lap_df.empty:
             continue
 
         duration = 0.0
         distance = 0.0
-        if STD_CHANNEL_TIME in lap_df.columns:
-            duration = float(lap_df[STD_CHANNEL_TIME].iloc[-1] - lap_df[STD_CHANNEL_TIME].iloc[0])
-        if STD_CHANNEL_DISTANCE in lap_df.columns:
-            distance = float(lap_df[STD_CHANNEL_DISTANCE].iloc[-1] - lap_df[STD_CHANNEL_DISTANCE].iloc[0])
+        if time_label in lap_df.columns:
+            duration = float(lap_df[time_label].iloc[-1] - lap_df[time_label].iloc[0])
+        if dist_label in lap_df.columns:
+            distance = float(lap_df[dist_label].iloc[-1] - lap_df[dist_label].iloc[0])
 
         channel_data = {col: lap_df[col].to_numpy() for col in lap_df.columns}
 
