@@ -1,7 +1,7 @@
 """
 PyQtGraph-based main view displaying vertically stacked, synchronized plots for selected channels.
 Normalizes lap X-axis data for accurate lap overlay comparisons.
-Uses horizontal left-justified black titles and a single draggable shared legend.
+Displays current telemetry values directly on each individual channel graph.
 """
 
 from typing import Dict, List, Set, Tuple, Optional
@@ -15,7 +15,7 @@ from utils.constants import STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
 
 
 class GraphViewWidget(QWidget):
-    """Main plotting area with vertically stacked charts and a single shared legend."""
+    """Main plotting area with vertically stacked charts, synchronized cursor, and on-graph value readouts."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,7 +38,7 @@ class GraphViewWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        # Control Bar for X-Axis selection and Current Values display
+        # Top Control Bar for X-Axis selection
         self.control_bar = QFrame()
         c_layout = QHBoxLayout(self.control_bar)
         c_layout.setContentsMargins(10, 4, 10, 4)
@@ -49,10 +49,6 @@ class GraphViewWidget(QWidget):
         self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
         c_layout.addWidget(self.x_axis_combo)
 
-        c_layout.addSpacing(20)
-        self.cursor_info_label = QLabel("Cursor: --")
-        c_layout.addWidget(self.cursor_info_label)
-
         c_layout.addStretch()
         layout.addWidget(self.control_bar)
 
@@ -60,11 +56,14 @@ class GraphViewWidget(QWidget):
         self.glw = pg.GraphicsLayoutWidget()
         layout.addWidget(self.glw)
 
+        # Connect scene mouse-move signal ONCE globally on initialization
+        self.glw.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
     def set_x_axis_labels(self, time_label: str, dist_label: str):
         """Updates X-Axis options based on configured standard labels."""
         self.time_label = time_label
         self.dist_label = dist_label
-        
+
         self.x_axis_combo.blockSignals(True)
         self.x_axis_combo.clear()
         self.x_axis_combo.addItems([self.time_label, self.dist_label])
@@ -77,9 +76,13 @@ class GraphViewWidget(QWidget):
         self.is_dark = is_dark
         bg_color = "#191B1F" if is_dark else "#FFFFFF"
         fg_color = "#E0E0E0" if is_dark else "#202020"
-        bar_style = "background-color: #24272C; color: white;" if is_dark else "background-color: #E8ECEF; color: black;"
+        bar_style = (
+            "background-color: #24272C; color: #E0E0E0; border-bottom: 1px solid #2C3036;"
+            if is_dark else
+            "background-color: #E8ECEF; color: #212529; border-bottom: 1px solid #DEE2E6;"
+        )
 
-        pg.setConfigOptions(background=bg_color, foreground=fg_color)
+        pg.setConfigOptions(background=bg_color, foreground=fg_color, antialias=True)
         self.glw.setBackground(bg_color)
         self.control_bar.setStyleSheet(bar_style)
         self.rebuild_plots()
@@ -110,30 +113,30 @@ class GraphViewWidget(QWidget):
         if not self.selected_channels or not self.selected_laps_info:
             label = pg.LabelItem(
                 text="Select laps and channels from the left sidebar to display graphs.",
-                size="13pt", color="#808080"
+                size="12pt", color="#808080"
             )
             self.glw.addItem(label, row=0, col=0)
             return
 
         first_plot: Optional[pg.PlotItem] = None
+        title_color = "#E0E0E0" if self.is_dark else "#202020"
 
         for row, channel_name in enumerate(self.selected_channels):
             plot = self.glw.addPlot(row=row, col=0)
-            
-            plot.setTitle(channel_name, justify='left')
+
+            title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{channel_name}</span>"
+            plot.setTitle(title_html, justify='left')
             plot.setLabel("left", "")
-            
             plot.showGrid(x=True, y=True, alpha=0.3)
             plot.getAxis('left').setWidth(65)
 
             if first_plot is None:
                 first_plot = plot
-                # Create a single legend parented to first_plot so it can float/drag across the whole viewport
-                self.legend = pg.LegendItem()
+                self.legend = pg.LegendItem(offset=(-10, 10))
                 self.legend.setParentItem(first_plot)
                 if self.is_dark:
-                    self.legend.setBrush(pg.mkBrush(40, 44, 52, 220))
-                    self.legend.setPen(pg.mkPen(100, 100, 100))
+                    self.legend.setBrush(pg.mkBrush(30, 33, 38, 220))
+                    self.legend.setPen(pg.mkPen(80, 80, 80))
                 else:
                     self.legend.setBrush(pg.mkBrush(245, 245, 245, 220))
                     self.legend.setPen(pg.mkPen(200, 200, 200))
@@ -145,13 +148,17 @@ class GraphViewWidget(QWidget):
             else:
                 plot.hideAxis("bottom")
 
-            v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#FFD740", width=1, style=Qt.DashLine))
+            # Synchronized vertical crosshair
+            v_line = pg.InfiniteLine(
+                angle=90, movable=False,
+                pen=pg.mkPen("#FFD740", width=1, style=Qt.DashLine)
+            )
             plot.addItem(v_line, ignoreBounds=True)
             self.v_lines.append(v_line)
 
-            plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
             self.plot_widgets[channel_name] = plot
 
+            # Plot curves for each selected lap
             for session_id, lap_num, color in self.selected_laps_info:
                 if session_id not in self.sessions:
                     continue
@@ -163,15 +170,15 @@ class GraphViewWidget(QWidget):
                 raw_x = lap.get_channel(self.x_axis_channel)
                 raw_y = lap.get_channel(channel_name)
 
-                if raw_x is not None and raw_y is not None and len(raw_x) > 0:
+                if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
                     x_normalized = raw_x - raw_x[0]
                     pen = pg.mkPen(color=color, width=1.8)
-                    
+
                     curve = plot.plot(x_normalized, raw_y, pen=pen)
-                    
+
                     # Populate the single shared legend using the first row curves
-                    if row == 0:
-                        short_session = session.name[:10] + "..." if len(session.name) > 12 else session.name
+                    if row == 0 and self.legend is not None:
+                        short_session = session.name[:12] + "..." if len(session.name) > 15 else session.name
                         curve_name = f"{short_session} L{lap.lap_number}"
                         self.legend.addItem(curve, curve_name)
 
@@ -186,9 +193,31 @@ class GraphViewWidget(QWidget):
         mouse_point = first_plot.vb.mapSceneToView(evt)
         x_val = mouse_point.x()
 
+        # Update crosshair position on all stacked plots
         for v_line in self.v_lines:
             v_line.setPos(x_val)
 
-        unit = "s" if self.x_axis_channel == self.time_label else "m"
-        info_text = f"{self.x_axis_channel}: {x_val:.2f} {unit}"
-        self.cursor_info_label.setText(info_text)
+        title_color = "#E0E0E0" if self.is_dark else "#202020"
+
+        # Update each plot's header directly with its current channel values
+        for channel_name, plot in self.plot_widgets.items():
+            title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{channel_name}</span>"]
+
+            for session_id, lap_num, color in self.selected_laps_info:
+                session = self.sessions.get(session_id)
+                if not session:
+                    continue
+                lap = session.get_lap(lap_num)
+                if not lap:
+                    continue
+
+                raw_x = lap.get_channel(self.x_axis_channel)
+                raw_y = lap.get_channel(channel_name)
+
+                if raw_x is not None and raw_y is not None and len(raw_x) > 1:
+                    norm_x = raw_x - raw_x[0]
+                    if norm_x[0] <= x_val <= norm_x[-1]:
+                        y_val = float(np.interp(x_val, norm_x, raw_y))
+                        title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{y_val:.2f}</span>")
+
+            plot.setTitle(" &nbsp;&nbsp;&nbsp; ".join(title_parts), justify='left')

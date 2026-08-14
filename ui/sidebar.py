@@ -1,16 +1,16 @@
 """
 Left Sidebar widget containing Session/Lap tree and Channels selection list.
-Supports drag multi-selection, row highlighting (no checkboxes), smooth scrolling, and dynamic color allocation.
-Limits selection to 6 channels and available color count for laps.
+Supports drag multi-selection, row highlighting, dynamic color allocation,
+channel search filtering, and context menu session management.
 """
 
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QHeaderView, QAbstractItemView, QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
+    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu
 )
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QColor, QPixmap, QIcon
+from PySide6.QtCore import Signal, Qt, QPoint
+from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
 
 from core.data_models import Session, Lap
 from utils.constants import LAP_COLORS
@@ -46,6 +46,8 @@ class SidebarWidget(QWidget):
     laps_selection_changed = Signal(list)
     # Signal (set of selected channel names)
     channels_selection_changed = Signal(set)
+    # Signal (session_id string)
+    session_removed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,6 +63,7 @@ class SidebarWidget(QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(6)
 
         # 1. Sessions & Laps Section
         layout.addWidget(QLabel("<b>Sessions & Laps</b>"))
@@ -71,23 +74,78 @@ class SidebarWidget(QWidget):
         self.session_tree.setHeaderLabels(["Session / Lap", "Time"])
         self.session_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.session_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        
+
         self.session_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.session_tree.itemSelectionChanged.connect(self._on_lap_selection_changed)
+        self.session_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.session_tree.customContextMenuRequested.connect(self._show_session_context_menu)
         layout.addWidget(self.session_tree)
 
-        # 2. Channels Section
+        # 2. Channels Section with Search Filter
         layout.addWidget(QLabel("<b>Available Channels</b>"))
+
+        self.channel_search_input = QLineEdit()
+        self.channel_search_input.setPlaceholderText("Filter channels...")
+        self.channel_search_input.setClearButtonEnabled(True)
+        self.channel_search_input.textChanged.connect(self._filter_channels)
+        layout.addWidget(self.channel_search_input)
 
         self.channel_tree = QTreeWidget()
         self.channel_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.channel_tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.channel_tree.setHeaderLabels(["Channel Name"])
         self.channel_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        
+
         self.channel_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.channel_tree.itemSelectionChanged.connect(self._on_channel_selection_changed)
         layout.addWidget(self.channel_tree)
+
+    def _show_session_context_menu(self, pos: QPoint):
+        item = self.session_tree.itemAt(pos)
+        if not item:
+            return
+
+        data = item.data(0, Qt.UserRole)
+        if not data:
+            return
+
+        menu = QMenu(self)
+
+        if data[0] == "session":
+            session_id = data[1]
+            select_all_action = QAction("Select All Laps in Session", self)
+            select_all_action.triggered.connect(lambda: self._select_all_session_laps(item, True))
+            menu.addAction(select_all_action)
+
+            deselect_all_action = QAction("Deselect All Laps in Session", self)
+            deselect_all_action.triggered.connect(lambda: self._select_all_session_laps(item, False))
+            menu.addAction(deselect_all_action)
+
+            menu.addSeparator()
+
+            remove_action = QAction("Remove Session", self)
+            remove_action.triggered.connect(lambda: self.remove_session(session_id))
+            menu.addAction(remove_action)
+
+        elif data[0] == "lap":
+            is_selected = item.isSelected()
+            toggle_action = QAction("Deselect Lap" if is_selected else "Select Lap", self)
+            toggle_action.triggered.connect(lambda: item.setSelected(not is_selected))
+            menu.addAction(toggle_action)
+
+        menu.exec(self.session_tree.viewport().mapToGlobal(pos))
+
+    def _select_all_session_laps(self, session_item: QTreeWidgetItem, select: bool):
+        max_laps = len(LAP_COLORS)
+        for i in range(session_item.childCount()):
+            child = session_item.child(i)
+            if select and len(self.session_tree.selectedItems()) >= max_laps:
+                QMessageBox.warning(
+                    self, "Limit Reached",
+                    f"You can select a maximum of {max_laps} laps simultaneously."
+                )
+                break
+            child.setSelected(select)
 
     def add_session(self, session: Session):
         """Adds a session to the sidebar tree without selecting any laps by default."""
@@ -109,10 +167,12 @@ class SidebarWidget(QWidget):
         self.update_available_channels()
 
     def remove_session(self, session_id: str):
+        """Removes a session, frees its allocated colors, and notifies the application."""
         to_release = [key for key in self.allocated_colors if key[0] == session_id]
         for key in to_release:
             color = self.allocated_colors.pop(key)
-            self.available_colors.append(color)
+            if color in LAP_COLORS and color not in self.available_colors:
+                self.available_colors.append(color)
 
         if session_id in self.sessions:
             del self.sessions[session_id]
@@ -123,6 +183,16 @@ class SidebarWidget(QWidget):
                 self.session_tree.takeTopLevelItem(i)
                 break
 
+        self.update_available_channels()
+        self._on_lap_selection_changed()
+        self.session_removed.emit(session_id)
+
+    def clear_all_sessions(self):
+        """Clears all sessions from the sidebar."""
+        self.sessions.clear()
+        self.allocated_colors.clear()
+        self.available_colors = list(LAP_COLORS)
+        self.session_tree.clear()
         self.update_available_channels()
         self._on_lap_selection_changed()
 
@@ -140,6 +210,16 @@ class SidebarWidget(QWidget):
 
         self.channel_tree.clearSelection()
         self.channel_tree.blockSignals(False)
+        self._filter_channels(self.channel_search_input.text())
+
+    def _filter_channels(self, query: str):
+        query = query.strip().lower()
+        root_count = self.channel_tree.topLevelItemCount()
+        for i in range(root_count):
+            item = self.channel_tree.topLevelItem(i)
+            if item:
+                text = item.text(0).lower()
+                item.setHidden(query != "" and query not in text)
 
     def _on_lap_selection_changed(self):
         selected_items = self.session_tree.selectedItems()
@@ -151,7 +231,7 @@ class SidebarWidget(QWidget):
                 session_id, lap_num = data[1], data[2]
                 currently_selected_laps.add((session_id, lap_num))
 
-        # FIX: Limit maximum laps selectable to the number of available colors
+        # Enforce maximum laps limit
         max_laps = len(LAP_COLORS)
         if len(currently_selected_laps) > max_laps:
             self.session_tree.blockSignals(True)
@@ -169,11 +249,17 @@ class SidebarWidget(QWidget):
             )
             return
 
+        # Reclaim deselected colors
         deselected = set(self.allocated_colors.keys()) - currently_selected_laps
         for key in deselected:
             color = self.allocated_colors.pop(key)
-            self.available_colors.insert(0, color)
+            if color in LAP_COLORS and color not in self.available_colors:
+                # Maintain color palette order
+                insert_idx = LAP_COLORS.index(color)
+                self.available_colors.append(color)
+                self.available_colors.sort(key=lambda c: LAP_COLORS.index(c) if c in LAP_COLORS else 999)
 
+        # Allocate new colors
         newly_selected = currently_selected_laps - set(self.allocated_colors.keys())
         for key in sorted(list(newly_selected)):
             if self.available_colors:
@@ -182,6 +268,7 @@ class SidebarWidget(QWidget):
                 color = "#%06x" % (hash(key) & 0xFFFFFF)
             self.allocated_colors[key] = color
 
+        # Update lap icon indicators
         root_count = self.session_tree.topLevelItemCount()
         for r in range(root_count):
             session_item = self.session_tree.topLevelItem(r)
@@ -203,8 +290,8 @@ class SidebarWidget(QWidget):
 
     def _on_channel_selection_changed(self):
         selected_items = self.channel_tree.selectedItems()
-        
-        # FIX: Limit maximum channels selectable to 6
+
+        # Limit maximum channels selectable to 6
         if len(selected_items) > 6:
             self.channel_tree.blockSignals(True)
             for item in selected_items:

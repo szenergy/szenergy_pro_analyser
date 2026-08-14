@@ -1,6 +1,7 @@
 """
 State and settings manager for persistent user preferences, import presets, and standard channels.
 Supports custom labels for all channels including system-required channels (lap, time, distance).
+Includes coverage-based best-fit preset matching.
 """
 
 import json
@@ -38,11 +39,18 @@ def generate_slug(label: str) -> str:
 class StateManager:
     """Manages persistent application state, settings, channel presets, and standard channel definitions."""
 
-    def __init__(self):
+    def __init__(self, config_dir: Optional[str] = None):
         self.settings = QSettings(ORGANIZATION_NAME, APP_NAME)
-        self.config_dir = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
-        if not os.path.exists(self.config_dir):
-            os.makedirs(self.config_dir, exist_ok=True)
+        if config_dir:
+            self.config_dir = config_dir
+        else:
+            self.config_dir = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+        
+        try:
+            if not os.path.exists(self.config_dir):
+                os.makedirs(self.config_dir, exist_ok=True)
+        except OSError:
+            pass
 
         self.presets_file = os.path.join(self.config_dir, "presets.json")
         self.channels_file = os.path.join(self.config_dir, "custom_channels.json")
@@ -73,20 +81,30 @@ class StateManager:
                 json.dump(presets, f, indent=4)
 
     def find_matching_preset(self, raw_columns: List[str]) -> Optional[str]:
-        """Find if any saved preset matches the raw columns in a file."""
+        """
+        Finds the best matching saved preset for raw columns based on highest coverage score.
+        Avoids false positives from minimal presets matching before comprehensive presets.
+        """
         presets = self.load_presets()
         raw_set = set(raw_columns)
+        best_preset = None
+        best_score = 0
+
         for preset_name, mapping in presets.items():
             mapping_keys = set(mapping.keys())
             if mapping_keys and mapping_keys.issubset(raw_set):
-                return preset_name
-        return None
+                score = len(mapping_keys)
+                if score > best_score:
+                    best_score = score
+                    best_preset = preset_name
+
+        return best_preset
 
     def get_channel_defs(self) -> List[Dict[str, str]]:
         """Returns the list of channel dicts [{'label': ..., 'slug': ...}]."""
         if not os.path.exists(self.channels_file):
             self.save_channel_defs(DEFAULT_CHANNEL_DEFS)
-            return list(DEFAULT_CHANNEL_DEFS)
+            return [dict(d) for d in DEFAULT_CHANNEL_DEFS]
         try:
             with open(self.channels_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -100,9 +118,9 @@ class StateManager:
                     if converted:
                         self.save_channel_defs(converted)
                         return converted
-                return list(DEFAULT_CHANNEL_DEFS)
+                return [dict(d) for d in DEFAULT_CHANNEL_DEFS]
         except Exception:
-            return list(DEFAULT_CHANNEL_DEFS)
+            return [dict(d) for d in DEFAULT_CHANNEL_DEFS]
 
     def save_channel_defs(self, channels: List[Dict[str, str]]) -> None:
         """Persists the channel definitions list to JSON."""

@@ -1,15 +1,15 @@
 """
 Main application window organizing the menu bar, left sidebar, and stacked graph views.
-Includes non-blocking background file loading with modal progress indicators.
+Includes robust background worker lifecycle management and centralized session handling.
 """
 
 import os
 import uuid
-from typing import Dict
+from typing import Dict, List
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QThread
 from PySide6.QtGui import QGuiApplication, QAction, QDesktopServices
 
 from core.state_manager import StateManager
@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
 
         self.state_manager = StateManager()
         self.sessions: Dict[str, Session] = {}
+        self._active_workers: List[QThread] = []
 
         self._init_menu()
         self._init_ui()
@@ -49,6 +50,10 @@ class MainWindow(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_file)
         file_menu.addAction(open_action)
+
+        clear_action = QAction("&Clear Workspace", self)
+        clear_action.triggered.connect(self._on_clear_workspace)
+        file_menu.addAction(clear_action)
 
         file_menu.addSeparator()
 
@@ -81,6 +86,7 @@ class MainWindow(QMainWindow):
         self.sidebar = SidebarWidget()
         self.sidebar.laps_selection_changed.connect(self._on_laps_selection_changed)
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
+        self.sidebar.session_removed.connect(self._on_session_removed)
         main_splitter.addWidget(self.sidebar)
 
         # Right Graph View
@@ -100,7 +106,7 @@ class MainWindow(QMainWindow):
         is_dark = True
         if hasattr(hints, "colorScheme"):
             is_dark = (hints.colorScheme() == Qt.ColorScheme.Dark)
-        
+
         self.graph_view.apply_theme(is_dark)
 
     def _on_open_config_folder(self):
@@ -116,6 +122,24 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self._sync_x_axis_labels()
 
+    def _on_clear_workspace(self):
+        if not self.sessions:
+            return
+        reply = QMessageBox.question(
+            self, "Clear Workspace",
+            "Are you sure you want to unload all telemetry sessions?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.sessions.clear()
+            self.sidebar.clear_all_sessions()
+            self.graph_view.set_sessions(self.sessions)
+
+    def _on_session_removed(self, session_id: str):
+        if session_id in self.sessions:
+            del self.sessions[session_id]
+        self.graph_view.set_sessions(self.sessions)
+
     def _on_open_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
@@ -127,11 +151,20 @@ class MainWindow(QMainWindow):
         for path in file_paths:
             self._import_file(path)
 
+    def _track_worker(self, worker: QThread):
+        self._active_workers.append(worker)
+        worker.finished.connect(lambda: self._untrack_worker(worker))
+
+    def _untrack_worker(self, worker: QThread):
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        worker.deleteLater()
+
     def _import_file(self, file_path: str):
         """Processes file import using background QThread workers and loading dialogs."""
         filename = os.path.basename(file_path)
 
-        # FIX: Do not let the user import the same file multiple times
+        # Do not let the user import the same file multiple times
         for session in self.sessions.values():
             if os.path.abspath(session.file_path) == os.path.abspath(file_path):
                 QMessageBox.warning(
@@ -141,8 +174,14 @@ class MainWindow(QMainWindow):
                 return
 
         # 1. Background Header Reading
-        preview_dialog = LoadingDialog(f"Inspecting headers for '{filename}'...\nPlease wait.", self)
-        preview_worker = FilePreviewWorker(file_path)
+        preview_worker = FilePreviewWorker(file_path, parent=self)
+        self._track_worker(preview_worker)
+
+        preview_dialog = LoadingDialog(
+            f"Inspecting headers for '{filename}'...\nPlease wait.",
+            worker=preview_worker,
+            parent=self
+        )
 
         preview_data = {}
 
@@ -211,14 +250,21 @@ class MainWindow(QMainWindow):
 
         # 2. Background Log Data Parsing
         session_id = str(uuid.uuid4())
-        parse_dialog = LoadingDialog(f"Parsing log data for '{filename}'...\nPlease wait.", self)
         parse_worker = FileParseWorker(
             file_path=file_path,
             mapping=chosen_mapping,
             session_id=session_id,
             lap_label=self.state_manager.get_lap_label(),
             time_label=self.state_manager.get_time_label(),
-            dist_label=self.state_manager.get_distance_label()
+            dist_label=self.state_manager.get_distance_label(),
+            parent=self
+        )
+        self._track_worker(parse_worker)
+
+        parse_dialog = LoadingDialog(
+            f"Parsing log data for '{filename}'...\nPlease wait.",
+            worker=parse_worker,
+            parent=self
         )
 
         parse_result = {}
@@ -253,3 +299,11 @@ class MainWindow(QMainWindow):
 
     def _on_channels_selection_changed(self, selected_channels: set):
         self.graph_view.set_selected_channels(selected_channels)
+
+    def closeEvent(self, event):
+        """Cleanly terminate any background worker threads on application exit."""
+        for worker in list(self._active_workers):
+            if worker.isRunning():
+                worker.requestInterruption()
+                worker.wait(1000)
+        super().closeEvent(event)

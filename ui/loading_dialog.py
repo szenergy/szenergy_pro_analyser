@@ -1,10 +1,11 @@
 """
 Background file loader worker threads and loading progress dialog for smooth GUI responsiveness.
+Ensures proper thread lifetime, cancellation handling, and garbage collection safety.
 """
 
+import os
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
-import os
 
 from core.file_parser import parse_session, get_file_columns_and_preview
 
@@ -15,8 +16,8 @@ class FileParseWorker(QThread):
     error = Signal(str)
 
     def __init__(self, file_path: str, mapping: dict, session_id: str,
-                 lap_label: str, time_label: str, dist_label: str):
-        super().__init__()
+                 lap_label: str, time_label: str, dist_label: str, parent=None):
+        super().__init__(parent)
         self.file_path = file_path
         self.mapping = mapping
         self.session_id = session_id
@@ -34,9 +35,11 @@ class FileParseWorker(QThread):
                 self.time_label,
                 self.dist_label
             )
-            self.success.emit(session)
+            if not self.isInterruptionRequested():
+                self.success.emit(session)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self.isInterruptionRequested():
+                self.error.emit(str(e))
 
 
 class FilePreviewWorker(QThread):
@@ -44,27 +47,30 @@ class FilePreviewWorker(QThread):
     success = Signal(list, object)  # (raw_columns, preview_df)
     error = Signal(str)
 
-    def __init__(self, file_path: str):
-        super().__init__()
+    def __init__(self, file_path: str, parent=None):
+        super().__init__(parent)
         self.file_path = file_path
 
     def run(self):
         try:
             raw_columns, preview_df = get_file_columns_and_preview(self.file_path)
-            self.success.emit(raw_columns, preview_df)
+            if not self.isInterruptionRequested():
+                self.success.emit(raw_columns, preview_df)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self.isInterruptionRequested():
+                self.error.emit(str(e))
 
 
 class LoadingDialog(QDialog):
     """Modal loading dialog with an indeterminate progress bar shown during background operations."""
 
-    def __init__(self, message: str, parent=None):
+    def __init__(self, message: str, worker: QThread = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Processing Telemetry Log")
         self.setFixedSize(420, 120)
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         self.setModal(True)
+        self.worker = worker
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -77,3 +83,15 @@ class LoadingDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # Indeterminate animated bar
         layout.addWidget(self.progress)
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.worker.wait(1000)
+        super().closeEvent(event)
+
+    def reject(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.worker.wait(1000)
+        super().reject()
