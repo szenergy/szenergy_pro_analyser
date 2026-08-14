@@ -1,13 +1,13 @@
 """
 Left Sidebar widget containing Session/Lap tree and Channels selection list.
-Supports drag multi-selection, row highlighting, dynamic color allocation,
-channel search filtering, and context menu session management.
+Supports embedded top menu bar, drag multi-selection, row highlighting,
+dynamic color allocation, channel search filtering, and context menu session management.
 """
 
 from typing import Dict, List, Set, Tuple, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu
+    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame
 )
 from PySide6.QtCore import Signal, Qt, QPoint
 from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
@@ -40,7 +40,7 @@ def format_lap_time(seconds: float) -> str:
 
 
 class SidebarWidget(QWidget):
-    """Left sidebar managing sessions, laps selection, and channel visibility."""
+    """Left sidebar managing sessions, laps selection, and channel visibility with integrated menu bar."""
 
     # Signal (list of tuples: [(session_id, lap_number, color_hex)])
     laps_selection_changed = Signal(list)
@@ -62,11 +62,28 @@ class SidebarWidget(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 0. Integrated Menu Bar Container at the top of the sidebar
+        self.menu_container = QFrame()
+        m_layout = QHBoxLayout(self.menu_container)
+        m_layout.setContentsMargins(6, 4, 6, 4)
+        m_layout.setSpacing(4)
+
+        self.menu_bar = QMenuBar()
+        m_layout.addWidget(self.menu_bar)
+        m_layout.addStretch()
+        layout.addWidget(self.menu_container)
+
+        # Content Area
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(5, 5, 5, 5)
+        content_layout.setSpacing(6)
 
         # 1. Sessions & Laps Section
-        layout.addWidget(QLabel("<b>Sessions & Laps</b>"))
+        content_layout.addWidget(QLabel("<b>Sessions & Laps</b>"))
 
         self.session_tree = QTreeWidget()
         self.session_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -79,16 +96,16 @@ class SidebarWidget(QWidget):
         self.session_tree.itemSelectionChanged.connect(self._on_lap_selection_changed)
         self.session_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.session_tree.customContextMenuRequested.connect(self._show_session_context_menu)
-        layout.addWidget(self.session_tree)
+        content_layout.addWidget(self.session_tree)
 
         # 2. Channels Section with Search Filter
-        layout.addWidget(QLabel("<b>Available Channels</b>"))
+        content_layout.addWidget(QLabel("<b>Available Channels</b>"))
 
         self.channel_search_input = QLineEdit()
         self.channel_search_input.setPlaceholderText("Filter channels...")
         self.channel_search_input.setClearButtonEnabled(True)
         self.channel_search_input.textChanged.connect(self._filter_channels)
-        layout.addWidget(self.channel_search_input)
+        content_layout.addWidget(self.channel_search_input)
 
         self.channel_tree = QTreeWidget()
         self.channel_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -98,7 +115,17 @@ class SidebarWidget(QWidget):
 
         self.channel_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.channel_tree.itemSelectionChanged.connect(self._on_channel_selection_changed)
-        layout.addWidget(self.channel_tree)
+        content_layout.addWidget(self.channel_tree)
+
+        layout.addWidget(content_widget, 1)
+
+    def apply_theme(self, is_dark: bool):
+        bar_style = (
+            "background-color: #24272C; border-bottom: 1px solid #2C3036;"
+            if is_dark else
+            "background-color: #E8ECEF; border-bottom: 1px solid #DEE2E6;"
+        )
+        self.menu_container.setStyleSheet(bar_style)
 
     def _show_session_context_menu(self, pos: QPoint):
         item = self.session_tree.itemAt(pos)
@@ -254,8 +281,6 @@ class SidebarWidget(QWidget):
         for key in deselected:
             color = self.allocated_colors.pop(key)
             if color in LAP_COLORS and color not in self.available_colors:
-                # Maintain color palette order
-                insert_idx = LAP_COLORS.index(color)
                 self.available_colors.append(color)
                 self.available_colors.sort(key=lambda c: LAP_COLORS.index(c) if c in LAP_COLORS else 999)
 

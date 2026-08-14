@@ -30,6 +30,7 @@ def main():
             QComboBox, QLineEdit { background-color: #282C31; border: 1px solid #3A3F47; padding: 4px; color: #FFFFFF; border-radius: 3px; }
             QPushButton { background-color: #2A2E33; border: 1px solid #3A3F47; color: #FFFFFF; padding: 5px 12px; border-radius: 3px; }
             QPushButton:hover { background-color: #353A40; }
+            QPushButton:checked { background-color: #00E676; color: #121212; border: 1px solid #00C853; font-weight: bold; }
             QMenuBar { background-color: #191B1F; color: #D0D0D0; }
             QMenuBar::item:selected { background-color: #2A2E33; }
             QMenu { background-color: #22252A; border: 1px solid #3A3F47; }
@@ -84,6 +85,7 @@ def main():
             QComboBox, QLineEdit { background-color: #FFFFFF; border: 1px solid #CED4DA; padding: 4px; color: #212529; border-radius: 3px; }
             QPushButton { background-color: #E9ECEF; border: 1px solid #CED4DA; color: #212529; padding: 5px 12px; border-radius: 3px; }
             QPushButton:hover { background-color: #DEE2E6; }
+            QPushButton:checked { background-color: #00C853; color: #FFFFFF; border: 1px solid #009624; font-weight: bold; }
             QMenuBar { background-color: #E9ECEF; color: #212529; }
             QMenuBar::item:selected { background-color: #DEE2E6; }
             QMenu { background-color: #FFFFFF; border: 1px solid #CED4DA; }

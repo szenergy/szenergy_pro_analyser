@@ -35,13 +35,13 @@ class MainWindow(QMainWindow):
         self.sessions: Dict[str, Session] = {}
         self._active_workers: List[QThread] = []
 
-        self._init_menu()
         self._init_ui()
+        self._init_menu()
         self.update_system_theme()
         self._sync_x_axis_labels()
 
     def _init_menu(self):
-        menu_bar = self.menuBar()
+        menu_bar = self.sidebar.menu_bar
 
         # 1. File Menu
         file_menu = menu_bar.addMenu("&File")
@@ -50,16 +50,19 @@ class MainWindow(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_file)
         file_menu.addAction(open_action)
+        self.addAction(open_action)
 
         clear_action = QAction("&Clear Workspace", self)
         clear_action.triggered.connect(self._on_clear_workspace)
         file_menu.addAction(clear_action)
+        self.addAction(clear_action)
 
         file_menu.addSeparator()
 
         open_config_action = QAction("Open &Config Folder", self)
         open_config_action.triggered.connect(self._on_open_config_folder)
         file_menu.addAction(open_config_action)
+        self.addAction(open_config_action)
 
         file_menu.addSeparator()
 
@@ -67,6 +70,7 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+        self.addAction(exit_action)
 
         # 2. Edit Menu
         edit_menu = menu_bar.addMenu("&Edit")
@@ -74,10 +78,12 @@ class MainWindow(QMainWindow):
         manage_presets_action = QAction("Manage Saved &Presets...", self)
         manage_presets_action.triggered.connect(self._on_manage_presets)
         edit_menu.addAction(manage_presets_action)
+        self.addAction(manage_presets_action)
 
         manage_channels_action = QAction("Manage Standard &Channel List...", self)
         manage_channels_action.triggered.connect(self._on_manage_channels)
         edit_menu.addAction(manage_channels_action)
+        self.addAction(manage_channels_action)
 
     def _init_ui(self):
         main_splitter = QSplitter(Qt.Horizontal)
@@ -107,6 +113,7 @@ class MainWindow(QMainWindow):
         if hasattr(hints, "colorScheme"):
             is_dark = (hints.colorScheme() == Qt.ColorScheme.Dark)
 
+        self.sidebar.apply_theme(is_dark)
         self.graph_view.apply_theme(is_dark)
 
     def _on_open_config_folder(self):
