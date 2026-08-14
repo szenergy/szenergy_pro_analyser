@@ -2,6 +2,7 @@
 PyQtGraph-based main view displaying vertically stacked, synchronized plots for selected channels.
 Normalizes lap X-axis data for accurate lap overlay comparisons.
 Features toolbar icon toggle buttons for X/Y grids, cursor values, legend labels, custom legend renaming, and auto-ranging.
+Displays tracking dots on each curve at the cursor crosshair position.
 Ensures equal viewbox heights across all stacked plots and full X-axis grid support on every plot.
 """
 
@@ -163,6 +164,7 @@ class GraphViewWidget(QWidget):
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
         self.v_lines: List[pg.InfiniteLine] = []
+        self.tracking_dots: List[Tuple[pg.ScatterPlotItem, str, int, str]] = []
         self.legend: Optional[pg.LegendItem] = None
 
         self._init_ui()
@@ -344,6 +346,8 @@ class GraphViewWidget(QWidget):
         self.show_cursor_values = checked
         for v_line in self.v_lines:
             v_line.setVisible(self.show_cursor_values)
+        for dot, _, _, _ in self.tracking_dots:
+            dot.setVisible(self.show_cursor_values)
         if not self.show_cursor_values:
             title_color = "#E0E0E0" if self.is_dark else "#202020"
             for channel_name, plot in self.plot_widgets.items():
@@ -380,6 +384,7 @@ class GraphViewWidget(QWidget):
         self.glw.clear()
         self.plot_widgets.clear()
         self.v_lines.clear()
+        self.tracking_dots.clear()
         self.legend = None
 
         if not self.selected_channels or not self.selected_laps_info:
@@ -436,7 +441,7 @@ class GraphViewWidget(QWidget):
 
             self.plot_widgets[channel_name] = plot
 
-            # Plot curves for each selected lap
+            # Plot curves and create tracking dots for each selected lap
             for session_id, lap_num, color in self.selected_laps_info:
                 if session_id not in self.sessions:
                     continue
@@ -453,6 +458,19 @@ class GraphViewWidget(QWidget):
                     pen = pg.mkPen(color=color, width=1.8)
 
                     curve = plot.plot(x_normalized, raw_y, pen=pen)
+
+                    # Create tracking dot for this curve
+                    dot_pen = pg.mkPen("#FFFFFF" if self.is_dark else "#000000", width=1.2)
+                    dot = pg.ScatterPlotItem(
+                        size=8,
+                        brush=pg.mkBrush(color),
+                        pen=dot_pen,
+                        symbol='o'
+                    )
+                    dot.setZValue(10)
+                    dot.setVisible(self.show_cursor_values)
+                    plot.addItem(dot, ignoreBounds=True)
+                    self.tracking_dots.append((dot, session_id, lap_num, channel_name))
 
                     # Populate the single shared legend using the first row curves
                     if row == 0 and self.legend is not None:
@@ -478,6 +496,31 @@ class GraphViewWidget(QWidget):
             v_line.setPos(x_val)
 
         title_color = "#E0E0E0" if self.is_dark else "#202020"
+
+        # Update tracking dots position on every curve
+        for dot, session_id, lap_num, channel_name in self.tracking_dots:
+            session = self.sessions.get(session_id)
+            if not session:
+                dot.setData(x=[], y=[])
+                continue
+            lap = session.get_lap(lap_num)
+            if not lap:
+                dot.setData(x=[], y=[])
+                continue
+
+            raw_x = lap.get_channel(self.x_axis_channel)
+            raw_y = lap.get_channel(channel_name)
+
+            if raw_x is not None and raw_y is not None and len(raw_x) > 1:
+                norm_x = raw_x - raw_x[0]
+                if norm_x[0] <= x_val <= norm_x[-1]:
+                    y_val = float(np.interp(x_val, norm_x, raw_y))
+                    dot.setData(x=[x_val], y=[y_val])
+                    dot.setVisible(True)
+                else:
+                    dot.setData(x=[], y=[])
+            else:
+                dot.setData(x=[], y=[])
 
         # Update each plot's header directly with its current channel values
         for channel_name, plot in self.plot_widgets.items():

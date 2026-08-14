@@ -6,6 +6,7 @@ import sys
 import unittest
 import numpy as np
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF
 
 from core.data_models import Session, Lap
 from ui.graph_view import GraphViewWidget
@@ -141,6 +142,32 @@ class TestUIComponents(unittest.TestCase):
         self.assertIsNotNone(widget.legend)
         legend_labels = [label.text for _, label in widget.legend.items]
         self.assertIn("Baseline Run 1 (Hard Compound)", legend_labels)
+
+    def test_tracking_dots_creation_and_movement(self):
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"Speed", "RPM"})
+
+        # 2 channels * 1 lap = 2 tracking dots
+        self.assertEqual(len(widget.tracking_dots), 2)
+
+        # Test cursor movement at X = 1.0s
+        first_plot = widget.plot_widgets["Speed"]
+        scene_pos = first_plot.vb.mapViewToScene(QPointF(1.0, 20.0))
+        widget._on_mouse_moved(scene_pos)
+
+        # Verify dot data updated (Speed should be 20.0 at X=1.0)
+        speed_dot = [d for d, _, _, ch in widget.tracking_dots if ch == "Speed"][0]
+        points = speed_dot.points()
+        self.assertEqual(len(points), 1)
+        self.assertAlmostEqual(points[0].pos().x(), 1.0, places=2)
+        self.assertAlmostEqual(points[0].pos().y(), 20.0, places=2)
+
+        # Verify toggle cursor values hides tracking dots
+        widget.btn_cursor.setChecked(False)
+        self.assertFalse(speed_dot.isVisible())
 
 
 if __name__ == "__main__":
