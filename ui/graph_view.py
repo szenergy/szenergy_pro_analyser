@@ -16,7 +16,10 @@ from PySide6.QtCore import Qt, QSize, QPointF, QTimer
 from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
 
 from core.data_models import Session, Lap
-from utils.constants import STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
+from utils.constants import (
+    STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE,
+    SLUG_TIME, SLUG_DISTANCE
+)
 
 
 def create_icon_x_grid(is_dark: bool) -> QIcon:
@@ -191,7 +194,7 @@ class GraphViewWidget(QWidget):
         self.selected_channels: List[str] = []
         self.selected_laps_info: List[Tuple[str, int, str]] = []
         self.custom_lap_labels: Dict[Tuple[str, int], str] = {}
-        self.x_axis_channel: str = STD_CHANNEL_TIME
+        self.x_axis_slug: str = SLUG_TIME
         self.time_label: str = STD_CHANNEL_TIME
         self.dist_label: str = STD_CHANNEL_DISTANCE
         self.is_dark: bool = True
@@ -208,6 +211,11 @@ class GraphViewWidget(QWidget):
         self.legend: Optional[pg.LegendItem] = None
 
         self._init_ui()
+
+    @property
+    def x_axis_channel(self) -> str:
+        """Returns the active display label for the selected X-axis slug."""
+        return self.dist_label if self.x_axis_slug == SLUG_DISTANCE else self.time_label
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -278,11 +286,12 @@ class GraphViewWidget(QWidget):
 
         c_layout.addStretch()
 
-        # 7. X-Axis Selector
+        # 7. X-Axis Selector (Using immutable Slugs as userData)
         c_layout.addWidget(QLabel("<b>X-Axis:</b>"))
         self.x_axis_combo = QComboBox()
-        self.x_axis_combo.addItems([self.time_label, self.dist_label])
-        self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
+        self.x_axis_combo.addItem(self.time_label, userData=SLUG_TIME)
+        self.x_axis_combo.addItem(self.dist_label, userData=SLUG_DISTANCE)
+        self.x_axis_combo.currentIndexChanged.connect(self._on_x_axis_changed)
         c_layout.addWidget(self.x_axis_combo)
 
         layout.addWidget(self.control_bar)
@@ -319,23 +328,23 @@ class GraphViewWidget(QWidget):
                 self.glw.ci.layout.setRowFixedHeight(i, int(h_plot))
 
     def set_x_axis_labels(self, time_label: str, dist_label: str):
-        """Updates X-Axis options based on configured standard labels, preserving user selection."""
-        was_distance = (self.x_axis_channel == self.dist_label)
-
+        """Updates X-Axis options based on configured standard labels, preserving active slug selection."""
         self.time_label = time_label
         self.dist_label = dist_label
 
-        target_selection = self.dist_label if was_distance else self.time_label
-
         self.x_axis_combo.blockSignals(True)
         self.x_axis_combo.clear()
-        self.x_axis_combo.addItems([self.time_label, self.dist_label])
-        idx = self.x_axis_combo.findText(target_selection)
-        if idx >= 0:
-            self.x_axis_combo.setCurrentIndex(idx)
+        self.x_axis_combo.addItem(self.time_label, userData=SLUG_TIME)
+        self.x_axis_combo.addItem(self.dist_label, userData=SLUG_DISTANCE)
+
+        target_idx = 0
+        for idx in range(self.x_axis_combo.count()):
+            if self.x_axis_combo.itemData(idx) == self.x_axis_slug:
+                target_idx = idx
+                break
+        self.x_axis_combo.setCurrentIndex(target_idx)
         self.x_axis_combo.blockSignals(False)
 
-        self.x_axis_channel = self.x_axis_combo.currentText()
         self.rebuild_plots()
 
     def apply_theme(self, is_dark: bool):
@@ -378,9 +387,10 @@ class GraphViewWidget(QWidget):
         self.selected_laps_info = laps_info
         self.rebuild_plots()
 
-    def _on_x_axis_changed(self, new_x_axis: str):
-        if new_x_axis:
-            self.x_axis_channel = new_x_axis
+    def _on_x_axis_changed(self, idx: int):
+        slug = self.x_axis_combo.itemData(idx)
+        if slug and slug != self.x_axis_slug:
+            self.x_axis_slug = slug
             self.rebuild_plots()
 
     def _toggle_x_grid(self, checked: bool):
@@ -410,9 +420,9 @@ class GraphViewWidget(QWidget):
             self.legend.setVisible(self.show_legend)
 
     def _on_autorange(self):
+        """Executes pyqtgraph's built-in 'View All' auto-range on every plot ViewBox."""
         for plot in self.plot_widgets.values():
-            plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
-            plot.autoRange()
+            plot.vb.autoRange()
 
     def _on_rename_legend(self):
         """Opens dialog to customize legend labels specifying what the curve colors mean."""
@@ -510,7 +520,7 @@ class GraphViewWidget(QWidget):
                 if not lap:
                     continue
 
-                raw_x = lap.get_channel(self.x_axis_channel)
+                raw_x = lap.get_channel(self.x_axis_slug)
                 raw_y = lap.get_channel(channel_name)
 
                 if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
@@ -561,7 +571,7 @@ class GraphViewWidget(QWidget):
                 dot.setData(x=[], y=[])
                 continue
 
-            raw_x = lap.get_channel(self.x_axis_channel)
+            raw_x = lap.get_channel(self.x_axis_slug)
             raw_y = lap.get_channel(channel_name)
 
             sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
@@ -584,7 +594,7 @@ class GraphViewWidget(QWidget):
                 if not lap:
                     continue
 
-                raw_x = lap.get_channel(self.x_axis_channel)
+                raw_x = lap.get_channel(self.x_axis_slug)
                 raw_y = lap.get_channel(channel_name)
 
                 sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)

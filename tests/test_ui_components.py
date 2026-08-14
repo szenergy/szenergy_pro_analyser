@@ -497,26 +497,33 @@ class TestUIComponents(unittest.TestCase):
         self.assertNotIn(("s2", 1), widget.custom_lap_labels)
 
     def test_x_axis_selection_preservation_during_sync(self):
-        """Validates that user X-axis choice (Distance or Time) is preserved when labels are re-synced."""
+        """Validates that user X-axis choice (Distance or Time) uses slugs and is preserved when labels are re-synced."""
         widget = GraphViewWidget()
-        # Default is Time
+        # Default is Time slug
+        self.assertEqual(widget.x_axis_slug, "time")
         self.assertEqual(widget.x_axis_channel, widget.time_label)
 
         # User chooses Distance
-        widget.x_axis_combo.setCurrentText(widget.dist_label)
+        dist_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == "distance"][0]
+        widget.x_axis_combo.setCurrentIndex(dist_idx)
+        self.assertEqual(widget.x_axis_slug, "distance")
         self.assertEqual(widget.x_axis_channel, widget.dist_label)
 
         # Sync labels to Hungarian
         widget.set_x_axis_labels("Idő", "Távolság")
+        self.assertEqual(widget.x_axis_slug, "distance")
         self.assertEqual(widget.x_axis_channel, "Távolság")
         self.assertEqual(widget.x_axis_combo.currentText(), "Távolság")
 
         # User switches to Time (Idő)
-        widget.x_axis_combo.setCurrentText("Idő")
+        time_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == "time"][0]
+        widget.x_axis_combo.setCurrentIndex(time_idx)
+        self.assertEqual(widget.x_axis_slug, "time")
         self.assertEqual(widget.x_axis_channel, "Idő")
 
         # Sync labels back to English
         widget.set_x_axis_labels("Time", "Distance")
+        self.assertEqual(widget.x_axis_slug, "time")
         self.assertEqual(widget.x_axis_channel, "Time")
         self.assertEqual(widget.x_axis_combo.currentText(), "Time")
 

@@ -9,13 +9,16 @@ import os
 import re
 from typing import Dict, List, Optional
 from PySide6.QtCore import QStandardPaths, QSettings
-from utils.constants import APP_NAME, ORGANIZATION_NAME, STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
+from utils.constants import (
+    APP_NAME, ORGANIZATION_NAME, STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE,
+    SLUG_LAP, SLUG_TIME, SLUG_DISTANCE, STANDARD_SLUGS, REQUIRED_SLUGS
+)
 
 
 DEFAULT_CHANNEL_DEFS = [
-    {"label": STD_CHANNEL_LAP, "slug": "lap"},
-    {"label": STD_CHANNEL_TIME, "slug": "time"},
-    {"label": STD_CHANNEL_DISTANCE, "slug": "distance"},
+    {"label": STD_CHANNEL_LAP, "slug": SLUG_LAP},
+    {"label": STD_CHANNEL_TIME, "slug": SLUG_TIME},
+    {"label": STD_CHANNEL_DISTANCE, "slug": SLUG_DISTANCE},
     {"label": "Speed", "slug": "speed"},
     {"label": "RPM", "slug": "rpm"},
     {"label": "Current", "slug": "current"},
@@ -139,18 +142,33 @@ class StateManager:
         """Returns just the display labels of all defined channels."""
         return [ch["label"] for ch in self.get_channel_defs()]
 
-    def get_label_by_slug(self, slug: str, default: str) -> str:
+    def get_slug_by_label(self, label: str) -> Optional[str]:
+        """Finds internal slug for a given display label."""
+        for ch in self.get_channel_defs():
+            if ch.get("label") == label:
+                return ch.get("slug")
+        return None
+
+    def get_label_by_slug(self, slug: str, default: Optional[str] = None) -> str:
         """Finds display label for a specific system slug (e.g. 'lap', 'time', 'distance')."""
         for ch in self.get_channel_defs():
             if ch.get("slug") == slug:
                 return ch["label"]
-        return default
+        if default is not None:
+            return default
+        if slug == SLUG_LAP:
+            return STD_CHANNEL_LAP
+        elif slug == SLUG_TIME:
+            return STD_CHANNEL_TIME
+        elif slug == SLUG_DISTANCE:
+            return STD_CHANNEL_DISTANCE
+        return slug
 
     def get_lap_label(self) -> str:
-        return self.get_label_by_slug("lap", STD_CHANNEL_LAP)
+        return self.get_label_by_slug(SLUG_LAP, STD_CHANNEL_LAP)
 
     def get_time_label(self) -> str:
-        return self.get_label_by_slug("time", STD_CHANNEL_TIME)
+        return self.get_label_by_slug(SLUG_TIME, STD_CHANNEL_TIME)
 
     def get_distance_label(self) -> str:
-        return self.get_label_by_slug("distance", STD_CHANNEL_DISTANCE)
+        return self.get_label_by_slug(SLUG_DISTANCE, STD_CHANNEL_DISTANCE)

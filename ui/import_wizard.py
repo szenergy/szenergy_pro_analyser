@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from core.state_manager import StateManager, generate_slug
+from utils.constants import SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
 
 
 class PresetPreviewDialog(QDialog):
@@ -342,15 +343,22 @@ class ImportWizardDialog(QDialog):
         mapping = self._get_current_mapping()
         mapped_targets = list(mapping.values())
 
+        # Resolve slugs for all mapped targets
+        mapped_slugs = set()
+        for t in mapped_targets:
+            slug = self.state_manager.get_slug_by_label(t) or generate_slug(t)
+            mapped_slugs.add(slug)
+
         lap_label = self.state_manager.get_lap_label()
         time_label = self.state_manager.get_time_label()
         dist_label = self.state_manager.get_distance_label()
 
-        if lap_label not in mapped_targets:
+        if SLUG_LAP not in mapped_slugs and lap_label not in mapped_targets:
             QMessageBox.critical(self, "Validation Error", f"You must map at least one channel to '{lap_label}'.")
             return
 
-        if time_label not in mapped_targets and dist_label not in mapped_targets:
+        if (SLUG_TIME not in mapped_slugs and SLUG_DISTANCE not in mapped_slugs and
+                time_label not in mapped_targets and dist_label not in mapped_targets):
             QMessageBox.critical(
                 self, "Validation Error",
                 f"You must map an X-Axis channel (either '{time_label}' or '{dist_label}')."

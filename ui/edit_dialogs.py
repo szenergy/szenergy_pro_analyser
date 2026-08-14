@@ -15,9 +15,12 @@ from PySide6.QtGui import QColor, QPixmap, QIcon
 
 from core.data_models import Session
 from core.state_manager import StateManager, generate_slug
+from utils.constants import (
+    STANDARD_SLUGS, SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
+)
 
 
-SYSTEM_REQUIRED_SLUGS = ["lap", "time", "distance"]
+SYSTEM_REQUIRED_SLUGS = list(STANDARD_SLUGS)
 
 
 class PresetManagerDialog(QDialog):

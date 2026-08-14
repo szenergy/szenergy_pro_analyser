@@ -19,7 +19,8 @@ class TestDataModels(unittest.TestCase):
             lap_number=1,
             duration=65.4,
             distance=1200.0,
-            data=data
+            data=data,
+            slug_to_channel={"time": "Time", "speed": "Speed"}
         )
 
         self.assertEqual(lap.session_id, "session_1")
@@ -27,6 +28,9 @@ class TestDataModels(unittest.TestCase):
         self.assertEqual(lap.duration, 65.4)
         self.assertEqual(lap.distance, 1200.0)
         np.testing.assert_array_equal(lap.get_channel("Speed"), np.array([20.0, 25.0, 30.0]))
+        # Test slug-based access
+        np.testing.assert_array_equal(lap.get_channel("speed"), np.array([20.0, 25.0, 30.0]))
+        np.testing.assert_array_equal(lap.get_channel_by_slug("time"), np.array([0.0, 0.1, 0.2]))
         self.assertIsNone(lap.get_channel("NonExistent"))
 
     def test_session_lap_lookup(self):

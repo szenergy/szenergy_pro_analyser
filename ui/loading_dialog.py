@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
 
 from core.file_parser import parse_session, get_file_columns_and_preview
+from utils.constants import SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
 
 
 class FileParseWorker(QThread):
@@ -16,7 +17,9 @@ class FileParseWorker(QThread):
     error = Signal(str)
 
     def __init__(self, file_path: str, mapping: dict, session_id: str,
-                 lap_label: str, time_label: str, dist_label: str, parent=None):
+                 lap_label: str, time_label: str, dist_label: str,
+                 lap_slug: str = SLUG_LAP, time_slug: str = SLUG_TIME, dist_slug: str = SLUG_DISTANCE,
+                 parent=None):
         super().__init__(parent)
         self.file_path = file_path
         self.mapping = mapping
@@ -24,6 +27,9 @@ class FileParseWorker(QThread):
         self.lap_label = lap_label
         self.time_label = time_label
         self.dist_label = dist_label
+        self.lap_slug = lap_slug
+        self.time_slug = time_slug
+        self.dist_slug = dist_slug
 
     def run(self):
         try:
@@ -33,7 +39,10 @@ class FileParseWorker(QThread):
                 self.session_id,
                 self.lap_label,
                 self.time_label,
-                self.dist_label
+                self.dist_label,
+                self.lap_slug,
+                self.time_slug,
+                self.dist_slug
             )
             if not self.isInterruptionRequested():
                 self.success.emit(session)

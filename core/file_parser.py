@@ -12,7 +12,10 @@ from nptdms import TdmsFile
 
 from core.data_models import Session, Lap
 from core.state_manager import generate_slug
-from utils.constants import STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
+from utils.constants import (
+    STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE,
+    SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
+)
 
 
 def _read_csv_with_fallback(file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
@@ -190,7 +193,10 @@ def load_full_dataframe(file_path: str) -> pd.DataFrame:
 def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
                   lap_label: str = STD_CHANNEL_LAP,
                   time_label: str = STD_CHANNEL_TIME,
-                  dist_label: str = STD_CHANNEL_DISTANCE) -> Session:
+                  dist_label: str = STD_CHANNEL_DISTANCE,
+                  lap_slug: str = SLUG_LAP,
+                  time_slug: str = SLUG_TIME,
+                  dist_slug: str = SLUG_DISTANCE) -> Session:
     """
     Parses a log file using the provided column mapping dictionary (raw_col -> mapped_col).
     Splits data into Lap objects with numeric data coercion and safe lap time/distance calculations.
@@ -207,9 +213,22 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Resolve actual lap, time, and distance columns using configured labels or slug fallbacks
-    resolved_lap = _resolve_channel_column(list(df.columns), lap_label, STD_CHANNEL_LAP, "lap")
-    resolved_time = _resolve_channel_column(list(df.columns), time_label, STD_CHANNEL_TIME, "time", ["timestamp"])
-    resolved_dist = _resolve_channel_column(list(df.columns), dist_label, STD_CHANNEL_DISTANCE, "distance", ["dist"])
+    resolved_lap = _resolve_channel_column(list(df.columns), lap_label, STD_CHANNEL_LAP, lap_slug)
+    resolved_time = _resolve_channel_column(list(df.columns), time_label, STD_CHANNEL_TIME, time_slug, ["timestamp"])
+    resolved_dist = _resolve_channel_column(list(df.columns), dist_label, STD_CHANNEL_DISTANCE, dist_slug, ["dist"])
+
+    # Build slug to channel column mapping for fast lookups
+    slug_map: Dict[str, str] = {}
+    if resolved_lap:
+        slug_map[lap_slug] = str(resolved_lap)
+    if resolved_time:
+        slug_map[time_slug] = str(resolved_time)
+    if resolved_dist:
+        slug_map[dist_slug] = str(resolved_dist)
+    for col in df.columns:
+        c_slug = generate_slug(str(col))
+        if c_slug not in slug_map:
+            slug_map[c_slug] = str(col)
 
     session_name = os.path.basename(file_path)
     session = Session(
@@ -247,7 +266,8 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
             lap_number=1,
             duration=max(0.0, duration),
             distance=max(0.0, distance),
-            data=channel_data
+            data=channel_data,
+            slug_to_channel=slug_map
         )
         session.laps.append(single_lap)
         return session
@@ -293,7 +313,8 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
             lap_number=lap_num,
             duration=max(0.0, duration),
             distance=max(0.0, distance),
-            data=channel_data
+            data=channel_data,
+            slug_to_channel=slug_map
         )
         session.laps.append(lap_obj)
 
@@ -308,7 +329,8 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
             lap_number=1,
             duration=0.0,
             distance=0.0,
-            data=channel_data
+            data=channel_data,
+            slug_to_channel=slug_map
         ))
 
     return session

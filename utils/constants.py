@@ -6,12 +6,19 @@ APP_NAME = "SZenergy Pro Analyser"
 ORGANIZATION_NAME = "SZenergy"
 APP_VERSION = "1.0.0"
 
-# Standard / Reserved Internal Channel Names
+# Standard / Reserved Internal Channel Names (Default Display Labels)
 STD_CHANNEL_LAP = "Lap"
 STD_CHANNEL_TIME = "Time"
 STD_CHANNEL_DISTANCE = "Distance"
 
+# Standard / Reserved Internal Channel Slugs (Immutable Keys)
+SLUG_LAP = "lap"
+SLUG_TIME = "time"
+SLUG_DISTANCE = "distance"
+
 REQUIRED_CHANNELS = [STD_CHANNEL_LAP]
+REQUIRED_SLUGS = [SLUG_LAP]
+STANDARD_SLUGS = [SLUG_LAP, SLUG_TIME, SLUG_DISTANCE]
 
 # Pool of distinct colors for dynamic assignment to selected laps
 LAP_COLORS = [
