@@ -12,7 +12,7 @@ import pyqtgraph as pg
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QFrame, QPushButton, QMessageBox
 )
-from PySide6.QtCore import Qt, QSize, QPointF
+from PySide6.QtCore import Qt, QSize, QPointF, QTimer
 from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
 
 from core.data_models import Session, Lap
@@ -142,6 +142,46 @@ def create_icon_autorange(is_dark: bool) -> QIcon:
     return QIcon(pixmap)
 
 
+def _get_nearest_channel_sample(
+    raw_x: Optional[np.ndarray], raw_y: Optional[np.ndarray], x_val: float
+) -> Optional[Tuple[float, float]]:
+    """
+    Finds the exact nearest recorded data point (actual_x, actual_y) on the plotted curve
+    closest to x_val without any linear interpolation.
+    """
+    if raw_x is None or raw_y is None or len(raw_x) == 0 or len(raw_y) == 0:
+        return None
+
+    min_len = min(len(raw_x), len(raw_y))
+    x_arr = np.asarray(raw_x[:min_len], dtype=float)
+    y_arr = np.asarray(raw_y[:min_len], dtype=float)
+
+    if np.isnan(x_arr[0]):
+        valid_x0_indices = np.where(~np.isnan(x_arr))[0]
+        if len(valid_x0_indices) == 0:
+            return None
+        x0 = x_arr[valid_x0_indices[0]]
+    else:
+        x0 = x_arr[0]
+
+    x_norm = x_arr - x0
+
+    valid_mask = ~(np.isnan(x_norm) | np.isnan(y_arr) | np.isinf(x_norm) | np.isinf(y_arr))
+    if not np.any(valid_mask):
+        return None
+
+    valid_x = x_norm[valid_mask]
+    valid_y = y_arr[valid_mask]
+
+    # Bounds check: ensure cursor is within the lap's actual range
+    if x_val < valid_x.min() or x_val > valid_x.max():
+        return None
+
+    # Snap to nearest actual recorded telemetry point on the curve
+    nearest_idx = int(np.argmin(np.abs(valid_x - x_val)))
+    return float(valid_x[nearest_idx]), float(valid_y[nearest_idx])
+
+
 class GraphViewWidget(QWidget):
     """Main plotting area with vertically stacked charts, toolbar toggles, and on-graph value readouts."""
 
@@ -241,7 +281,7 @@ class GraphViewWidget(QWidget):
         # 7. X-Axis Selector
         c_layout.addWidget(QLabel("<b>X-Axis:</b>"))
         self.x_axis_combo = QComboBox()
-        self.x_axis_combo.addItems([self.dist_label, self.time_label])
+        self.x_axis_combo.addItems([self.time_label, self.dist_label])
         self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
         c_layout.addWidget(self.x_axis_combo)
 
@@ -268,24 +308,31 @@ class GraphViewWidget(QWidget):
         margin = 18
         spacing = 6 * (n - 1)
         total_h = self.glw.height() - margin - spacing
-        if total_h <= 0:
+        if total_h <= h_axis:
             return
 
-        h_plot = (total_h - (h_axis if n > 1 else 0)) / n
+        h_plot = (total_h - h_axis) / n
         for i in range(n):
-            if i == n - 1 and n > 1:
-                self.glw.ci.layout.setRowFixedHeight(i, h_plot + h_axis)
+            if i == n - 1:
+                self.glw.ci.layout.setRowFixedHeight(i, int(h_plot + h_axis))
             else:
-                self.glw.ci.layout.setRowFixedHeight(i, h_plot)
+                self.glw.ci.layout.setRowFixedHeight(i, int(h_plot))
 
     def set_x_axis_labels(self, time_label: str, dist_label: str):
-        """Updates X-Axis options based on configured standard labels."""
+        """Updates X-Axis options based on configured standard labels, preserving user selection."""
+        was_distance = (self.x_axis_channel == self.dist_label)
+
         self.time_label = time_label
         self.dist_label = dist_label
+
+        target_selection = self.dist_label if was_distance else self.time_label
 
         self.x_axis_combo.blockSignals(True)
         self.x_axis_combo.clear()
         self.x_axis_combo.addItems([self.time_label, self.dist_label])
+        idx = self.x_axis_combo.findText(target_selection)
+        if idx >= 0:
+            self.x_axis_combo.setCurrentIndex(idx)
         self.x_axis_combo.blockSignals(False)
 
         self.x_axis_channel = self.x_axis_combo.currentText()
@@ -317,6 +364,10 @@ class GraphViewWidget(QWidget):
 
     def set_sessions(self, sessions: Dict[str, Session]):
         self.sessions = sessions
+        # Clean up stale custom lap labels for sessions that no longer exist
+        stale_keys = [key for key in self.custom_lap_labels if key[0] not in sessions]
+        for key in stale_keys:
+            del self.custom_lap_labels[key]
         self.rebuild_plots()
 
     def set_selected_channels(self, channels: Set[str]):
@@ -418,6 +469,15 @@ class GraphViewWidget(QWidget):
                 else:
                     self.legend.setBrush(pg.mkBrush(245, 245, 245, 220))
                     self.legend.setPen(pg.mkPen(200, 200, 200))
+
+                # Populate the shared legend for ALL selected laps across all loaded sessions
+                for session_id, lap_num, color in self.selected_laps_info:
+                    session = self.sessions.get(session_id)
+                    session_name = session.name if session else session_id
+                    default_name = f"{session_name} L{lap_num}"
+                    curve_name = self.custom_lap_labels.get((session_id, lap_num), default_name)
+                    sample_curve = pg.PlotDataItem(pen=pg.mkPen(color=color, width=2.5))
+                    self.legend.addItem(sample_curve, curve_name)
             else:
                 plot.setXLink(first_plot)
 
@@ -472,16 +532,9 @@ class GraphViewWidget(QWidget):
                     plot.addItem(dot, ignoreBounds=True)
                     self.tracking_dots.append((dot, session_id, lap_num, channel_name))
 
-                    # Populate the single shared legend using the first row curves
-                    if row == 0 and self.legend is not None:
-                        default_name = f"{session.name} L{lap.lap_number}"
-                        curve_name = self.custom_lap_labels.get((session_id, lap.lap_number), default_name)
-                        self.legend.addItem(curve, curve_name)
-
-            plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
-            plot.autoRange()
-
         self._update_row_heights()
+        self._on_autorange()
+        QTimer.singleShot(0, self._on_autorange)
 
     def _on_mouse_moved(self, evt):
         if not self.plot_widgets or not self.show_cursor_values:
@@ -497,7 +550,7 @@ class GraphViewWidget(QWidget):
 
         title_color = "#E0E0E0" if self.is_dark else "#202020"
 
-        # Update tracking dots position on every curve
+        # Update tracking dots position on every curve (snapping directly to nearest actual curve vertex)
         for dot, session_id, lap_num, channel_name in self.tracking_dots:
             session = self.sessions.get(session_id)
             if not session:
@@ -511,14 +564,11 @@ class GraphViewWidget(QWidget):
             raw_x = lap.get_channel(self.x_axis_channel)
             raw_y = lap.get_channel(channel_name)
 
-            if raw_x is not None and raw_y is not None and len(raw_x) > 1:
-                norm_x = raw_x - raw_x[0]
-                if norm_x[0] <= x_val <= norm_x[-1]:
-                    y_val = float(np.interp(x_val, norm_x, raw_y))
-                    dot.setData(x=[x_val], y=[y_val])
-                    dot.setVisible(True)
-                else:
-                    dot.setData(x=[], y=[])
+            sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+            if sample is not None:
+                actual_x, actual_y = sample
+                dot.setData(x=[actual_x], y=[actual_y])
+                dot.setVisible(True)
             else:
                 dot.setData(x=[], y=[])
 
@@ -537,10 +587,9 @@ class GraphViewWidget(QWidget):
                 raw_x = lap.get_channel(self.x_axis_channel)
                 raw_y = lap.get_channel(channel_name)
 
-                if raw_x is not None and raw_y is not None and len(raw_x) > 1:
-                    norm_x = raw_x - raw_x[0]
-                    if norm_x[0] <= x_val <= norm_x[-1]:
-                        y_val = float(np.interp(x_val, norm_x, raw_y))
-                        title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{y_val:.2f}</span>")
+                sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+                if sample is not None:
+                    _, actual_y = sample
+                    title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{actual_y:.2f}</span>")
 
             plot.setTitle(" &nbsp;&nbsp;&nbsp; ".join(title_parts), justify='left')

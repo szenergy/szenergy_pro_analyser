@@ -11,6 +11,7 @@ import pandas as pd
 from nptdms import TdmsFile
 
 from core.data_models import Session, Lap
+from core.state_manager import generate_slug
 from utils.constants import STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
 
 
@@ -35,6 +36,59 @@ def _read_csv_with_fallback(file_path: str, nrows: Optional[int] = None) -> pd.D
     raise ValueError(f"Unable to read CSV file '{file_path}' with supported encodings.")
 
 
+def _resolve_channel_column(
+    columns: List[str],
+    configured_label: Optional[str],
+    standard_label: str,
+    target_slug: str,
+    extra_slugs: Optional[List[str]] = None
+) -> Optional[str]:
+    """
+    Resolves a column from available dataframe columns using:
+    1. Exact match against configured custom label.
+    2. Exact match against standard channel name (e.g. 'Lap', 'Time', 'Distance').
+    3. Case-insensitive match against configured or standard channel name.
+    4. Slug/fallback matching against target slug or aliases.
+    """
+    if not columns:
+        return None
+
+    # 1. Exact match with configured label
+    if configured_label and configured_label in columns:
+        return configured_label
+
+    # 2. Exact match with standard label
+    if standard_label in columns:
+        return standard_label
+
+    # 3. Case-insensitive match with configured label
+    if configured_label:
+        cfg_lower = configured_label.strip().lower()
+        for col in columns:
+            if col.strip().lower() == cfg_lower:
+                return col
+
+    # 4. Case-insensitive match with standard label
+    std_lower = standard_label.strip().lower()
+    for col in columns:
+        if col.strip().lower() == std_lower:
+            return col
+
+    # 5. Slug-based matching
+    target_slugs = {target_slug}
+    if configured_label:
+        target_slugs.add(generate_slug(configured_label))
+    target_slugs.add(generate_slug(standard_label))
+    if extra_slugs:
+        target_slugs.update(extra_slugs)
+
+    for col in columns:
+        if generate_slug(col) in target_slugs:
+            return col
+
+    return None
+
+
 def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFrame]:
     """
     Inspects a telemetry file and returns its raw column headers and a preview DataFrame (first 5 rows).
@@ -47,37 +101,37 @@ def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFram
         return list(df_preview.columns), df_preview
 
     elif ext in [".xlsx", ".xls"]:
-        excel_file = pd.ExcelFile(file_path)
-        # Select best sheet: 'Data', 'Telemetry', or first sheet
-        target_sheet = excel_file.sheet_names[0]
-        for s in excel_file.sheet_names:
-            if s.lower() in ["data", "telemetry", "log", "channels"]:
-                target_sheet = s
-                break
+        with pd.ExcelFile(file_path) as excel_file:
+            # Select best sheet: 'Data', 'Telemetry', or first sheet
+            target_sheet = excel_file.sheet_names[0]
+            for s in excel_file.sheet_names:
+                if s.lower() in ["data", "telemetry", "log", "channels"]:
+                    target_sheet = s
+                    break
 
-        df_preview = pd.read_excel(file_path, sheet_name=target_sheet, nrows=5)
-        return [str(c) for c in df_preview.columns], df_preview
+            df_preview = pd.read_excel(excel_file, sheet_name=target_sheet, nrows=5)
+            return [str(c) for c in df_preview.columns], df_preview
 
     elif ext == ".tdms":
-        tdms = TdmsFile.read(file_path)
-        all_channels = []
-        data_dict = {}
-        max_rows = 5
+        with TdmsFile.open(file_path) as tdms:
+            all_channels = []
+            data_dict = {}
+            max_rows = 5
 
-        for group in tdms.groups():
-            for channel in group.channels():
-                chan_name = f"{group.name}/{channel.name}"
-                all_channels.append(chan_name)
-                slice_data = channel[:max_rows]
-                data_dict[chan_name] = list(slice_data)
+            for group in tdms.groups():
+                for channel in group.channels():
+                    chan_name = f"{group.name}/{channel.name}"
+                    all_channels.append(chan_name)
+                    slice_data = channel[:max_rows]
+                    data_dict[chan_name] = list(slice_data)
 
-        # Pad unequal preview lengths with None to allow DataFrame creation
-        for chan_name, vals in data_dict.items():
-            if len(vals) < max_rows:
-                vals.extend([None] * (max_rows - len(vals)))
+            # Pad unequal preview lengths with None to allow DataFrame creation
+            for chan_name, vals in data_dict.items():
+                if len(vals) < max_rows:
+                    vals.extend([None] * (max_rows - len(vals)))
 
-        df_preview = pd.DataFrame(data_dict)
-        return all_channels, df_preview
+            df_preview = pd.DataFrame(data_dict)
+            return all_channels, df_preview
 
     else:
         raise ValueError(f"Unsupported file format: {ext}")
@@ -91,43 +145,43 @@ def load_full_dataframe(file_path: str) -> pd.DataFrame:
         return _read_csv_with_fallback(file_path)
 
     elif ext in [".xlsx", ".xls"]:
-        excel_file = pd.ExcelFile(file_path)
-        target_sheet = excel_file.sheet_names[0]
-        for s in excel_file.sheet_names:
-            if s.lower() in ["data", "telemetry", "log", "channels"]:
-                target_sheet = s
-                break
-        return pd.read_excel(file_path, sheet_name=target_sheet)
+        with pd.ExcelFile(file_path) as excel_file:
+            target_sheet = excel_file.sheet_names[0]
+            for s in excel_file.sheet_names:
+                if s.lower() in ["data", "telemetry", "log", "channels"]:
+                    target_sheet = s
+                    break
+            return pd.read_excel(excel_file, sheet_name=target_sheet)
 
     elif ext == ".tdms":
-        tdms = TdmsFile.read(file_path)
-        data_dict = {}
-        max_len = 0
+        with TdmsFile.read(file_path) as tdms:
+            data_dict = {}
+            max_len = 0
 
-        for group in tdms.groups():
-            for channel in group.channels():
-                chan_name = f"{group.name}/{channel.name}"
-                arr = channel[:]
-                data_dict[chan_name] = arr
-                if len(arr) > max_len:
-                    max_len = len(arr)
+            for group in tdms.groups():
+                for channel in group.channels():
+                    chan_name = f"{group.name}/{channel.name}"
+                    arr = channel[:]
+                    data_dict[chan_name] = arr
+                    if len(arr) > max_len:
+                        max_len = len(arr)
 
-        # Handle multi-rate TDMS channels: pad shorter arrays with NaN to max_len
-        padded_dict = {}
-        for chan_name, arr in data_dict.items():
-            if len(arr) < max_len:
-                if np.issubdtype(arr.dtype, np.number):
-                    padded = np.full(max_len, np.nan, dtype=float)
-                    padded[:len(arr)] = arr
-                    padded_dict[chan_name] = padded
+            # Handle multi-rate TDMS channels: pad shorter arrays with NaN to max_len
+            padded_dict = {}
+            for chan_name, arr in data_dict.items():
+                if len(arr) < max_len:
+                    if np.issubdtype(arr.dtype, np.number):
+                        padded = np.full(max_len, np.nan, dtype=float)
+                        padded[:len(arr)] = arr
+                        padded_dict[chan_name] = padded
+                    else:
+                        padded_obj = np.empty(max_len, dtype=object)
+                        padded_obj[:len(arr)] = arr
+                        padded_dict[chan_name] = padded_obj
                 else:
-                    padded_obj = np.empty(max_len, dtype=object)
-                    padded_obj[:len(arr)] = arr
-                    padded_dict[chan_name] = padded_obj
-            else:
-                padded_dict[chan_name] = arr
+                    padded_dict[chan_name] = arr
 
-        return pd.DataFrame(padded_dict)
+            return pd.DataFrame(padded_dict)
 
     else:
         raise ValueError(f"Unsupported file format: {ext}")
@@ -140,6 +194,7 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
     """
     Parses a log file using the provided column mapping dictionary (raw_col -> mapped_col).
     Splits data into Lap objects with numeric data coercion and safe lap time/distance calculations.
+    Preserves NaN values for multi-rate channels and missing telemetry samples.
     """
     df = load_full_dataframe(file_path)
 
@@ -147,16 +202,21 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
     valid_mapping = {raw: mapped for raw, mapped in mapping.items() if raw in df.columns}
     df = df[list(valid_mapping.keys())].rename(columns=valid_mapping)
 
-    # Coerce all mapped columns to numeric (except if impossible, where errors become NaN)
+    # Coerce all mapped columns to numeric (non-numeric values become NaN)
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Resolve actual lap, time, and distance columns using configured labels or slug fallbacks
+    resolved_lap = _resolve_channel_column(list(df.columns), lap_label, STD_CHANNEL_LAP, "lap")
+    resolved_time = _resolve_channel_column(list(df.columns), time_label, STD_CHANNEL_TIME, "time", ["timestamp"])
+    resolved_dist = _resolve_channel_column(list(df.columns), dist_label, STD_CHANNEL_DISTANCE, "distance", ["dist"])
 
     session_name = os.path.basename(file_path)
     session = Session(
         id=session_id,
         name=session_name,
         file_path=file_path,
-        channels=[str(col) for col in df.columns if col != lap_label],
+        channels=[str(col) for col in df.columns if col != resolved_lap],
         raw_df=None  # Do not retain full duplicate raw dataframe to save memory
     )
 
@@ -164,22 +224,22 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         return session
 
     # If no Lap column exists in mapped data, treat the entire log as Lap 1
-    if lap_label not in df.columns:
+    if resolved_lap is None or resolved_lap not in df.columns:
         lap_df = df
         duration = 0.0
         distance = 0.0
 
-        if time_label in lap_df.columns:
-            valid_time = lap_df[time_label].dropna()
+        if resolved_time and resolved_time in lap_df.columns:
+            valid_time = lap_df[resolved_time].dropna()
             if len(valid_time) >= 2:
                 duration = float(valid_time.iloc[-1] - valid_time.iloc[0])
-        if dist_label in lap_df.columns:
-            valid_dist = lap_df[dist_label].dropna()
+        if resolved_dist and resolved_dist in lap_df.columns:
+            valid_dist = lap_df[resolved_dist].dropna()
             if len(valid_dist) >= 2:
                 distance = float(valid_dist.iloc[-1] - valid_dist.iloc[0])
 
         channel_data = {
-            col: np.nan_to_num(lap_df[col].to_numpy(dtype=float, copy=True), nan=0.0)
+            col: lap_df[col].to_numpy(dtype=float, copy=True)
             for col in lap_df.columns
         }
         single_lap = Lap(
@@ -193,7 +253,7 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         return session
 
     # Split by lap numbers
-    lap_series = df[lap_label].dropna()
+    lap_series = df[resolved_lap].dropna()
     unique_laps = lap_series.unique()
 
     # Sort laps numerically
@@ -208,24 +268,24 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         except (ValueError, TypeError):
             continue
 
-        lap_df = df[df[lap_label] == lap_val]
+        lap_df = df[df[resolved_lap] == lap_val]
         if lap_df.empty:
             continue
 
         duration = 0.0
         distance = 0.0
-        if time_label in lap_df.columns:
-            valid_time = lap_df[time_label].dropna()
+        if resolved_time and resolved_time in lap_df.columns:
+            valid_time = lap_df[resolved_time].dropna()
             if len(valid_time) >= 2:
                 duration = float(valid_time.iloc[-1] - valid_time.iloc[0])
-        if dist_label in lap_df.columns:
-            valid_dist = lap_df[dist_label].dropna()
+        if resolved_dist and resolved_dist in lap_df.columns:
+            valid_dist = lap_df[resolved_dist].dropna()
             if len(valid_dist) >= 2:
                 distance = float(valid_dist.iloc[-1] - valid_dist.iloc[0])
 
         channel_data = {
-            col: np.nan_to_num(lap_df[col].to_numpy(dtype=float, copy=True), nan=0.0)
-            for col in lap_df.columns if col != lap_label
+            col: lap_df[col].to_numpy(dtype=float, copy=True)
+            for col in lap_df.columns if col != resolved_lap
         }
 
         lap_obj = Lap(
@@ -240,8 +300,8 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
     # Fallback if no valid laps were parsed despite having lap column
     if not session.laps:
         channel_data = {
-            col: np.nan_to_num(df[col].to_numpy(dtype=float, copy=True), nan=0.0)
-            for col in df.columns if col != lap_label
+            col: df[col].to_numpy(dtype=float, copy=True)
+            for col in df.columns if col != resolved_lap
         }
         session.laps.append(Lap(
             session_id=session_id,

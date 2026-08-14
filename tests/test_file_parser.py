@@ -158,6 +158,115 @@ class TestFileParser(unittest.TestCase):
             session = parse_session(ni_tdms, mapping, "s_ni")
             self.assertEqual(len(session.laps), 2)
 
+    def test_nan_preservation_in_telemetry_curves(self):
+        """Validates that NaN values in telemetry channels are preserved rather than coerced to 0.0."""
+        nan_csv_path = os.path.join(self.temp_dir.name, "nan_test.csv")
+        df_nan = pd.DataFrame({
+            "Lap": [1, 1, 1],
+            "Time": [0.0, 1.0, 2.0],
+            "Distance": [0.0, 10.0, 20.0],
+            "SensorA": [10.5, np.nan, 25.0],
+            "SensorB": ["1.2", "invalid_text", "3.4"]
+        })
+        df_nan.to_csv(nan_csv_path, index=False)
+
+        mapping = {
+            "Lap": "Lap",
+            "Time": "Time",
+            "Distance": "Distance",
+            "SensorA": "SensorA",
+            "SensorB": "SensorB"
+        }
+        session = parse_session(nan_csv_path, mapping, "sess_nan")
+        lap1 = session.get_lap(1)
+        self.assertIsNotNone(lap1)
+
+        sensor_a = lap1.get_channel("SensorA")
+        self.assertEqual(len(sensor_a), 3)
+        self.assertEqual(sensor_a[0], 10.5)
+        self.assertTrue(np.isnan(sensor_a[1]), "Missing value must remain np.nan, not 0.0")
+        self.assertEqual(sensor_a[2], 25.0)
+
+        sensor_b = lap1.get_channel("SensorB")
+        self.assertEqual(len(sensor_b), 3)
+        self.assertAlmostEqual(sensor_b[0], 1.2)
+        self.assertTrue(np.isnan(sensor_b[1]), "Non-numeric string must become np.nan, not 0.0")
+        self.assertAlmostEqual(sensor_b[2], 3.4)
+
+    def test_multi_rate_tdms_nan_preservation_in_laps(self):
+        """Validates that multi-rate channels padded with NaN preserve NaN in Lap channel data."""
+        mapping = {
+            "Sensors/GPS_Speed": "Speed",
+            "Sensors/Accel_X": "Accel_X"
+        }
+        session = parse_session(self.unequal_tdms_path, mapping, "sess_unequal")
+        self.assertEqual(len(session.laps), 1)
+        lap1 = session.get_lap(1)
+        speed = lap1.get_channel("Speed")
+        self.assertEqual(len(speed), 6)
+        self.assertEqual(speed[0], 10.0)
+        self.assertEqual(speed[1], 12.0)
+        self.assertTrue(np.isnan(speed[2]))
+        self.assertTrue(np.isnan(speed[5]))
+
+    def test_slug_and_fallback_label_resolution(self):
+        """Tests custom label, standard fallback, and slug resolution for Lap, Time, and Distance."""
+        custom_csv_path = os.path.join(self.temp_dir.name, "custom_labels.csv")
+        df_custom = pd.DataFrame({
+            "kor_szam": [1, 1, 2, 2],
+            "ido": [0.0, 5.0, 10.0, 15.0],
+            "tavolsag": [0.0, 50.0, 100.0, 150.0],
+            "sebesseg": [20.0, 25.0, 30.0, 35.0]
+        })
+        df_custom.to_csv(custom_csv_path, index=False)
+
+        # 1. Hungarian custom configured labels
+        mapping_hu = {
+            "kor_szam": "Kör",
+            "ido": "Idő",
+            "tavolsag": "Távolság",
+            "sebesseg": "Sebesség"
+        }
+        session_hu = parse_session(
+            custom_csv_path, mapping_hu, "sess_hu",
+            lap_label="Kör", time_label="Idő", dist_label="Távolság"
+        )
+        self.assertEqual(len(session_hu.laps), 2)
+        lap1 = session_hu.get_lap(1)
+        self.assertEqual(lap1.duration, 5.0)
+        self.assertEqual(lap1.distance, 50.0)
+
+        # 2. Configured label mismatch fallback to standard / slug
+        mapping_std = {
+            "kor_szam": "Lap",
+            "ido": "Time",
+            "tavolsag": "Distance",
+            "sebesseg": "Speed"
+        }
+        # lap_label passed as custom "Kör", but mapped to standard "Lap"
+        session_fallback = parse_session(
+            custom_csv_path, mapping_std, "sess_fb",
+            lap_label="Kör", time_label="Idő", dist_label="Távolság"
+        )
+        self.assertEqual(len(session_fallback.laps), 2)
+        self.assertEqual(session_fallback.get_lap(1).duration, 5.0)
+        self.assertEqual(session_fallback.get_lap(1).distance, 50.0)
+
+        # 3. Slug matching (e.g. 'timestamp' or 'dist')
+        mapping_slugs = {
+            "kor_szam": "Lap_Number",
+            "ido": "timestamp",
+            "tavolsag": "dist",
+            "sebesseg": "Speed"
+        }
+        session_slugs = parse_session(
+            custom_csv_path, mapping_slugs, "sess_slugs",
+            lap_label="Lap Number", time_label="time", dist_label="distance"
+        )
+        self.assertEqual(len(session_slugs.laps), 2)
+        self.assertEqual(session_slugs.get_lap(1).duration, 5.0)
+        self.assertEqual(session_slugs.get_lap(1).distance, 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()

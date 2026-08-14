@@ -164,15 +164,14 @@ class SidebarWidget(QWidget):
 
     def _select_all_session_laps(self, session_item: QTreeWidgetItem, select: bool):
         max_laps = len(LAP_COLORS)
+        self.session_tree.blockSignals(True)
         for i in range(session_item.childCount()):
             child = session_item.child(i)
             if select and len(self.session_tree.selectedItems()) >= max_laps:
-                QMessageBox.warning(
-                    self, "Limit Reached",
-                    f"You can select a maximum of {max_laps} laps simultaneously."
-                )
                 break
             child.setSelected(select)
+        self.session_tree.blockSignals(False)
+        self._on_lap_selection_changed()
 
     def add_session(self, session: Session):
         """Adds a session to the sidebar tree without selecting any laps by default."""
@@ -189,8 +188,6 @@ class SidebarWidget(QWidget):
             lap_item.setText(1, format_lap_time(lap.duration))
             lap_item.setIcon(0, create_empty_icon())
             lap_item.setData(0, Qt.UserRole, ("lap", session.id, lap.lap_number))
-
-        self.session_tree.clearSelection()
         self.update_available_channels()
 
     def remove_session(self, session_id: str):
@@ -231,13 +228,18 @@ class SidebarWidget(QWidget):
         for session in self.sessions.values():
             all_channels.update(session.channels)
 
+        # Retain valid previously selected channels
+        self.selected_channels = self.selected_channels.intersection(all_channels)
+
         for channel_name in sorted(all_channels):
             item = QTreeWidgetItem(self.channel_tree)
             item.setText(0, channel_name)
+            if channel_name in self.selected_channels:
+                item.setSelected(True)
 
-        self.channel_tree.clearSelection()
         self.channel_tree.blockSignals(False)
         self._filter_channels(self.channel_search_input.text())
+        self.channels_selection_changed.emit(self.selected_channels)
 
     def _filter_channels(self, query: str):
         query = query.strip().lower()
@@ -250,11 +252,13 @@ class SidebarWidget(QWidget):
 
     def _on_lap_selection_changed(self):
         selected_items = self.session_tree.selectedItems()
+        lap_items: List[QTreeWidgetItem] = []
         currently_selected_laps: Set[Tuple[str, int]] = set()
 
         for item in selected_items:
             data = item.data(0, Qt.UserRole)
             if data and data[0] == "lap":
+                lap_items.append(item)
                 session_id, lap_num = data[1], data[2]
                 currently_selected_laps.add((session_id, lap_num))
 
@@ -262,19 +266,33 @@ class SidebarWidget(QWidget):
         max_laps = len(LAP_COLORS)
         if len(currently_selected_laps) > max_laps:
             self.session_tree.blockSignals(True)
-            for item in selected_items:
+            # Prioritize laps that already have allocated colors
+            kept_items = []
+            for item in lap_items:
                 data = item.data(0, Qt.UserRole)
-                if data and data[0] == "lap":
-                    key = (data[1], data[2])
-                    if key not in self.allocated_colors:
-                        item.setSelected(False)
-                        break
+                key = (data[1], data[2])
+                if key in self.allocated_colors and len(kept_items) < max_laps:
+                    kept_items.append(item)
+
+            for item in lap_items:
+                if len(kept_items) >= max_laps:
+                    break
+                if item not in kept_items:
+                    kept_items.append(item)
+
+            for item in lap_items:
+                if item not in kept_items:
+                    item.setSelected(False)
             self.session_tree.blockSignals(False)
+
             QMessageBox.warning(
                 self, "Limit Reached",
                 f"You can select a maximum of {max_laps} laps simultaneously for comparison."
             )
-            return
+            currently_selected_laps = set(
+                (item.data(0, Qt.UserRole)[1], item.data(0, Qt.UserRole)[2])
+                for item in kept_items
+            )
 
         # Reclaim deselected colors
         deselected = set(self.allocated_colors.keys()) - currently_selected_laps
@@ -307,10 +325,10 @@ class SidebarWidget(QWidget):
                     else:
                         child.setIcon(0, create_empty_icon())
 
-        result = [
+        result = sorted([
             (session_id, lap_num, color)
             for (session_id, lap_num), color in self.allocated_colors.items()
-        ]
+        ], key=lambda x: (x[0], x[1]))
         self.laps_selection_changed.emit(result)
 
     def _on_channel_selection_changed(self):
@@ -319,13 +337,20 @@ class SidebarWidget(QWidget):
         # Limit maximum channels selectable to 6
         if len(selected_items) > 6:
             self.channel_tree.blockSignals(True)
+            # Prioritize already selected channels
+            kept_items = [item for item in selected_items if item.text(0) in self.selected_channels]
             for item in selected_items:
-                if item.text(0) not in self.selected_channels:
-                    item.setSelected(False)
+                if len(kept_items) >= 6:
                     break
+                if item not in kept_items:
+                    kept_items.append(item)
+
+            for item in selected_items:
+                if item not in kept_items:
+                    item.setSelected(False)
             self.channel_tree.blockSignals(False)
             QMessageBox.warning(self, "Limit Reached", "You can select a maximum of 6 channels simultaneously.")
-            return
+            selected_items = kept_items
 
         self.selected_channels = set(item.text(0) for item in selected_items)
         self.channels_selection_changed.emit(self.selected_channels)

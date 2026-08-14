@@ -30,7 +30,6 @@ class PresetManagerDialog(QDialog):
         self.state_manager = state_manager
 
         self.current_preset_name: str = ""
-        self.combos: List[QComboBox] = []
 
         self._init_ui()
         self.load_preset_list()
@@ -118,7 +117,6 @@ class PresetManagerDialog(QDialog):
         """Safely clears table items and all cell widgets to prevent floating orphaned widgets."""
         self.table.clearContents()
         self.table.setRowCount(0)
-        self.combos.clear()
 
     def load_preset_list(self):
         self.preset_list.blockSignals(True)
@@ -168,7 +166,6 @@ class PresetManagerDialog(QDialog):
                 combo.setEditText(mapped_col)
 
             self.table.setCellWidget(row, 1, combo)
-            self.combos.append(combo)
 
     def _on_add_row(self):
         row = self.table.rowCount()
@@ -182,7 +179,6 @@ class PresetManagerDialog(QDialog):
         combo.setEditable(True)
         combo.addItems(target_options)
         self.table.setCellWidget(row, 1, combo)
-        self.combos.append(combo)
 
     def _on_remove_row(self):
         current_row = self.table.currentRow()
@@ -200,6 +196,29 @@ class PresetManagerDialog(QDialog):
                 if raw_col and mapped_target and mapped_target != "-- Skip --":
                     mapping[raw_col] = mapped_target
         return mapping
+
+    def _save_new_custom_channels(self, mapping: Dict[str, str]):
+        """Detects newly entered mapping target labels, adds them to standard channel defs, and saves them."""
+        existing_labels = self.state_manager.get_channel_labels()
+        existing_defs = self.state_manager.get_channel_defs()
+
+        updated = False
+        for raw, target in mapping.items():
+            if target not in existing_labels:
+                base_slug = generate_slug(target)
+                slug = base_slug
+                counter = 1
+                existing_slugs = [ch["slug"] for ch in existing_defs]
+                while slug in existing_slugs:
+                    slug = f"{base_slug}_{counter}"
+                    counter += 1
+
+                existing_defs.append({"label": target, "slug": slug})
+                existing_labels.append(target)
+                updated = True
+
+        if updated:
+            self.state_manager.save_channel_defs(existing_defs)
 
     def _on_save_preset(self):
         new_preset_name = self.preset_name_input.text().strip()
@@ -226,6 +245,7 @@ class PresetManagerDialog(QDialog):
         if self.current_preset_name and self.current_preset_name != new_preset_name:
             self.state_manager.delete_preset(self.current_preset_name)
 
+        self._save_new_custom_channels(mapping)
         self.state_manager.save_preset(new_preset_name, mapping)
         QMessageBox.information(self, "Saved", f"Preset '{new_preset_name}' saved successfully!")
 
@@ -390,6 +410,18 @@ class ChannelManagerDialog(QDialog):
             if self._is_label_exists(new_label, exclude_index=current_row):
                 QMessageBox.warning(self, "Duplicate Label", f"A channel with label '{new_label}' already exists.")
                 return
+
+            if ch["slug"] not in SYSTEM_REQUIRED_SLUGS:
+                base_slug = generate_slug(new_label)
+                slug = base_slug
+                counter = 1
+                existing_slugs = [
+                    other["slug"] for idx, other in enumerate(self.channels) if idx != current_row
+                ]
+                while slug in existing_slugs:
+                    slug = f"{base_slug}_{counter}"
+                    counter += 1
+                ch["slug"] = slug
 
             ch["label"] = new_label
             self.refresh_table()

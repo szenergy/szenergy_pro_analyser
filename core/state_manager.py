@@ -110,13 +110,21 @@ class StateManager:
                 data = json.load(f)
                 if isinstance(data, list):
                     converted = []
+                    migrated = False
                     for item in data:
                         if isinstance(item, dict) and "label" in item and "slug" in item:
                             converted.append(item)
                         elif isinstance(item, str):
                             converted.append({"label": item, "slug": generate_slug(item)})
+                            migrated = True
+                        elif isinstance(item, dict) and "label" in item:
+                            converted.append({"label": item["label"], "slug": generate_slug(item["label"])})
+                            migrated = True
+                        else:
+                            migrated = True
                     if converted:
-                        self.save_channel_defs(converted)
+                        if migrated or converted != data:
+                            self.save_channel_defs(converted)
                         return converted
                 return [dict(d) for d in DEFAULT_CHANNEL_DEFS]
         except Exception:

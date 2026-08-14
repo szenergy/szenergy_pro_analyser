@@ -140,11 +140,15 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.sessions.clear()
             self.sidebar.clear_all_sessions()
+            self.graph_view.custom_lap_labels.clear()
             self.graph_view.set_sessions(self.sessions)
 
     def _on_session_removed(self, session_id: str):
         if session_id in self.sessions:
             del self.sessions[session_id]
+        stale_keys = [k for k in self.graph_view.custom_lap_labels if k[0] == session_id]
+        for k in stale_keys:
+            del self.graph_view.custom_lap_labels[k]
         self.graph_view.set_sessions(self.sessions)
 
     def _on_open_file(self):

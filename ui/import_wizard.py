@@ -3,6 +3,8 @@ Dialog wizard for mapping raw log file channels to standard internal channel nam
 Also includes PresetPreviewDialog for inspecting detected presets before importing.
 """
 
+import re
+import unicodedata
 from typing import Dict, List, Optional, Set
 import pandas as pd
 from PySide6.QtWidgets import (
@@ -191,27 +193,85 @@ class ImportWizardDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _auto_guess_mapping(self, raw_col: str, already_used: Set[str]) -> Optional[str]:
-        name = raw_col.lower().replace("_", "").replace(" ", "")
-        
+        # Normalize accents and convert to lowercase
+        nfkd = unicodedata.normalize('NFKD', raw_col.strip())
+        norm = "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+        tokens = set(re.split(r'[^a-z0-9]+', norm))
+        clean = re.sub(r'[^a-z0-9]', '', norm)
+
+        # Dynamic label lookups from state_manager by slug
         lap_label = self.state_manager.get_lap_label()
         time_label = self.state_manager.get_time_label()
         dist_label = self.state_manager.get_distance_label()
+        speed_label = self.state_manager.get_label_by_slug("speed", "Speed")
+        rpm_label = self.state_manager.get_label_by_slug("rpm", "RPM")
+        volt_label = self.state_manager.get_label_by_slug("voltage", "Voltage")
+        curr_label = self.state_manager.get_label_by_slug("current", "Current")
+        throttle_label = self.state_manager.get_label_by_slug("throttle", "Throttle")
+        temp_label = self.state_manager.get_label_by_slug("temperature", "Temperature")
+        steer_label = self.state_manager.get_label_by_slug("steering_angle", "SteeringAngle")
+        power_label = self.state_manager.get_label_by_slug("power", "Power")
+        energy_label = self.state_manager.get_label_by_slug("energy", "Energy")
+        lat_label = self.state_manager.get_label_by_slug("gps_lat", "GPS_Lat")
+        lon_label = self.state_manager.get_label_by_slug("gps_lon", "GPS_Lon")
 
         candidates = []
-        if "lap" in name:
+
+        # 1. Lap: "lap", "lap_no", "kor", "round"
+        if bool(tokens & {"lap", "lapno", "round", "kor", "korszam"}) or "lap" in clean or "round" in clean or clean in ("kor", "korszam", "lapno"):
             candidates.append(lap_label)
-        if "time" in name or name == "t":
+
+        # 2. Time: "time", "timestamp", "ido", "sec", exact "t"
+        if clean == "t" or bool(tokens & {"time", "timestamp", "ido", "sec", "seconds"}) or "timestamp" in clean or "time" in clean:
             candidates.append(time_label)
-        if "dist" in name or name == "d" or "pos" in name:
+
+        # 3. Distance: "distance", "dist", "tavolsag", "pos", "position", "odo", exact "d"
+        if clean == "d" or bool(tokens & {"distance", "dist", "tavolsag", "pos", "position", "odo"}) or "distance" in clean or "dist" in clean or "tavolsag" in clean or "position" in clean or "odo" in clean:
             candidates.append(dist_label)
-        if "speed" in name or "velocity" in name or "spd" in name:
-            candidates.append("Speed")
-        if "rpm" in name:
-            candidates.append("RPM")
-        if "volt" in name or "v" in name:
-            candidates.append("Voltage")
-        if "curr" in name or "amp" in name or "a" in name:
-            candidates.append("Current")
+
+        # 4. Speed: "speed", "spd", "velocity", "vel", "sebesseg", "kmh", "kph", "mph"
+        if bool(tokens & {"speed", "spd", "velocity", "vel", "sebesseg", "kmh", "kph", "mph"}) or "speed" in clean or "velocity" in clean or "sebesseg" in clean or "kmh" in clean or "kph" in clean or "mph" in clean:
+            candidates.append(speed_label)
+
+        # 5. RPM: "rpm", "engine_rpm", "motor_rpm", "fordulat"
+        if bool(tokens & {"rpm", "enginerpm", "motorrpm", "fordulat"}) or "rpm" in clean or "fordulat" in clean:
+            candidates.append(rpm_label)
+
+        # 6. Voltage: "voltage", "volt", "batt_volt", "v_bat", exact "v"
+        if clean == "v" or bool(tokens & {"voltage", "volt", "battvolt", "vbat"}) or "voltage" in clean or "volt" in clean or "vbat" in clean or "battvolt" in clean or bool(re.search(r'\bv[_\s]?bat\b', norm)):
+            candidates.append(volt_label)
+
+        # 7. Current: "current", "curr", "amp", "batt_curr", "i_bat", exact "a", exact "i"
+        if clean in ("a", "i") or bool(tokens & {"current", "curr", "amp", "amps", "battcurr", "ibat"}) or "current" in clean or "curr" in clean or "ibat" in clean or "battcurr" in clean or bool(re.search(r'\bi[_\s]?bat\b', norm)):
+            candidates.append(curr_label)
+
+        # 8. Throttle: "throttle", "tps", "pedal", "accel_pedal", "gaz"
+        if bool(tokens & {"throttle", "tps", "pedal", "accelpedal", "gaz"}) or "throttle" in clean or "tps" in clean or "pedal" in clean or "gaz" in clean:
+            candidates.append(throttle_label)
+
+        # 9. Temperature: "temperature", "temp", "homerséklet", "degc"
+        if bool(tokens & {"temperature", "temp", "homerseklet", "degc"}) or "temperature" in clean or "temp" in clean or "homerseklet" in clean or "degc" in clean:
+            candidates.append(temp_label)
+
+        # 10. SteeringAngle: "steering", "steer", "kormanyszog"
+        if bool(tokens & {"steering", "steer", "kormanyszog"}) or "steering" in clean or "steer" in clean or "kormanyszog" in clean:
+            candidates.append(steer_label)
+
+        # 11. Power: "power", "watt", "kw"
+        if bool(tokens & {"power", "watt", "kw"}) or "power" in clean or "watt" in clean or "kw" in tokens:
+            candidates.append(power_label)
+
+        # 12. Energy: "energy", "wh", "kwh", "joule"
+        if bool(tokens & {"energy", "wh", "kwh", "joule"}) or "energy" in clean or "joule" in clean or "kwh" in tokens or "wh" in tokens:
+            candidates.append(energy_label)
+
+        # 13. GPS_Lat: "latitude", "gps_lat", "lat"
+        if bool(tokens & {"latitude", "gpslat", "lat"}) or "latitude" in clean or "gpslat" in clean or "lat" in tokens:
+            candidates.append(lat_label)
+
+        # 14. GPS_Lon: "longitude", "gps_lon", "lon", "long"
+        if bool(tokens & {"longitude", "gpslon", "lon", "long"}) or "longitude" in clean or "gpslon" in clean or "lon" in tokens:
+            candidates.append(lon_label)
 
         for cand in candidates:
             if cand not in already_used and cand in self.suggested_targets:
