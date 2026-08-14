@@ -1,12 +1,13 @@
 """
 Left Sidebar widget containing Session/Lap tree and Channels selection list.
 Supports drag multi-selection, row highlighting (no checkboxes), smooth scrolling, and dynamic color allocation.
+Limits selection to 6 channels and available color count for laps.
 """
 
 from typing import Dict, List, Set, Tuple
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QHeaderView, QAbstractItemView
+    QHeaderView, QAbstractItemView, QMessageBox
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QPixmap, QIcon
@@ -49,6 +50,7 @@ class SidebarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.sessions: Dict[str, Session] = {}
+        self.selected_channels: Set[str] = set()
 
         # Dynamic color pool tracking
         self.available_colors: List[str] = list(LAP_COLORS)
@@ -149,6 +151,24 @@ class SidebarWidget(QWidget):
                 session_id, lap_num = data[1], data[2]
                 currently_selected_laps.add((session_id, lap_num))
 
+        # FIX: Limit maximum laps selectable to the number of available colors
+        max_laps = len(LAP_COLORS)
+        if len(currently_selected_laps) > max_laps:
+            self.session_tree.blockSignals(True)
+            for item in selected_items:
+                data = item.data(0, Qt.UserRole)
+                if data and data[0] == "lap":
+                    key = (data[1], data[2])
+                    if key not in self.allocated_colors:
+                        item.setSelected(False)
+                        break
+            self.session_tree.blockSignals(False)
+            QMessageBox.warning(
+                self, "Limit Reached",
+                f"You can select a maximum of {max_laps} laps simultaneously for comparison."
+            )
+            return
+
         deselected = set(self.allocated_colors.keys()) - currently_selected_laps
         for key in deselected:
             color = self.allocated_colors.pop(key)
@@ -183,5 +203,17 @@ class SidebarWidget(QWidget):
 
     def _on_channel_selection_changed(self):
         selected_items = self.channel_tree.selectedItems()
-        selected_channels = set(item.text(0) for item in selected_items)
-        self.channels_selection_changed.emit(selected_channels)
+        
+        # FIX: Limit maximum channels selectable to 6
+        if len(selected_items) > 6:
+            self.channel_tree.blockSignals(True)
+            for item in selected_items:
+                if item.text(0) not in self.selected_channels:
+                    item.setSelected(False)
+                    break
+            self.channel_tree.blockSignals(False)
+            QMessageBox.warning(self, "Limit Reached", "You can select a maximum of 6 channels simultaneously.")
+            return
+
+        self.selected_channels = set(item.text(0) for item in selected_items)
+        self.channels_selection_changed.emit(self.selected_channels)

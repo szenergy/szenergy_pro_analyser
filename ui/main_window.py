@@ -1,7 +1,9 @@
 """
 Main application window organizing the menu bar, left sidebar, and stacked graph views.
+Includes non-blocking background file loading with modal progress indicators.
 """
 
+import os
 import uuid
 from typing import Dict
 from PySide6.QtWidgets import (
@@ -17,6 +19,7 @@ from ui.sidebar import SidebarWidget
 from ui.graph_view import GraphViewWidget
 from ui.import_wizard import ImportWizardDialog, PresetPreviewDialog
 from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog
+from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker
 from utils.constants import APP_NAME, APP_VERSION
 
 
@@ -101,7 +104,6 @@ class MainWindow(QMainWindow):
         self.graph_view.apply_theme(is_dark)
 
     def _on_open_config_folder(self):
-        """Opens the application config directory in the OS native file manager."""
         config_dir = self.state_manager.config_dir
         QDesktopServices.openUrl(QUrl.fromLocalFile(config_dir))
 
@@ -126,11 +128,47 @@ class MainWindow(QMainWindow):
             self._import_file(path)
 
     def _import_file(self, file_path: str):
-        try:
-            raw_columns, preview_df = get_file_columns_and_preview(file_path)
-        except Exception as e:
-            QMessageBox.critical(self, "Import Error", f"Failed to read file '{file_path}':\n{str(e)}")
+        """Processes file import using background QThread workers and loading dialogs."""
+        filename = os.path.basename(file_path)
+
+        # FIX: Do not let the user import the same file multiple times
+        for session in self.sessions.values():
+            if os.path.abspath(session.file_path) == os.path.abspath(file_path):
+                QMessageBox.warning(
+                    self, "Already Loaded",
+                    f"The file '{filename}' is already loaded in the workspace."
+                )
+                return
+
+        # 1. Background Header Reading
+        preview_dialog = LoadingDialog(f"Inspecting headers for '{filename}'...\nPlease wait.", self)
+        preview_worker = FilePreviewWorker(file_path)
+
+        preview_data = {}
+
+        def on_preview_success(raw_cols, preview_df):
+            preview_data["raw_columns"] = raw_cols
+            preview_data["preview_df"] = preview_df
+            preview_dialog.accept()
+
+        def on_preview_error(err_msg):
+            preview_data["error"] = err_msg
+            preview_dialog.reject()
+
+        preview_worker.success.connect(on_preview_success)
+        preview_worker.error.connect(on_preview_error)
+
+        preview_worker.start()
+        preview_dialog.exec()
+
+        if "error" in preview_data:
+            QMessageBox.critical(self, "Import Error", f"Failed to read file '{file_path}':\n{preview_data['error']}")
             return
+        if "raw_columns" not in preview_data:
+            return
+
+        raw_columns = preview_data["raw_columns"]
+        preview_df = preview_data["preview_df"]
 
         matching_preset = self.state_manager.find_matching_preset(raw_columns)
         chosen_mapping = None
@@ -139,18 +177,17 @@ class MainWindow(QMainWindow):
             presets = self.state_manager.load_presets()
             preset_map = presets.get(matching_preset, {})
 
-            preview_dialog = PresetPreviewDialog(
+            preview_dlg = PresetPreviewDialog(
                 file_path=file_path,
                 preset_name=matching_preset,
                 mapping=preset_map,
-                preview_df=preview_df,
                 parent=self
             )
 
-            res = preview_dialog.exec()
-            if preview_dialog.selected_action == PresetPreviewDialog.ACTION_APPLY:
+            res = preview_dlg.exec()
+            if preview_dlg.selected_action == PresetPreviewDialog.ACTION_APPLY:
                 chosen_mapping = preset_map
-            elif preview_dialog.selected_action == PresetPreviewDialog.ACTION_EDIT:
+            elif preview_dlg.selected_action == PresetPreviewDialog.ACTION_EDIT:
                 chosen_mapping = None
             else:
                 return
@@ -172,20 +209,41 @@ class MainWindow(QMainWindow):
         if not chosen_mapping:
             return
 
+        # 2. Background Log Data Parsing
         session_id = str(uuid.uuid4())
-        try:
-            session = parse_session(
-                file_path=file_path,
-                mapping=chosen_mapping,
-                session_id=session_id,
-                lap_label=self.state_manager.get_lap_label(),
-                time_label=self.state_manager.get_time_label(),
-                dist_label=self.state_manager.get_distance_label()
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Parse Error", f"Failed to parse log file:\n{str(e)}")
+        parse_dialog = LoadingDialog(f"Parsing log data for '{filename}'...\nPlease wait.", self)
+        parse_worker = FileParseWorker(
+            file_path=file_path,
+            mapping=chosen_mapping,
+            session_id=session_id,
+            lap_label=self.state_manager.get_lap_label(),
+            time_label=self.state_manager.get_time_label(),
+            dist_label=self.state_manager.get_distance_label()
+        )
+
+        parse_result = {}
+
+        def on_parse_success(session):
+            parse_result["session"] = session
+            parse_dialog.accept()
+
+        def on_parse_error(err_msg):
+            parse_result["error"] = err_msg
+            parse_dialog.reject()
+
+        parse_worker.success.connect(on_parse_success)
+        parse_worker.error.connect(on_parse_error)
+
+        parse_worker.start()
+        parse_dialog.exec()
+
+        if "error" in parse_result:
+            QMessageBox.critical(self, "Parse Error", f"Failed to parse log file:\n{parse_result['error']}")
+            return
+        if "session" not in parse_result:
             return
 
+        session = parse_result["session"]
         self.sessions[session_id] = session
         self.sidebar.add_session(session)
         self.graph_view.set_sessions(self.sessions)

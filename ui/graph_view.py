@@ -1,6 +1,7 @@
 """
 PyQtGraph-based main view displaying vertically stacked, synchronized plots for selected channels.
 Normalizes lap X-axis data for accurate lap overlay comparisons.
+Uses horizontal left-justified titles and compact legends to prevent text overlap.
 """
 
 from typing import Dict, List, Set, Tuple, Optional
@@ -115,9 +116,17 @@ class GraphViewWidget(QWidget):
 
         for row, channel_name in enumerate(self.selected_channels):
             plot = self.glw.addPlot(row=row, col=0)
-            plot.setLabel("left", channel_name)
+            
+            # FIX: Use horizontal left-justified title instead of vertical label to prevent Y-axis overlaps
+            title_html = f'<span style="color: #9E9E9E; font-size: 9pt; font-weight: bold;">{channel_name}</span>'
+            plot.setTitle(title_html, justify='left')
+            plot.setLabel("left", "")
+            
             plot.showGrid(x=True, y=True, alpha=0.3)
-            plot.getAxis('left').setWidth(75)
+            plot.getAxis('left').setWidth(65)
+
+            # FIX: Add a clean compact legend to prevent label overflows
+            plot.addLegend(offset=(-10, 5))
 
             if first_plot is None:
                 first_plot = plot
@@ -150,7 +159,10 @@ class GraphViewWidget(QWidget):
                 if raw_x is not None and raw_y is not None and len(raw_x) > 0:
                     x_normalized = raw_x - raw_x[0]
                     pen = pg.mkPen(color=color, width=1.8)
-                    plot.plot(x_normalized, raw_y, pen=pen, name=f"{session.name} - Lap {lap.lap_number}")
+                    
+                    # FIX: Truncate long session names in curve legends to prevent overlapping
+                    short_session = session.name[:10] + "..." if len(session.name) > 12 else session.name
+                    plot.plot(x_normalized, raw_y, pen=pen, name=f"{short_session} L{lap.lap_number}")
 
             plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
             plot.autoRange()
