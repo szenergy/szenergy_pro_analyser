@@ -304,7 +304,7 @@ class ChannelManagerDialog(QDialog):
         action_layout.addStretch()
 
         save_btn = QPushButton("Save & Apply")
-        save_btn.setStyleSheet("font-weight: bold; background-color: #00E676; color: black;")
+        save_btn.setStyleSheet("background-color: #00E676; color: black;")
         save_btn.clicked.connect(self._on_save)
         action_layout.addWidget(save_btn)
 

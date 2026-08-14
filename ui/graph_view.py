@@ -1,7 +1,7 @@
 """
 PyQtGraph-based main view displaying vertically stacked, synchronized plots for selected channels.
 Normalizes lap X-axis data for accurate lap overlay comparisons.
-Uses horizontal left-justified titles and compact legends to prevent text overlap.
+Uses horizontal left-justified black titles and a single draggable shared legend.
 """
 
 from typing import Dict, List, Set, Tuple, Optional
@@ -15,7 +15,7 @@ from utils.constants import STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE
 
 
 class GraphViewWidget(QWidget):
-    """Main plotting area with vertically stacked charts and synchronized cursor."""
+    """Main plotting area with vertically stacked charts and a single shared legend."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,9 +25,11 @@ class GraphViewWidget(QWidget):
         self.x_axis_channel: str = STD_CHANNEL_TIME
         self.time_label: str = STD_CHANNEL_TIME
         self.dist_label: str = STD_CHANNEL_DISTANCE
+        self.is_dark: bool = True
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
         self.v_lines: List[pg.InfiniteLine] = []
+        self.legend: Optional[pg.LegendItem] = None
 
         self._init_ui()
 
@@ -49,7 +51,6 @@ class GraphViewWidget(QWidget):
 
         c_layout.addSpacing(20)
         self.cursor_info_label = QLabel("Cursor: --")
-        self.cursor_info_label.setStyleSheet("font-weight: bold;")
         c_layout.addWidget(self.cursor_info_label)
 
         c_layout.addStretch()
@@ -73,6 +74,7 @@ class GraphViewWidget(QWidget):
         self.rebuild_plots()
 
     def apply_theme(self, is_dark: bool):
+        self.is_dark = is_dark
         bg_color = "#191B1F" if is_dark else "#FFFFFF"
         fg_color = "#E0E0E0" if is_dark else "#202020"
         bar_style = "background-color: #24272C; color: white;" if is_dark else "background-color: #E8ECEF; color: black;"
@@ -103,6 +105,7 @@ class GraphViewWidget(QWidget):
         self.glw.clear()
         self.plot_widgets.clear()
         self.v_lines.clear()
+        self.legend = None
 
         if not self.selected_channels or not self.selected_laps_info:
             label = pg.LabelItem(
@@ -117,24 +120,28 @@ class GraphViewWidget(QWidget):
         for row, channel_name in enumerate(self.selected_channels):
             plot = self.glw.addPlot(row=row, col=0)
             
-            # FIX: Use horizontal left-justified title instead of vertical label to prevent Y-axis overlaps
-            title_html = f'<span style="color: #9E9E9E; font-size: 9pt; font-weight: bold;">{channel_name}</span>'
-            plot.setTitle(title_html, justify='left')
+            plot.setTitle(channel_name, justify='left')
             plot.setLabel("left", "")
             
             plot.showGrid(x=True, y=True, alpha=0.3)
             plot.getAxis('left').setWidth(65)
 
-            # FIX: Add a clean compact legend to prevent label overflows
-            plot.addLegend(offset=(-10, 5))
-
             if first_plot is None:
                 first_plot = plot
+                # Create a single legend parented to first_plot so it can float/drag across the whole viewport
+                self.legend = pg.LegendItem()
+                self.legend.setParentItem(first_plot)
+                if self.is_dark:
+                    self.legend.setBrush(pg.mkBrush(40, 44, 52, 220))
+                    self.legend.setPen(pg.mkPen(100, 100, 100))
+                else:
+                    self.legend.setBrush(pg.mkBrush(245, 245, 245, 220))
+                    self.legend.setPen(pg.mkPen(200, 200, 200))
             else:
                 plot.setXLink(first_plot)
 
             if row == len(self.selected_channels) - 1:
-                plot.setLabel("bottom", f"Relative {self.x_axis_channel}")
+                plot.setLabel("bottom", f"{self.x_axis_channel}")
             else:
                 plot.hideAxis("bottom")
 
@@ -160,9 +167,13 @@ class GraphViewWidget(QWidget):
                     x_normalized = raw_x - raw_x[0]
                     pen = pg.mkPen(color=color, width=1.8)
                     
-                    # FIX: Truncate long session names in curve legends to prevent overlapping
-                    short_session = session.name[:10] + "..." if len(session.name) > 12 else session.name
-                    plot.plot(x_normalized, raw_y, pen=pen, name=f"{short_session} L{lap.lap_number}")
+                    curve = plot.plot(x_normalized, raw_y, pen=pen)
+                    
+                    # Populate the single shared legend using the first row curves
+                    if row == 0:
+                        short_session = session.name[:10] + "..." if len(session.name) > 12 else session.name
+                        curve_name = f"{short_session} L{lap.lap_number}"
+                        self.legend.addItem(curve, curve_name)
 
             plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
             plot.autoRange()
@@ -179,5 +190,5 @@ class GraphViewWidget(QWidget):
             v_line.setPos(x_val)
 
         unit = "s" if self.x_axis_channel == self.time_label else "m"
-        info_text = f"Relative {self.x_axis_channel}: {x_val:.2f} {unit}"
+        info_text = f"{self.x_axis_channel}: {x_val:.2f} {unit}"
         self.cursor_info_label.setText(info_text)

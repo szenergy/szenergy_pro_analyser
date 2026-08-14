@@ -71,7 +71,7 @@ class PresetPreviewDialog(QDialog):
         btn_layout.addWidget(edit_btn)
 
         apply_btn = QPushButton("Apply Preset & Import")
-        apply_btn.setStyleSheet("font-weight: bold; background-color: #00E676; color: black;")
+        apply_btn.setStyleSheet("background-color: #00E676; color: black;")
         apply_btn.clicked.connect(self._on_apply)
         btn_layout.addWidget(apply_btn)
 
@@ -184,7 +184,7 @@ class ImportWizardDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
 
         self.import_btn = QPushButton("Import Data")
-        self.import_btn.setStyleSheet("font-weight: bold; background-color: #00E676; color: black;")
+        self.import_btn.setStyleSheet("background-color: #00E676; color: black;")
         self.import_btn.clicked.connect(self._on_import)
         btn_layout.addWidget(self.import_btn)
 
