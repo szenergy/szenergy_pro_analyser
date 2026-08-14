@@ -1,13 +1,14 @@
 """
 Dialogs for the Edit Menu: Preset Manager and Channel Manager.
-Supports renaming all channels including system-required ones.
+Clean layout without header labels, maximizing space for splitters and tables.
+Fixes orphaned QComboBox cell widget accumulation in QTableWidget.
 """
 
 from typing import Dict, List
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QTableWidget, QTableWidgetItem, QPushButton, QLabel, QLineEdit,
-    QMessageBox, QHeaderView, QSplitter, QAbstractItemView, QInputDialog
+    QTableWidget, QTableWidgetItem, QComboBox, QPushButton, QLabel, QLineEdit,
+    QMessageBox, QHeaderView, QSplitter, QAbstractItemView, QWidget, QInputDialog
 )
 from PySide6.QtCore import Qt
 
@@ -18,84 +19,218 @@ SYSTEM_REQUIRED_SLUGS = ["lap", "time", "distance"]
 
 
 class PresetManagerDialog(QDialog):
-    """Dialog for managing saved channel map presets."""
+    """Dialog for managing and editing saved channel map presets with Import Wizard-style ComboBoxes."""
 
     def __init__(self, state_manager: StateManager, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Manage Channel Map Presets")
-        self.setMinimumSize(650, 450)
+        self.setMinimumSize(720, 480)
         self.state_manager = state_manager
+
+        self.current_preset_name: str = ""
+        self.combos: List[QComboBox] = []
 
         self._init_ui()
         self.load_preset_list()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-
-        instruction = QLabel("<b>Saved Channel Map Presets:</b><br>Select a preset to inspect or delete.")
-        instruction.setTextFormat(Qt.RichText)
-        layout.addWidget(instruction)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
 
         splitter = QSplitter(Qt.Horizontal)
 
-        # Left: Preset List
-        left_widget = QListWidget()
-        left_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        left_widget.currentTextChanged.connect(self._on_preset_selected)
-        self.preset_list = left_widget
-        splitter.addWidget(left_widget)
+        # Left Panel: Preset List & Delete Button
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 5, 0)
+        left_layout.setSpacing(6)
 
-        # Right: Mapping Table
-        self.mapping_table = QTableWidget()
-        self.mapping_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.mapping_table.setColumnCount(2)
-        self.mapping_table.setHorizontalHeaderLabels(["Raw Channel (File)", "Mapped Channel Name"])
-        self.mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.mapping_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        splitter.addWidget(self.mapping_table)
-
-        splitter.setSizes([200, 450])
-        layout.addWidget(splitter)
-
-        # Action buttons
-        btn_layout = QHBoxLayout()
+        left_layout.addWidget(QLabel("<b>Saved Presets:</b>"))
+        self.preset_list = QListWidget()
+        self.preset_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.preset_list.currentTextChanged.connect(self._on_preset_selected)
+        left_layout.addWidget(self.preset_list)
 
         self.delete_btn = QPushButton("Delete Selected Preset")
         self.delete_btn.setStyleSheet("color: #FF5252;")
         self.delete_btn.clicked.connect(self._on_delete_preset)
-        btn_layout.addWidget(self.delete_btn)
+        left_layout.addWidget(self.delete_btn)
 
+        splitter.addWidget(left_widget)
+
+        # Right Panel: Preset Editor
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(5, 0, 0, 0)
+        right_layout.setSpacing(6)
+
+        # Name field
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("<b>Preset Name:</b>"))
+        self.preset_name_input = QLineEdit()
+        name_layout.addWidget(self.preset_name_input)
+        right_layout.addLayout(name_layout)
+
+        # Mapping Table
+        self.table = QTableWidget(0, 2)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalHeaderLabels(["Raw Channel (File)", "Mapped Target Channel"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        right_layout.addWidget(self.table)
+
+        # Row controls & Save Button
+        row_btn_layout = QHBoxLayout()
+        add_row_btn = QPushButton("Add Row")
+        add_row_btn.clicked.connect(self._on_add_row)
+        row_btn_layout.addWidget(add_row_btn)
+
+        remove_row_btn = QPushButton("Remove Selected Rows")
+        remove_row_btn.clicked.connect(self._on_remove_row)
+        row_btn_layout.addWidget(remove_row_btn)
+
+        row_btn_layout.addStretch()
+
+        save_preset_btn = QPushButton("Save Changes")
+        save_preset_btn.setStyleSheet("background-color: #00E676; color: black;")
+        save_preset_btn.clicked.connect(self._on_save_preset)
+        row_btn_layout.addWidget(save_preset_btn)
+
+        right_layout.addLayout(row_btn_layout)
+        splitter.addWidget(right_widget)
+
+        splitter.setSizes([220, 500])
+        layout.addWidget(splitter, 1)
+
+        # Bottom Dialog Close Button
+        btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton("Close Manager")
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
-
         layout.addLayout(btn_layout)
 
+    def _clear_table(self):
+        """Safely clears table items and all cell widgets to prevent floating orphaned widgets."""
+        self.table.clearContents()
+        self.table.setRowCount(0)
+        self.combos.clear()
+
     def load_preset_list(self):
+        self.preset_list.blockSignals(True)
         self.preset_list.clear()
         presets = self.state_manager.load_presets()
         for name in sorted(presets.keys()):
             self.preset_list.addItem(name)
+        self.preset_list.blockSignals(False)
 
         if self.preset_list.count() > 0:
             self.preset_list.setCurrentRow(0)
+            self._on_preset_selected(self.preset_list.currentItem().text())
         else:
-            self.mapping_table.setRowCount(0)
+            self.current_preset_name = ""
+            self.preset_name_input.clear()
+            self._clear_table()
 
     def _on_preset_selected(self, preset_name: str):
+        self._clear_table()
+
         if not preset_name:
-            self.mapping_table.setRowCount(0)
+            self.current_preset_name = ""
+            self.preset_name_input.clear()
             return
+
+        self.current_preset_name = preset_name
+        self.preset_name_input.setText(preset_name)
 
         presets = self.state_manager.load_presets()
         mapping = presets.get(preset_name, {})
 
-        self.mapping_table.setRowCount(len(mapping))
+        target_options = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        self.table.setRowCount(len(mapping))
+
         for row, (raw_col, mapped_col) in enumerate(mapping.items()):
-            self.mapping_table.setItem(row, 0, QTableWidgetItem(raw_col))
-            self.mapping_table.setItem(row, 1, QTableWidgetItem(mapped_col))
+            raw_item = QTableWidgetItem(raw_col)
+            self.table.setItem(row, 0, raw_item)
+
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.addItems(target_options)
+
+            idx = combo.findText(mapped_col)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                combo.setEditText(mapped_col)
+
+            self.table.setCellWidget(row, 1, combo)
+            self.combos.append(combo)
+
+    def _on_add_row(self):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        raw_item = QTableWidgetItem(f"NewChannel_{row + 1}")
+        self.table.setItem(row, 0, raw_item)
+
+        target_options = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.addItems(target_options)
+        self.table.setCellWidget(row, 1, combo)
+        self.combos.append(combo)
+
+    def _on_remove_row(self):
+        current_row = self.table.currentRow()
+        if current_row >= 0:
+            self.table.removeRow(current_row)
+
+    def _get_table_mapping(self) -> Dict[str, str]:
+        mapping = {}
+        for row in range(self.table.rowCount()):
+            raw_item = self.table.item(row, 0)
+            combo = self.table.cellWidget(row, 1)
+            if raw_item and isinstance(combo, QComboBox):
+                raw_col = raw_item.text().strip()
+                mapped_target = combo.currentText().strip()
+                if raw_col and mapped_target and mapped_target != "-- Skip --":
+                    mapping[raw_col] = mapped_target
+        return mapping
+
+    def _on_save_preset(self):
+        new_preset_name = self.preset_name_input.text().strip()
+        if not new_preset_name:
+            QMessageBox.warning(self, "Warning", "Please enter a valid preset name.")
+            return
+
+        mapping = self._get_table_mapping()
+        if not mapping:
+            QMessageBox.warning(self, "Warning", "Cannot save preset with empty channel mappings.")
+            return
+
+        targets = list(mapping.values())
+        duplicates = set([t for t in targets if targets.count(t) > 1])
+        if duplicates:
+            dup_str = ", ".join(duplicates)
+            QMessageBox.critical(
+                self, "Duplicate Mapping Error",
+                f"The following target channels are assigned multiple times: {dup_str}.\n"
+                "Each target channel name must be unique within a preset."
+            )
+            return
+
+        if self.current_preset_name and self.current_preset_name != new_preset_name:
+            self.state_manager.delete_preset(self.current_preset_name)
+
+        self.state_manager.save_preset(new_preset_name, mapping)
+        QMessageBox.information(self, "Saved", f"Preset '{new_preset_name}' saved successfully!")
+
+        self.load_preset_list()
+        items = self.preset_list.findItems(new_preset_name, Qt.MatchExactly)
+        if items:
+            self.preset_list.setCurrentItem(items[0])
 
     def _on_delete_preset(self):
         current_item = self.preset_list.currentItem()
@@ -129,14 +264,8 @@ class ChannelManagerDialog(QDialog):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-
-        instruction = QLabel(
-            "<b>Standard Channels Manager:</b><br>"
-            "Add, rename, or remove standard internal channels. "
-            "All channels (including Lap, Time, Distance) can be renamed."
-        )
-        instruction.setTextFormat(Qt.RichText)
-        layout.addWidget(instruction)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
 
         # Table Widget displaying Label & Slug
         self.table = QTableWidget(0, 2)
@@ -146,7 +275,7 @@ class ChannelManagerDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
 
         # Add Controls Row
         add_layout = QHBoxLayout()
