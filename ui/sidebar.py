@@ -51,8 +51,9 @@ class SidebarWidget(QWidget):
     # Signal (session_id string)
     session_edit_mapping_requested = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, state_manager=None):
         super().__init__(parent)
+        self.state_manager = state_manager
         self.sessions: Dict[str, Session] = {}
         self.selected_channels: Set[str] = set()
 
@@ -299,10 +300,14 @@ class SidebarWidget(QWidget):
         # Retain valid previously selected channels
         self.selected_channels = self.selected_channels.intersection(all_channels)
 
-        for channel_name in sorted(all_channels):
+        for channel_slug in sorted(all_channels):
             item = QTreeWidgetItem(self.channel_tree)
-            item.setText(0, channel_name)
-            if channel_name in self.selected_channels:
+            display_label = channel_slug
+            if self.state_manager:
+                display_label = self.state_manager.get_label_by_slug(channel_slug, channel_slug)
+            item.setText(0, display_label)
+            item.setData(0, Qt.UserRole, channel_slug)
+            if channel_slug in self.selected_channels:
                 item.setSelected(True)
 
         self.channel_tree.blockSignals(False)
@@ -406,7 +411,7 @@ class SidebarWidget(QWidget):
         if len(selected_items) > 6:
             self.channel_tree.blockSignals(True)
             # Prioritize already selected channels
-            kept_items = [item for item in selected_items if item.text(0) in self.selected_channels]
+            kept_items = [item for item in selected_items if item.data(0, Qt.UserRole) in self.selected_channels]
             for item in selected_items:
                 if len(kept_items) >= 6:
                     break
@@ -420,5 +425,9 @@ class SidebarWidget(QWidget):
             QMessageBox.warning(self, "Limit Reached", "You can select a maximum of 6 channels simultaneously.")
             selected_items = kept_items
 
-        self.selected_channels = set(item.text(0) for item in selected_items)
+        self.selected_channels = set()
+        for item in selected_items:
+            slug = item.data(0, Qt.UserRole)
+            if slug:
+                self.selected_channels.add(slug)
         self.channels_selection_changed.emit(self.selected_channels)

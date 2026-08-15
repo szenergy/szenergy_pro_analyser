@@ -9,10 +9,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 
 from ui.main_window import MainWindow
+from utils.constants import APP_NAME, ORGANIZATION_NAME
 
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(ORGANIZATION_NAME)
     app.setStyle("Fusion")
 
     # Detect OS Theme (Light / Dark)

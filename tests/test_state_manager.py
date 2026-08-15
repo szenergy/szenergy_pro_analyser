@@ -24,7 +24,7 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(generate_slug("---"), "channel")
 
     def test_save_and_load_presets(self):
-        mapping = {"Raw_Lap": "Lap", "Raw_Time": "Time", "Raw_Spd": "Speed"}
+        mapping = {"Raw_Lap": "lap", "Raw_Time": "time", "Raw_Spd": "speed"}
         self.state_manager.save_preset("MoTeC_Test", mapping)
 
         presets = self.state_manager.load_presets()
@@ -38,15 +38,15 @@ class TestStateManager(unittest.TestCase):
     def test_coverage_based_best_fit_preset_matching(self):
         # 1. Preset with 2 channels
         self.state_manager.save_preset("Minimal_Preset", {
-            "Time": "Time",
-            "Lap": "Lap"
+            "Time": "time",
+            "Lap": "lap"
         })
         # 2. Preset with 4 channels
         self.state_manager.save_preset("Full_MoTeC_Preset", {
-            "Time": "Time",
-            "Lap": "Lap",
-            "Speed": "Speed",
-            "RPM": "RPM"
+            "Time": "time",
+            "Lap": "lap",
+            "Speed": "speed",
+            "RPM": "rpm"
         })
 
         raw_columns = ["Time", "Lap", "Speed", "RPM", "Throttle", "Voltage"]
@@ -59,9 +59,34 @@ class TestStateManager(unittest.TestCase):
         matched_limited = self.state_manager.find_matching_preset(limited_cols)
         self.assertEqual(matched_limited, "Minimal_Preset")
 
+        # Partial matching: File has Time, Lap, Speed (3 of 4 from Full_MoTeC_Preset, missing RPM)
+        partial_cols = ["Time", "Lap", "Speed", "Oil_Pressure"]
+        matched_partial = self.state_manager.find_matching_preset(partial_cols)
+        self.assertEqual(matched_partial, "Full_MoTeC_Preset")
+
         # If file has no matching channels:
         none_cols = ["Random_A", "Random_B"]
         self.assertIsNone(self.state_manager.find_matching_preset(none_cols))
+
+    def test_preset_match_stats(self):
+        """Validates calculation of preset match statistics."""
+        self.state_manager.save_preset("Telemetry_Preset", {
+            "Time": "time",
+            "Lap": "lap",
+            "Speed": "speed",
+            "RPM": "rpm",
+            "Missing_Temp": "temperature"
+        })
+        raw_columns = ["Time", "Lap", "Speed", "RPM", "Unmapped_Flag"]
+
+        stats = self.state_manager.get_preset_match_stats("Telemetry_Preset", raw_columns)
+        self.assertEqual(stats["matched_count"], 4)
+        self.assertEqual(stats["preset_total"], 5)
+        self.assertEqual(stats["missing_in_file_count"], 1)
+        self.assertEqual(stats["unmapped_in_file_count"], 1)
+        self.assertAlmostEqual(stats["match_ratio"], 0.8)
+        self.assertIn("Missing_Temp", stats["missing_channels"])
+        self.assertIn("Unmapped_Flag", stats["unmapped_channels"])
 
     def test_channel_defs_and_labels(self):
         labels = self.state_manager.get_channel_labels()
@@ -88,14 +113,21 @@ class TestStateManager(unittest.TestCase):
         # First call creates the file if not present
         _ = self.state_manager.get_channel_defs()
 
-        # Subsequent reads should NOT call save_channel_defs
+        # Subsequent reads should NOT call save_channel_defs (unless they write)
         with patch.object(self.state_manager, "save_channel_defs") as mock_save:
             _ = self.state_manager.get_channel_defs()
             _ = self.state_manager.get_channel_labels()
             _ = self.state_manager.get_lap_label()
             _ = self.state_manager.get_time_label()
             _ = self.state_manager.get_distance_label()
+            # If get_channel_defs calls save_channel_defs, it will now always write.
+            # But get_channel_defs should not call save_channel_defs on read unless migrating.
             mock_save.assert_not_called()
+
+    def test_label_to_slug_mapping(self):
+        mapping = self.state_manager.label_to_slug_mapping()
+        self.assertEqual(mapping["Lap"], "lap")
+        self.assertEqual(mapping["Time"], "time")
 
     def test_legacy_channel_defs_migration(self):
         """Validates that legacy string-only channel definitions are migrated to dicts and persisted once."""
@@ -114,10 +146,11 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(migrated_defs[1], {"label": "Time", "slug": "time"})
         self.assertEqual(migrated_defs[2], {"label": "Custom_Sensor", "slug": "custom_sensor"})
 
-        # Verify disk content is now modern format
+        # Verify disk content is now modern format (versioned envelope)
         with open(self.state_manager.channels_file, "r", encoding="utf-8") as f:
             persisted = json.load(f)
-            self.assertEqual(persisted, migrated_defs)
+            self.assertIn("schema_version", persisted)
+            self.assertEqual(persisted["data"], migrated_defs)
 
         # Subsequent reads should not trigger disk writes
         with patch.object(self.state_manager, "save_channel_defs") as mock_save:

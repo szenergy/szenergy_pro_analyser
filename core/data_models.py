@@ -1,5 +1,7 @@
 """
 Data models representing telemetry sessions, laps, and channels.
+All internal keys use immutable slugs (e.g. 'speed', 'rpm') rather than
+user-renamable display labels.
 """
 
 from dataclasses import dataclass, field
@@ -16,26 +18,21 @@ class Lap:
     duration: float = 0.0  # Total lap time in seconds
     distance: float = 0.0  # Total lap distance in meters/km
     
-    # Storage for channel arrays specific to this lap: {channel_name: np.ndarray}
+    # Storage for channel arrays specific to this lap, keyed by slug: {channel_slug: np.ndarray}
     data: Dict[str, np.ndarray] = field(default_factory=dict)
 
-    # Mapping of slugs to actual channel names in data: {slug: channel_name}
-    slug_to_channel: Dict[str, str] = field(default_factory=dict)
-
-    def get_channel(self, name_or_slug: str) -> Optional[np.ndarray]:
+    def get_channel(self, slug: str) -> Optional[np.ndarray]:
         """
-        Retrieves channel data array by exact channel name or by channel slug (e.g. 'time', 'distance').
+        Retrieves channel data array by channel slug (e.g. 'time', 'distance', 'speed').
         """
-        if not name_or_slug:
+        if not slug:
             return None
-        if name_or_slug in self.data:
-            return self.data[name_or_slug]
-        if name_or_slug in self.slug_to_channel and self.slug_to_channel[name_or_slug] in self.data:
-            return self.data[self.slug_to_channel[name_or_slug]]
-        # Fallback: check case-insensitive / clean slug match
-        target_slug = name_or_slug.strip().lower()
-        for ch_name, arr in self.data.items():
-            if ch_name.strip().lower() == target_slug or ch_name.replace(' ', '_').lower() == target_slug:
+        if slug in self.data:
+            return self.data[slug]
+        # Fallback: case-insensitive / normalized slug match
+        target = slug.strip().lower()
+        for key, arr in self.data.items():
+            if key.strip().lower() == target or key.replace(' ', '_').lower() == target:
                 return arr
         return None
 
@@ -51,8 +48,8 @@ class Session:
     name: str
     file_path: str
     laps: List[Lap] = field(default_factory=list)
-    channels: List[str] = field(default_factory=list)
-    mapping: Dict[str, str] = field(default_factory=dict)
+    channels: List[str] = field(default_factory=list)  # List of channel slugs (excluding lap)
+    mapping: Dict[str, str] = field(default_factory=dict)  # {raw_column: slug}
     preset_name: Optional[str] = None
     
     # Reference to original parsed dataframe if needed

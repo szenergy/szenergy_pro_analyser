@@ -154,7 +154,7 @@ class PresetManagerDialog(QDialog):
         target_options = ["-- Skip --"] + self.state_manager.get_channel_labels()
         self.table.setRowCount(len(mapping))
 
-        for row, (raw_col, mapped_col) in enumerate(mapping.items()):
+        for row, (raw_col, slug_val) in enumerate(mapping.items()):
             raw_item = QTableWidgetItem(raw_col)
             self.table.setItem(row, 0, raw_item)
 
@@ -162,11 +162,13 @@ class PresetManagerDialog(QDialog):
             combo.setEditable(True)
             combo.addItems(target_options)
 
-            idx = combo.findText(mapped_col)
+            # Resolve slug to display label for combo display
+            display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
+            idx = combo.findText(display_label)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             else:
-                combo.setEditText(mapped_col)
+                combo.setEditText(display_label)
 
             self.table.setCellWidget(row, 1, combo)
 
@@ -195,30 +197,37 @@ class PresetManagerDialog(QDialog):
             combo = self.table.cellWidget(row, 1)
             if raw_item and isinstance(combo, QComboBox):
                 raw_col = raw_item.text().strip()
-                mapped_target = combo.currentText().strip()
-                if raw_col and mapped_target and mapped_target != "-- Skip --":
-                    mapping[raw_col] = mapped_target
+                mapped_label = combo.currentText().strip()
+                if raw_col and mapped_label and mapped_label != "-- Skip --":
+                    slug = self.state_manager.get_slug_by_label(mapped_label)
+                    if slug is None:
+                        from core.state_manager import generate_slug
+                        slug = generate_slug(mapped_label)
+                    mapping[raw_col] = slug
         return mapping
 
-    def _save_new_custom_channels(self, mapping: Dict[str, str]):
-        """Detects newly entered mapping target labels, adds them to standard channel defs, and saves them."""
+    def _save_new_custom_channels_from_table(self):
         existing_labels = self.state_manager.get_channel_labels()
         existing_defs = self.state_manager.get_channel_defs()
 
         updated = False
-        for raw, target in mapping.items():
-            if target not in existing_labels:
-                base_slug = generate_slug(target)
-                slug = base_slug
-                counter = 1
-                existing_slugs = [ch["slug"] for ch in existing_defs]
-                while slug in existing_slugs:
-                    slug = f"{base_slug}_{counter}"
-                    counter += 1
+        for row in range(self.table.rowCount()):
+            combo = self.table.cellWidget(row, 1)
+            if isinstance(combo, QComboBox):
+                label = combo.currentText().strip()
+                if label and label != "-- Skip --" and label not in existing_labels:
+                    from core.state_manager import generate_slug
+                    base_slug = generate_slug(label)
+                    slug = base_slug
+                    counter = 1
+                    existing_slugs = [ch["slug"] for ch in existing_defs]
+                    while slug in existing_slugs:
+                        slug = f"{base_slug}_{counter}"
+                        counter += 1
 
-                existing_defs.append({"label": target, "slug": slug})
-                existing_labels.append(target)
-                updated = True
+                    existing_defs.append({"label": label, "slug": slug})
+                    existing_labels.append(label)
+                    updated = True
 
         if updated:
             self.state_manager.save_channel_defs(existing_defs)
@@ -228,6 +237,8 @@ class PresetManagerDialog(QDialog):
         if not new_preset_name:
             QMessageBox.warning(self, "Warning", "Please enter a valid preset name.")
             return
+
+        self._save_new_custom_channels_from_table()
 
         mapping = self._get_table_mapping()
         if not mapping:
@@ -248,7 +259,6 @@ class PresetManagerDialog(QDialog):
         if self.current_preset_name and self.current_preset_name != new_preset_name:
             self.state_manager.delete_preset(self.current_preset_name)
 
-        self._save_new_custom_channels(mapping)
         self.state_manager.save_preset(new_preset_name, mapping)
         QMessageBox.information(self, "Saved", f"Preset '{new_preset_name}' saved successfully!")
 

@@ -68,7 +68,7 @@ class TestFileParser(unittest.TestCase):
         self.assertIn("Speed", cols)
         self.assertEqual(len(preview), 5)
 
-        mapping = {"Lap": "Lap", "Time": "Time", "Distance": "Distance", "Speed": "Speed"}
+        mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Speed": "speed"}
         session = parse_session(self.csv_path, mapping, "sess_csv")
 
         self.assertEqual(session.name, "test.csv")
@@ -78,7 +78,7 @@ class TestFileParser(unittest.TestCase):
         self.assertIsNotNone(lap1)
         self.assertEqual(lap1.duration, 2.0)
         self.assertEqual(lap1.distance, 20.0)
-        self.assertTrue(np.issubdtype(lap1.get_channel("Speed").dtype, np.floating))
+        self.assertTrue(np.issubdtype(lap1.get_channel("speed").dtype, np.floating))
 
         lap2 = session.get_lap(2)
         self.assertIsNotNone(lap2)
@@ -89,7 +89,7 @@ class TestFileParser(unittest.TestCase):
         self.assertIn("Lap_No", cols)
         self.assertIn("RPM", cols)
 
-        mapping = {"Lap_No": "Lap", "Timestamp": "Time", "Dist": "Distance", "RPM": "RPM"}
+        mapping = {"Lap_No": "lap", "Timestamp": "time", "Dist": "distance", "RPM": "rpm"}
         session = parse_session(self.xlsx_path, mapping, "sess_xlsx")
 
         self.assertEqual(len(session.laps), 2)
@@ -103,10 +103,10 @@ class TestFileParser(unittest.TestCase):
         self.assertIn("Telemetry/Speed", cols)
 
         mapping = {
-            "Telemetry/Lap": "Lap",
-            "Telemetry/Time": "Time",
-            "Telemetry/Distance": "Distance",
-            "Telemetry/Speed": "Speed"
+            "Telemetry/Lap": "lap",
+            "Telemetry/Time": "time",
+            "Telemetry/Distance": "distance",
+            "Telemetry/Speed": "speed"
         }
         session = parse_session(self.tdms_path, mapping, "sess_tdms")
         self.assertEqual(len(session.laps), 2)
@@ -140,10 +140,10 @@ class TestFileParser(unittest.TestCase):
         if os.path.exists(ecu_xlsx):
             cols, _ = get_file_columns_and_preview(ecu_xlsx)
             mapping = {
-                "Lap_Index": "Lap",
-                "Timestamp_s": "Time",
-                "Distance_m": "Distance",
-                "Speed_kmh": "Speed"
+                "Lap_Index": "lap",
+                "Timestamp_s": "time",
+                "Distance_m": "distance",
+                "Speed_kmh": "speed"
             }
             session = parse_session(ecu_xlsx, mapping, "s_ecu")
             self.assertEqual(len(session.laps), 2)
@@ -152,10 +152,10 @@ class TestFileParser(unittest.TestCase):
         if os.path.exists(ni_tdms):
             cols, _ = get_file_columns_and_preview(ni_tdms)
             mapping = {
-                "Vehicle/Lap": "Lap",
-                "Vehicle/Time": "Time",
-                "Vehicle/Distance": "Distance",
-                "Vehicle/Speed": "Speed"
+                "Vehicle/Lap": "lap",
+                "Vehicle/Time": "time",
+                "Vehicle/Distance": "distance",
+                "Vehicle/Speed": "speed"
             }
             session = parse_session(ni_tdms, mapping, "s_ni")
             self.assertEqual(len(session.laps), 2)
@@ -173,23 +173,23 @@ class TestFileParser(unittest.TestCase):
         df_nan.to_csv(nan_csv_path, index=False)
 
         mapping = {
-            "Lap": "Lap",
-            "Time": "Time",
-            "Distance": "Distance",
-            "SensorA": "SensorA",
-            "SensorB": "SensorB"
+            "Lap": "lap",
+            "Time": "time",
+            "Distance": "distance",
+            "SensorA": "sensora",
+            "SensorB": "sensorb"
         }
         session = parse_session(nan_csv_path, mapping, "sess_nan")
         lap1 = session.get_lap(1)
         self.assertIsNotNone(lap1)
 
-        sensor_a = lap1.get_channel("SensorA")
+        sensor_a = lap1.get_channel("sensora")
         self.assertEqual(len(sensor_a), 3)
         self.assertEqual(sensor_a[0], 10.5)
         self.assertTrue(np.isnan(sensor_a[1]), "Missing value must remain np.nan, not 0.0")
         self.assertEqual(sensor_a[2], 25.0)
 
-        sensor_b = lap1.get_channel("SensorB")
+        sensor_b = lap1.get_channel("sensorb")
         self.assertEqual(len(sensor_b), 3)
         self.assertAlmostEqual(sensor_b[0], 1.2)
         self.assertTrue(np.isnan(sensor_b[1]), "Non-numeric string must become np.nan, not 0.0")
@@ -198,13 +198,13 @@ class TestFileParser(unittest.TestCase):
     def test_multi_rate_tdms_nan_preservation_in_laps(self):
         """Validates that multi-rate channels padded with NaN preserve NaN in Lap channel data."""
         mapping = {
-            "Sensors/GPS_Speed": "Speed",
-            "Sensors/Accel_X": "Accel_X"
+            "Sensors/GPS_Speed": "speed",
+            "Sensors/Accel_X": "accel_x"
         }
         session = parse_session(self.unequal_tdms_path, mapping, "sess_unequal")
         self.assertEqual(len(session.laps), 1)
         lap1 = session.get_lap(1)
-        speed = lap1.get_channel("Speed")
+        speed = lap1.get_channel("speed")
         self.assertEqual(len(speed), 6)
         self.assertEqual(speed[0], 10.0)
         self.assertEqual(speed[1], 12.0)
@@ -224,10 +224,10 @@ class TestFileParser(unittest.TestCase):
 
         # 1. Hungarian custom configured labels
         mapping_hu = {
-            "kor_szam": "Kör",
-            "ido": "Idő",
-            "tavolsag": "Távolság",
-            "sebesseg": "Sebesség"
+            "kor_szam": "lap",
+            "ido": "time",
+            "tavolsag": "distance",
+            "sebesseg": "speed"
         }
         session_hu = parse_session(
             custom_csv_path, mapping_hu, "sess_hu",
@@ -240,10 +240,10 @@ class TestFileParser(unittest.TestCase):
 
         # 2. Configured label mismatch fallback to standard / slug
         mapping_std = {
-            "kor_szam": "Lap",
-            "ido": "Time",
-            "tavolsag": "Distance",
-            "sebesseg": "Speed"
+            "kor_szam": "lap",
+            "ido": "time",
+            "tavolsag": "distance",
+            "sebesseg": "speed"
         }
         # lap_label passed as custom "Kör", but mapped to standard "Lap"
         session_fallback = parse_session(
@@ -256,14 +256,14 @@ class TestFileParser(unittest.TestCase):
 
         # 3. Slug matching (e.g. 'timestamp' or 'dist')
         mapping_slugs = {
-            "kor_szam": "Lap_Number",
+            "kor_szam": "lap_number",
             "ido": "timestamp",
             "tavolsag": "dist",
-            "sebesseg": "Speed"
+            "sebesseg": "speed"
         }
         session_slugs = parse_session(
             custom_csv_path, mapping_slugs, "sess_slugs",
-            lap_label="Lap Number", time_label="time", dist_label="distance"
+            lap_slug="lap_number", time_slug="timestamp", dist_slug="dist"
         )
         self.assertEqual(len(session_slugs.laps), 2)
         self.assertEqual(session_slugs.get_lap(1).duration, 5.0)
@@ -271,7 +271,7 @@ class TestFileParser(unittest.TestCase):
 
     def test_session_retains_raw_df_and_in_memory_reparsing(self):
         """Validates that parse_session keeps raw_df in Session and parse_session_from_dataframe re-parses in memory."""
-        mapping = {"Lap": "Lap", "Time": "Time", "Distance": "Distance", "Speed": "Speed"}
+        mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Speed": "speed"}
         session = parse_session(self.csv_path, mapping, "sess_raw", preset_name="OriginalPreset")
 
         self.assertIsNotNone(session.raw_df)
@@ -279,7 +279,7 @@ class TestFileParser(unittest.TestCase):
         self.assertEqual(session.preset_name, "OriginalPreset")
 
         # Now re-parse directly from session.raw_df without disk I/O
-        updated_mapping = {"Lap": "Lap", "Time": "Time", "Distance": "Distance", "Notes": "Commentary"}
+        updated_mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Notes": "commentary"}
         updated_session = parse_session_from_dataframe(
             raw_df=session.raw_df,
             file_path=session.file_path,
@@ -289,8 +289,8 @@ class TestFileParser(unittest.TestCase):
         )
 
         self.assertEqual(updated_session.preset_name, "UpdatedPreset")
-        self.assertIn("Commentary", updated_session.channels)
-        self.assertNotIn("Speed", updated_session.channels)
+        self.assertIn("commentary", updated_session.channels)
+        self.assertNotIn("speed", updated_session.channels)
         self.assertIsNotNone(updated_session.raw_df)
 
 

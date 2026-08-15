@@ -32,6 +32,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 750)
 
         self.state_manager = StateManager()
+        
+        from core.migrations import run_migrations
+        run_migrations(self.state_manager)
+        
         self.sessions: Dict[str, Session] = {}
 
         self._init_ui()
@@ -88,7 +92,7 @@ class MainWindow(QMainWindow):
         main_splitter = QSplitter(Qt.Horizontal)
 
         # Left Sidebar
-        self.sidebar = SidebarWidget()
+        self.sidebar = SidebarWidget(state_manager=self.state_manager)
         self.sidebar.laps_selection_changed.connect(self._on_laps_selection_changed)
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
         self.sidebar.session_removed.connect(self._on_session_removed)
@@ -96,7 +100,7 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(self.sidebar)
 
         # Right Graph View
-        self.graph_view = GraphViewWidget()
+        self.graph_view = GraphViewWidget(state_manager=self.state_manager)
         main_splitter.addWidget(self.graph_view)
 
         main_splitter.setSizes([300, 900])
@@ -176,7 +180,7 @@ class MainWindow(QMainWindow):
                 return
 
         # 1. Background Header Reading
-        preview_worker = FilePreviewWorker(file_path, parent=self)
+        preview_worker = FilePreviewWorker(file_path)
         preview_dialog = LoadingDialog(
             f"Inspecting headers for '{filename}'...\nPlease wait.",
             worker=preview_worker,
@@ -205,16 +209,18 @@ class MainWindow(QMainWindow):
                 file_path=file_path,
                 preset_name=matching_preset,
                 mapping=preset_map,
+                raw_columns=raw_columns,
+                state_manager=self.state_manager,
                 parent=self
             )
 
             res = preview_dlg.exec()
             if preview_dlg.selected_action == PresetPreviewDialog.ACTION_APPLY:
-                chosen_mapping = preset_map
-                applied_preset_name = matching_preset
+                chosen_mapping = preview_dlg.get_filtered_mapping()
+                applied_preset_name = preview_dlg.selected_preset_name
             elif preview_dlg.selected_action == PresetPreviewDialog.ACTION_EDIT:
                 chosen_mapping = None
-                applied_preset_name = matching_preset
+                applied_preset_name = preview_dlg.selected_preset_name
             else:
                 return
 
@@ -245,7 +251,6 @@ class MainWindow(QMainWindow):
             lap_label=self.state_manager.get_lap_label(),
             time_label=self.state_manager.get_time_label(),
             dist_label=self.state_manager.get_distance_label(),
-            parent=self
         )
 
         parse_dialog = LoadingDialog(

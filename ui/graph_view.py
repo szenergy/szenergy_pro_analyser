@@ -188,13 +188,14 @@ def _get_nearest_channel_sample(
 class GraphViewWidget(QWidget):
     """Main plotting area with vertically stacked charts, toolbar toggles, and on-graph value readouts."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, state_manager=None):
         super().__init__(parent)
+        self.state_manager = state_manager
         self.sessions: Dict[str, Session] = {}
         self.selected_channels: List[str] = []
         self.selected_laps_info: List[Tuple[str, int, str]] = []
         self.custom_lap_labels: Dict[Tuple[str, int], str] = {}
-        self.x_axis_slug: str = SLUG_DISTANCE
+        self.x_axis_slug: str = SLUG_TIME
         self.time_label: str = STD_CHANNEL_TIME
         self.dist_label: str = STD_CHANNEL_DISTANCE
         self.is_dark: bool = True
@@ -204,6 +205,7 @@ class GraphViewWidget(QWidget):
         self.show_y_grid: bool = True
         self.show_cursor_values: bool = True
         self.show_legend: bool = True
+        self._is_rebuilding: bool = False
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
         self.v_lines: List[pg.InfiniteLine] = []
@@ -412,17 +414,29 @@ class GraphViewWidget(QWidget):
         if not self.show_cursor_values:
             title_color = "#E0E0E0" if self.is_dark else "#202020"
             for channel_name, plot in self.plot_widgets.items():
-                plot.setTitle(f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{channel_name}</span>", justify='left')
+                display_label = channel_name
+                if self.state_manager:
+                    display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+                plot.setTitle(f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>", justify='left')
 
     def _toggle_legend(self, checked: bool):
         self.show_legend = checked
         if self.legend:
             self.legend.setVisible(self.show_legend)
 
-    def _on_autorange(self):
-        """Executes pyqtgraph's built-in 'View All' auto-range on every plot ViewBox."""
-        for plot in self.plot_widgets.values():
-            plot.vb.autoRange()
+    def _on_autorange(self, *args, **kwargs):
+        """Executes pyqtgraph's built-in 'View All' auto-range on every plot and master linked X-axis."""
+        if not self.plot_widgets:
+            return
+
+        plots = list(self.plot_widgets.values())
+        for plot in plots:
+            plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
+            plot.autoRange()
+
+        if plots:
+            plots[0].enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
+            plots[0].autoRange()
 
     def _on_rename_legend(self):
         """Opens dialog to customize legend labels specifying what the curve colors mean."""
@@ -442,156 +456,151 @@ class GraphViewWidget(QWidget):
             self.rebuild_plots()
 
     def rebuild_plots(self):
-        self.glw.clear()
-        self.plot_widgets.clear()
-        self.v_lines.clear()
-        self.tracking_dots.clear()
-        self.legend = None
+        self._is_rebuilding = True
+        try:
+            self.glw.scene().blockSignals(True)
+            self.glw.clear()
+            self.plot_widgets.clear()
+            self.v_lines.clear()
+            self.tracking_dots.clear()
+            self.legend = None
 
-        if not self.selected_channels or not self.selected_laps_info:
-            label = pg.LabelItem(
-                text="Select laps and channels from the left sidebar to display graphs.",
-                size="12pt", color="#808080"
-            )
-            self.glw.addItem(label, row=0, col=0)
-            return
+            if not self.selected_channels or not self.selected_laps_info:
+                label = pg.LabelItem(
+                    text="Select laps and channels from the left sidebar to display graphs.",
+                    size="12pt", color="#808080"
+                )
+                self.glw.addItem(label, row=0, col=0)
+                return
 
-        first_plot: Optional[pg.PlotItem] = None
-        title_color = "#E0E0E0" if self.is_dark else "#202020"
+            first_plot: Optional[pg.PlotItem] = None
+            title_color = "#E0E0E0" if self.is_dark else "#202020"
 
-        for row, channel_name in enumerate(self.selected_channels):
-            plot = self.glw.addPlot(row=row, col=0)
+            for row, channel_name in enumerate(self.selected_channels):
+                plot = self.glw.addPlot(row=row, col=0)
 
-            title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{channel_name}</span>"
-            plot.setTitle(title_html, justify='left')
-            plot.setLabel("left", "")
-            plot.showGrid(x=self.show_x_grid, y=self.show_y_grid, alpha=0.3)
-            plot.getAxis('left').setWidth(65)
+                display_label = channel_name
+                if self.state_manager:
+                    display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
 
-            if first_plot is None:
-                first_plot = plot
-                self.legend = pg.LegendItem(offset=(-10, 10))
-                self.legend.setParentItem(first_plot)
-                self.legend.setVisible(self.show_legend)
-                if self.is_dark:
-                    self.legend.setBrush(pg.mkBrush(30, 33, 38, 220))
-                    self.legend.setPen(pg.mkPen(80, 80, 80))
+                title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"
+                plot.setTitle(title_html, justify='left')
+                plot.setLabel("left", "")
+                plot.showGrid(x=self.show_x_grid, y=self.show_y_grid, alpha=0.3)
+                plot.getAxis('left').setWidth(65)
+
+                if first_plot is None:
+                    first_plot = plot
+                    self.legend = pg.LegendItem(offset=(-10, 10))
+                    self.legend.setParentItem(first_plot)
+                    self.legend.setVisible(self.show_legend)
+                    if self.is_dark:
+                        self.legend.setBrush(pg.mkBrush(30, 33, 38, 220))
+                        self.legend.setPen(pg.mkPen(80, 80, 80))
+                    else:
+                        self.legend.setBrush(pg.mkBrush(245, 245, 245, 220))
+                        self.legend.setPen(pg.mkPen(200, 200, 200))
+
+                    # Populate the shared legend for ALL selected laps across all loaded sessions
+                    for session_id, lap_num, color in self.selected_laps_info:
+                        session = self.sessions.get(session_id)
+                        session_name = session.name if session else session_id
+                        default_name = f"{session_name} L{lap_num}"
+                        curve_name = self.custom_lap_labels.get((session_id, lap_num), default_name)
+                        sample_curve = pg.PlotDataItem(pen=pg.mkPen(color=color, width=2.5))
+                        self.legend.addItem(sample_curve, curve_name)
                 else:
-                    self.legend.setBrush(pg.mkBrush(245, 245, 245, 220))
-                    self.legend.setPen(pg.mkPen(200, 200, 200))
+                    plot.setXLink(first_plot)
 
-                # Populate the shared legend for ALL selected laps across all loaded sessions
+                if row == len(self.selected_channels) - 1:
+                    plot.getAxis("bottom").setStyle(showValues=True)
+                    plot.getAxis("bottom").setHeight(40)
+                    plot.setLabel("bottom", f"{self.x_axis_channel}")
+                else:
+                    # Keep bottom axis active to render X grid lines, but without text numbers
+                    plot.getAxis("bottom").setStyle(showValues=False, tickLength=0)
+                    plot.getAxis("bottom").setHeight(0)
+
+                # Synchronized vertical crosshair
+                v_line = pg.InfiniteLine(
+                    angle=90, movable=False,
+                    pen=pg.mkPen("#FFD740", width=1, style=Qt.DashLine)
+                )
+                v_line.setVisible(self.show_cursor_values)
+                plot.addItem(v_line, ignoreBounds=True)
+                self.v_lines.append(v_line)
+
+                self.plot_widgets[channel_name] = plot
+
+                # Plot curves and create tracking dots for each selected lap
                 for session_id, lap_num, color in self.selected_laps_info:
-                    session = self.sessions.get(session_id)
-                    session_name = session.name if session else session_id
-                    default_name = f"{session_name} L{lap_num}"
-                    curve_name = self.custom_lap_labels.get((session_id, lap_num), default_name)
-                    sample_curve = pg.PlotDataItem(pen=pg.mkPen(color=color, width=2.5))
-                    self.legend.addItem(sample_curve, curve_name)
-            else:
-                plot.setXLink(first_plot)
+                    if session_id not in self.sessions:
+                        continue
+                    session = self.sessions[session_id]
+                    lap = session.get_lap(lap_num)
+                    if not lap:
+                        continue
 
-            if row == len(self.selected_channels) - 1:
-                plot.getAxis("bottom").setStyle(showValues=True)
-                plot.getAxis("bottom").setHeight(40)
-                plot.setLabel("bottom", f"{self.x_axis_channel}")
-            else:
-                # Keep bottom axis active to render X grid lines, but without text numbers
-                plot.getAxis("bottom").setStyle(showValues=False, tickLength=0)
-                plot.getAxis("bottom").setHeight(0)
+                    raw_x = lap.get_channel(self.x_axis_slug)
+                    raw_y = lap.get_channel(channel_name)
 
-            # Synchronized vertical crosshair
-            v_line = pg.InfiniteLine(
-                angle=90, movable=False,
-                pen=pg.mkPen("#FFD740", width=1, style=Qt.DashLine)
-            )
-            v_line.setVisible(self.show_cursor_values)
-            plot.addItem(v_line, ignoreBounds=True)
-            self.v_lines.append(v_line)
+                    if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
+                        x_normalized = raw_x - raw_x[0]
+                        pen = pg.mkPen(color=color, width=1.8)
 
-            self.plot_widgets[channel_name] = plot
+                        curve = plot.plot(x_normalized, raw_y, pen=pen)
 
-            # Plot curves and create tracking dots for each selected lap
-            for session_id, lap_num, color in self.selected_laps_info:
-                if session_id not in self.sessions:
-                    continue
-                session = self.sessions[session_id]
-                lap = session.get_lap(lap_num)
-                if not lap:
-                    continue
+                        # Create tracking dot for this curve
+                        dot_pen = pg.mkPen("#FFFFFF" if self.is_dark else "#000000", width=1.2)
+                        dot = pg.ScatterPlotItem(
+                            size=8,
+                            brush=pg.mkBrush(color),
+                            pen=dot_pen,
+                            symbol='o'
+                        )
+                        dot.setZValue(10)
+                        dot.setVisible(self.show_cursor_values)
+                        plot.addItem(dot, ignoreBounds=True)
+                        self.tracking_dots.append((dot, session_id, lap_num, channel_name))
 
-                raw_x = lap.get_channel(self.x_axis_slug)
-                raw_y = lap.get_channel(channel_name)
-
-                if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
-                    x_normalized = raw_x - raw_x[0]
-                    pen = pg.mkPen(color=color, width=1.8)
-
-                    curve = plot.plot(x_normalized, raw_y, pen=pen)
-
-                    # Create tracking dot for this curve
-                    dot_pen = pg.mkPen("#FFFFFF" if self.is_dark else "#000000", width=1.2)
-                    dot = pg.ScatterPlotItem(
-                        size=8,
-                        brush=pg.mkBrush(color),
-                        pen=dot_pen,
-                        symbol='o'
-                    )
-                    dot.setZValue(10)
-                    dot.setVisible(self.show_cursor_values)
-                    plot.addItem(dot, ignoreBounds=True)
-                    self.tracking_dots.append((dot, session_id, lap_num, channel_name))
-
-        self._update_row_heights()
-        self._on_autorange()
-        QTimer.singleShot(0, self._on_autorange)
+            self._update_row_heights()
+            self._on_autorange()
+        finally:
+            self.glw.scene().blockSignals(False)
+            self._is_rebuilding = False
 
     def _on_mouse_moved(self, evt):
-        if not self.plot_widgets or not self.show_cursor_values:
+        if getattr(self, "_is_rebuilding", False) or not self.plot_widgets or not self.show_cursor_values:
             return
 
-        first_plot = list(self.plot_widgets.values())[0]
-        mouse_point = first_plot.vb.mapSceneToView(evt)
-        x_val = mouse_point.x()
+        try:
+            first_plot = list(self.plot_widgets.values())[0]
+            if not first_plot or not hasattr(first_plot, "vb") or first_plot.vb is None:
+                return
+            mouse_point = first_plot.vb.mapSceneToView(evt)
+            x_val = mouse_point.x()
+        except Exception:
+            return
 
         # Update crosshair position on all stacked plots
         for v_line in self.v_lines:
-            v_line.setPos(x_val)
+            try:
+                v_line.setPos(x_val)
+            except Exception:
+                pass
 
         title_color = "#E0E0E0" if self.is_dark else "#202020"
 
         # Update tracking dots position on every curve (snapping directly to nearest actual curve vertex)
         for dot, session_id, lap_num, channel_name in self.tracking_dots:
-            session = self.sessions.get(session_id)
-            if not session:
-                dot.setData(x=[], y=[])
-                continue
-            lap = session.get_lap(lap_num)
-            if not lap:
-                dot.setData(x=[], y=[])
-                continue
-
-            raw_x = lap.get_channel(self.x_axis_slug)
-            raw_y = lap.get_channel(channel_name)
-
-            sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
-            if sample is not None:
-                actual_x, actual_y = sample
-                dot.setData(x=[actual_x], y=[actual_y])
-                dot.setVisible(True)
-            else:
-                dot.setData(x=[], y=[])
-
-        # Update each plot's header directly with its current channel values
-        for channel_name, plot in self.plot_widgets.items():
-            title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{channel_name}</span>"]
-
-            for session_id, lap_num, color in self.selected_laps_info:
+            try:
                 session = self.sessions.get(session_id)
                 if not session:
+                    dot.setData(x=[], y=[])
                     continue
                 lap = session.get_lap(lap_num)
                 if not lap:
+                    dot.setData(x=[], y=[])
                     continue
 
                 raw_x = lap.get_channel(self.x_axis_slug)
@@ -599,7 +608,39 @@ class GraphViewWidget(QWidget):
 
                 sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
                 if sample is not None:
-                    _, actual_y = sample
-                    title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{actual_y:.2f}</span>")
+                    actual_x, actual_y = sample
+                    dot.setData(x=[actual_x], y=[actual_y])
+                    dot.setVisible(True)
+                else:
+                    dot.setData(x=[], y=[])
+            except Exception:
+                pass
 
-            plot.setTitle(" &nbsp;&nbsp;&nbsp; ".join(title_parts), justify='left')
+        # Update each plot's header directly with its current channel values
+        for channel_name, plot in list(self.plot_widgets.items()):
+            try:
+                display_label = channel_name
+                if self.state_manager:
+                    display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+                title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"]
+
+                for session_id, lap_num, color in self.selected_laps_info:
+                    session = self.sessions.get(session_id)
+                    if not session:
+                        continue
+                    lap = session.get_lap(lap_num)
+                    if not lap:
+                        continue
+
+                    raw_x = lap.get_channel(self.x_axis_slug)
+                    raw_y = lap.get_channel(channel_name)
+
+                    sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+                    if sample is not None:
+                        _, actual_y = sample
+                        title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{actual_y:.2f}</span>")
+
+                full_title = " &nbsp;&nbsp;|&nbsp;&nbsp; ".join(title_parts)
+                plot.setTitle(full_title, justify='left')
+            except Exception:
+                pass

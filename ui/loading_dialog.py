@@ -120,14 +120,24 @@ class LoadingDialog(QDialog):
         self.worker.error.connect(_on_error, Qt.QueuedConnection)
 
         self.worker.start()
-        self.exec()
+        try:
+            self.exec()
+        finally:
+            try:
+                self.worker.success.disconnect(_on_success)
+            except Exception:
+                pass
+            try:
+                self.worker.error.disconnect(_on_error)
+            except Exception:
+                pass
 
-        # Guarantee the background worker thread has completely exited before continuing
-        if self.worker.isRunning():
-            self.worker.requestInterruption()
-            self.worker.wait(3000)
-        else:
-            self.worker.wait()
+            # Guarantee the background worker thread has completely exited before continuing
+            if self.worker.isRunning():
+                self.worker.requestInterruption()
+                self.worker.wait(3000)
+            else:
+                self.worker.wait()
 
         return self.is_success
 

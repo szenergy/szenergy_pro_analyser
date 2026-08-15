@@ -2,6 +2,7 @@
 Robust parser for CSV, XLSX, and TDMS telemetry files.
 Handles multi-rate TDMS channels, non-UTF8 encodings, custom delimiters,
 metadata header preambles, and non-numeric value coercion.
+All internal keys use slugs (not display labels).
 """
 
 import os
@@ -205,33 +206,22 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
                                 preset_name: Optional[str] = None) -> Session:
     """
     Parses a Session in memory from an existing raw DataFrame and mapping dictionary.
-    Avoids re-reading files from disk and executes instantaneously.
+    Mapping values are slugs (e.g. {"Speed_kmh": "speed"}).
+    DataFrame columns are renamed to slugs. All internal keys use slugs.
     """
-    # Filter only columns present in mapping and rename to target names
-    valid_mapping = {raw: mapped for raw, mapped in mapping.items() if raw in raw_df.columns}
+    # Filter only columns present in mapping and rename to slug keys
+    valid_mapping = {raw: slug for raw, slug in mapping.items() if raw in raw_df.columns}
     df = raw_df[list(valid_mapping.keys())].rename(columns=valid_mapping)
 
     # Coerce all mapped columns to numeric (non-numeric values become NaN)
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Resolve actual lap, time, and distance columns using configured labels or slug fallbacks
-    resolved_lap = _resolve_channel_column(list(df.columns), lap_label, STD_CHANNEL_LAP, lap_slug)
-    resolved_time = _resolve_channel_column(list(df.columns), time_label, STD_CHANNEL_TIME, time_slug, ["timestamp"])
-    resolved_dist = _resolve_channel_column(list(df.columns), dist_label, STD_CHANNEL_DISTANCE, dist_slug, ["dist"])
-
-    # Build slug to channel column mapping for fast lookups
-    slug_map: Dict[str, str] = {}
-    if resolved_lap:
-        slug_map[lap_slug] = str(resolved_lap)
-    if resolved_time:
-        slug_map[time_slug] = str(resolved_time)
-    if resolved_dist:
-        slug_map[dist_slug] = str(resolved_dist)
-    for col in df.columns:
-        c_slug = generate_slug(str(col))
-        if c_slug not in slug_map:
-            slug_map[c_slug] = str(col)
+    # Resolve actual lap, time, and distance columns using configured labels or slug fallbacks.
+    # After renaming, columns are slugs, so we resolve against slug names.
+    resolved_lap = _resolve_channel_column(list(df.columns), lap_slug, SLUG_LAP, lap_slug)
+    resolved_time = _resolve_channel_column(list(df.columns), time_slug, SLUG_TIME, time_slug, ["timestamp"])
+    resolved_dist = _resolve_channel_column(list(df.columns), dist_slug, SLUG_DISTANCE, dist_slug, ["dist"])
 
     session_name = os.path.basename(file_path)
     session = Session(
@@ -272,7 +262,6 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
             duration=max(0.0, duration),
             distance=max(0.0, distance),
             data=channel_data,
-            slug_to_channel=slug_map
         )
         session.laps.append(single_lap)
         return session
@@ -319,7 +308,6 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
             duration=max(0.0, duration),
             distance=max(0.0, distance),
             data=channel_data,
-            slug_to_channel=slug_map
         )
         session.laps.append(lap_obj)
 
@@ -335,7 +323,6 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
             duration=0.0,
             distance=0.0,
             data=channel_data,
-            slug_to_channel=slug_map
         ))
 
     return session
@@ -351,6 +338,7 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
                   preset_name: Optional[str] = None) -> Session:
     """
     Parses a log file from disk into a Session object and retains raw_df in memory.
+    Mapping values should be slugs.
     """
     raw_df = load_full_dataframe(file_path)
     return parse_session_from_dataframe(

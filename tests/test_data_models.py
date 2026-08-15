@@ -11,27 +11,25 @@ class TestDataModels(unittest.TestCase):
 
     def test_lap_creation_and_channel_access(self):
         data = {
-            "Time": np.array([0.0, 0.1, 0.2]),
-            "Speed": np.array([20.0, 25.0, 30.0])
+            "time": np.array([0.0, 0.1, 0.2]),
+            "speed": np.array([20.0, 25.0, 30.0])
         }
         lap = Lap(
             session_id="session_1",
             lap_number=1,
             duration=65.4,
             distance=1200.0,
-            data=data,
-            slug_to_channel={"time": "Time", "speed": "Speed"}
+            data=data
         )
 
         self.assertEqual(lap.session_id, "session_1")
         self.assertEqual(lap.lap_number, 1)
         self.assertEqual(lap.duration, 65.4)
         self.assertEqual(lap.distance, 1200.0)
-        np.testing.assert_array_equal(lap.get_channel("Speed"), np.array([20.0, 25.0, 30.0]))
-        # Test slug-based access
         np.testing.assert_array_equal(lap.get_channel("speed"), np.array([20.0, 25.0, 30.0]))
+        # Test get_channel_by_slug is also available
         np.testing.assert_array_equal(lap.get_channel_by_slug("time"), np.array([0.0, 0.1, 0.2]))
-        self.assertIsNone(lap.get_channel("NonExistent"))
+        self.assertIsNone(lap.get_channel("nonexistent"))
 
     def test_session_lap_lookup(self):
         lap1 = Lap(session_id="s1", lap_number=1, duration=60.0)
@@ -42,7 +40,7 @@ class TestDataModels(unittest.TestCase):
             name="test_log.csv",
             file_path="/tmp/test_log.csv",
             laps=[lap1, lap2],
-            channels=["Speed", "RPM"]
+            channels=["speed", "rpm"]
         )
 
         self.assertEqual(len(session.laps), 2)

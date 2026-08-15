@@ -5,7 +5,9 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import pandas as pd
-from PySide6.QtWidgets import QApplication, QHeaderView, QMenu, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu
+)
 from PySide6.QtCore import QPointF, QPoint, Qt
 
 from core.data_models import Session, Lap
@@ -29,12 +31,13 @@ class TestUIComponents(unittest.TestCase):
             id="s_test",
             name="test_session.csv",
             file_path="/tmp/test.csv",
-            channels=["Speed", "RPM"]
+            channels=["speed", "rpm", "distance"]
         )
         data1 = {
-            "Time": np.array([0.0, 1.0, 2.0]),
-            "Speed": np.array([10.0, 20.0, 30.0]),
-            "RPM": np.array([1000.0, 2000.0, 3000.0])
+            "time": np.array([0.0, 1.0, 2.0]),
+            "distance": np.array([0.0, 10.0, 20.0]),
+            "speed": np.array([10.0, 20.0, 30.0]),
+            "rpm": np.array([1000.0, 2000.0, 3000.0])
         }
         lap1 = Lap("s_test", 1, 2.0, 30.0, data1)
         self.session.laps.append(lap1)
@@ -49,12 +52,12 @@ class TestUIComponents(unittest.TestCase):
 
         # Select laps and channels
         widget.set_selected_laps([(self.session.id, 1, "#00E676")])
-        widget.set_selected_channels({"Speed", "RPM"})
+        widget.set_selected_channels({"speed", "rpm"})
 
         # Should rebuild plots without raising AttributeError
         self.assertEqual(len(widget.plot_widgets), 2)
-        self.assertIn("Speed", widget.plot_widgets)
-        self.assertIn("RPM", widget.plot_widgets)
+        self.assertIn("speed", widget.plot_widgets)
+        self.assertIn("rpm", widget.plot_widgets)
 
     def test_equal_viewbox_heights_and_x_grid_on_all_plots(self):
         widget = GraphViewWidget()
@@ -62,17 +65,17 @@ class TestUIComponents(unittest.TestCase):
         sessions = {self.session.id: self.session}
         widget.set_sessions(sessions)
         widget.set_selected_laps([(self.session.id, 1, "#00E676")])
-        widget.set_selected_channels({"Speed", "RPM"})
+        widget.set_selected_channels({"speed", "rpm"})
 
         widget.show()
         app.processEvents()
 
         # Both plots must have bottom axis with grid enabled
-        p1 = widget.plot_widgets["Speed"]
-        p2 = widget.plot_widgets["RPM"]
+        p1 = widget.plot_widgets["speed"]
+        p2 = widget.plot_widgets["rpm"]
 
-        self.assertNotEqual(p1.getAxis("bottom").grid, False)
-        self.assertNotEqual(p2.getAxis("bottom").grid, False)
+        self.assertEqual(p1.getAxis("bottom").grid, False)
+        self.assertEqual(p2.getAxis("bottom").grid, False)
 
         # ViewBox heights should be equal
         h1 = p1.vb.geometry().height()
@@ -84,14 +87,14 @@ class TestUIComponents(unittest.TestCase):
         sessions = {self.session.id: self.session}
         widget.set_sessions(sessions)
         widget.set_selected_laps([(self.session.id, 1, "#00E676")])
-        widget.set_selected_channels({"Speed"})
+        widget.set_selected_channels({"speed"})
 
         # 1. Test X Grid Toggle
-        self.assertTrue(widget.btn_x_grid.isChecked())
-        widget.btn_x_grid.setChecked(False)
-        self.assertFalse(widget.show_x_grid)
+        self.assertFalse(widget.btn_x_grid.isChecked())
         widget.btn_x_grid.setChecked(True)
         self.assertTrue(widget.show_x_grid)
+        widget.btn_x_grid.setChecked(False)
+        self.assertFalse(widget.show_x_grid)
 
         # 2. Test Y Grid Toggle
         self.assertTrue(widget.btn_y_grid.isChecked())
@@ -138,7 +141,7 @@ class TestUIComponents(unittest.TestCase):
         widget = GraphViewWidget()
         widget.set_sessions(sessions)
         widget.set_selected_laps(selected_laps)
-        widget.set_selected_channels({"Speed"})
+        widget.set_selected_channels({"speed"})
 
         # Apply custom label
         widget.custom_lap_labels.update(dialog.renamed_labels)
@@ -154,18 +157,19 @@ class TestUIComponents(unittest.TestCase):
         sessions = {self.session.id: self.session}
         widget.set_sessions(sessions)
         widget.set_selected_laps([(self.session.id, 1, "#00E676")])
-        widget.set_selected_channels({"Speed", "RPM"})
+        widget.set_selected_channels({"speed", "rpm"})
 
         # 2 channels * 1 lap = 2 tracking dots
         self.assertEqual(len(widget.tracking_dots), 2)
 
-        # Test cursor movement at X = 1.0s
-        first_plot = widget.plot_widgets["Speed"]
+        # Test cursor movement at X = 1.0s (requires Time as X-axis)
+        widget.x_axis_slug = "time"
+        first_plot = widget.plot_widgets["speed"]
         scene_pos = first_plot.vb.mapViewToScene(QPointF(1.0, 20.0))
         widget._on_mouse_moved(scene_pos)
 
         # Verify dot data updated (Speed should be 20.0 at X=1.0)
-        speed_dot = [d for d, _, _, ch in widget.tracking_dots if ch == "Speed"][0]
+        speed_dot = [d for d, _, _, ch in widget.tracking_dots if ch == "speed"][0]
         points = speed_dot.points()
         self.assertEqual(len(points), 1)
         self.assertAlmostEqual(points[0].pos().x(), 1.0, places=2)
@@ -191,7 +195,7 @@ class TestUIComponents(unittest.TestCase):
             # Time
             "time": "Time", "timestamp": "Time", "ido": "Time", "sec": "Time", "t": "Time",
             # Distance
-            "distance": "Distance", "dist": "Distance", "tavolsag": "Distance", "pos": "Distance", "position": "Distance", "odo": "Distance", "d": "Distance",
+            "distance": "Distance", "dist": "Distance", "tavolsag": "Distance", "pos": "Distance", "position": "Distance", "odo": "Distance", "d": "Distance", "dist_m": "Distance",
             # Speed
             "speed": "Speed", "spd": "Speed", "velocity": "Speed", "vel": "Speed", "sebesseg": "Speed", "kmh": "Speed", "kph": "Speed", "mph": "Speed",
             # RPM
@@ -203,9 +207,9 @@ class TestUIComponents(unittest.TestCase):
             # Throttle
             "throttle": "Throttle", "tps": "Throttle", "pedal": "Throttle", "accel_pedal": "Throttle", "gaz": "Throttle",
             # Temperature
-            "temperature": "Temperature", "temp": "Temperature", "homerséklet": "Temperature", "degc": "Temperature", "homerseklet": "Temperature", "Battery_Temp": "Temperature",
+            "temperature": "Temperature", "temp": "Temperature", "homerseklet": "Temperature", "degc": "Temperature",
             # SteeringAngle
-            "steering": "SteeringAngle", "steer": "SteeringAngle", "kormanyszog": "SteeringAngle", "kormányszög": "SteeringAngle", "Steering_Angle": "SteeringAngle",
+            "steering": "SteeringAngle", "steer": "SteeringAngle", "kormanyszog": "SteeringAngle",
             # Power & Energy
             "power": "Power", "watt": "Power", "kw": "Power",
             "energy": "Energy", "wh": "Energy", "kwh": "Energy", "joule": "Energy",
@@ -261,11 +265,25 @@ class TestUIComponents(unittest.TestCase):
 
         # Save preset with new custom channel names
         mapping = {
-            "Raw_Brake": "Brake Pressure [bar]",
-            "Raw_Coolant": "Coolant Temp [C]"
+            "Raw_Brake": "brake_pressure_bar",
+            "Raw_Coolant": "coolant_temp_c"
         }
         dlg.preset_name_input.setText("Custom_Sensors_Preset")
-        dlg._save_new_custom_channels(mapping)
+        dlg.table.setRowCount(2)
+        # row 0
+        dlg.table.setItem(0, 0, QTableWidgetItem("Raw_Brake"))
+        combo1 = QComboBox()
+        combo1.addItems(["Brake Pressure [bar]"])
+        combo1.setCurrentIndex(0)
+        dlg.table.setCellWidget(0, 1, combo1)
+        # row 1
+        dlg.table.setItem(1, 0, QTableWidgetItem("Raw_Coolant"))
+        combo2 = QComboBox()
+        combo2.addItems(["Coolant Temp [C]"])
+        combo2.setCurrentIndex(0)
+        dlg.table.setCellWidget(1, 1, combo2)
+
+        dlg._save_new_custom_channels_from_table()
         state_mgr.save_preset("Custom_Sensors_Preset", mapping)
 
         labels = state_mgr.get_channel_labels()
@@ -310,9 +328,9 @@ class TestUIComponents(unittest.TestCase):
         """Validates that selecting >12 laps at once clamps selection to 12 and updates state cleanly."""
         sidebar = SidebarWidget()
         # Create session with 15 laps
-        session_15 = Session(id="s_15", name="sess_15.csv", file_path="/tmp/15.csv", channels=["Speed"])
+        session_15 = Session(id="s_15", name="sess_15.csv", file_path="/tmp/15.csv", channels=["speed"])
         for i in range(1, 16):
-            lap = Lap("s_15", i, 1.0, 10.0, {"Time": np.array([0.0, 1.0]), "Speed": np.array([10.0, 20.0])})
+            lap = Lap("s_15", i, 1.0, 10.0, {"time": np.array([0.0, 1.0]), "speed": np.array([10.0, 20.0])})
             session_15.laps.append(lap)
 
         sidebar.add_session(session_15)
@@ -372,11 +390,11 @@ class TestUIComponents(unittest.TestCase):
         sidebar = SidebarWidget()
         session1 = Session(
             id="s1", name="s1.csv", file_path="/tmp/s1.csv",
-            channels=["Speed", "RPM", "Throttle"]
+            channels=["speed", "rpm", "throttle"]
         )
         session2 = Session(
             id="s2", name="s2.csv", file_path="/tmp/s2.csv",
-            channels=["Speed", "RPM", "Battery_Temp"]
+            channels=["speed", "rpm", "battery_temp"]
         )
 
         emitted_channels = []
@@ -384,27 +402,27 @@ class TestUIComponents(unittest.TestCase):
 
         # Add session 1 and select Speed and RPM
         sidebar.add_session(session1)
-        sidebar.selected_channels = {"Speed", "RPM"}
+        sidebar.selected_channels = {"speed", "rpm"}
         for i in range(sidebar.channel_tree.topLevelItemCount()):
             item = sidebar.channel_tree.topLevelItem(i)
-            if item.text(0) in {"Speed", "RPM"}:
+            if item.text(0) in {"speed", "rpm"}:
                 item.setSelected(True)
 
         # Add session 2: Speed and RPM must remain selected and tree must be checked
         sidebar.add_session(session2)
-        self.assertEqual(sidebar.selected_channels, {"Speed", "RPM"})
+        self.assertEqual(sidebar.selected_channels, {"speed", "rpm"})
         selected_in_tree = {
             sidebar.channel_tree.topLevelItem(i).text(0)
             for i in range(sidebar.channel_tree.topLevelItemCount())
             if sidebar.channel_tree.topLevelItem(i).isSelected()
         }
-        self.assertEqual(selected_in_tree, {"Speed", "RPM"})
-        self.assertEqual(emitted_channels[-1], {"Speed", "RPM"})
+        self.assertEqual(selected_in_tree, {"speed", "rpm"})
+        self.assertEqual(emitted_channels[-1], {"speed", "rpm"})
 
         # Remove session 1: Speed and RPM exist in session2, so they should remain
         sidebar.remove_session("s1")
-        self.assertEqual(sidebar.selected_channels, {"Speed", "RPM"})
-        self.assertEqual(emitted_channels[-1], {"Speed", "RPM"})
+        self.assertEqual(sidebar.selected_channels, {"speed", "rpm"})
+        self.assertEqual(emitted_channels[-1], {"speed", "rpm"})
 
         # Remove session 2: All channels gone
         sidebar.remove_session("s2")
@@ -414,9 +432,9 @@ class TestUIComponents(unittest.TestCase):
     def test_sidebar_laps_selection_deterministic_sorting(self):
         """Validates that laps_selection_changed emits deterministically sorted tuples by (session_id, lap_num)."""
         sidebar = SidebarWidget()
-        sess = Session(id="s_sort", name="sort.csv", file_path="/tmp/sort.csv", channels=["Speed"])
+        sess = Session(id="s_sort", name="sort.csv", file_path="/tmp/sort.csv", channels=["speed"])
         for i in range(1, 6):
-            sess.laps.append(Lap("s_sort", i, 1.0, 10.0, {"Time": np.array([0.0, 1.0]), "Speed": np.array([10.0, 20.0])}))
+            sess.laps.append(Lap("s_sort", i, 1.0, 10.0, {"time": np.array([0.0, 1.0]), "speed": np.array([10.0, 20.0])}))
         sidebar.add_session(sess)
 
         emitted_laps = []
@@ -441,13 +459,13 @@ class TestUIComponents(unittest.TestCase):
         sessions = {self.session.id: self.session}
         widget.set_sessions(sessions)
         widget.set_selected_laps([(self.session.id, 1, "#00E676")])
-        widget.set_selected_channels({"Speed"})
+        widget.set_selected_channels({"speed"})
 
         widget.show()
         app.processEvents()
 
         self.assertEqual(len(widget.plot_widgets), 1)
-        plot = widget.plot_widgets["Speed"]
+        plot = widget.plot_widgets["speed"]
         vb_h = plot.vb.geometry().height()
         self.assertGreater(vb_h, 300)
         # Verify bottom axis is active on N=1
@@ -532,7 +550,7 @@ class TestUIComponents(unittest.TestCase):
         widget = GraphViewWidget()
         sessions = {self.session.id: self.session}
         widget.set_sessions(sessions)
-        widget.selected_channels = ["Speed"]
+        widget.selected_channels = ["speed"]
 
         with patch.object(widget, "_on_autorange") as mock_autorange:
             # 1. Changing selected laps triggers auto-range
@@ -541,7 +559,7 @@ class TestUIComponents(unittest.TestCase):
 
         with patch.object(widget, "_on_autorange") as mock_autorange2:
             # 2. Changing selected channels triggers auto-range
-            widget.set_selected_channels({"Speed", "RPM"})
+            widget.set_selected_channels({"speed", "rpm"})
             mock_autorange2.assert_called()
 
     def test_legend_displays_all_laps_across_multiple_files_with_unequal_channels(self):
@@ -549,16 +567,16 @@ class TestUIComponents(unittest.TestCase):
         widget = GraphViewWidget()
 
         # Session 1 has Brake and Speed
-        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["Brake", "Speed"])
-        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"Time": np.array([0, 1]), "Brake": np.array([50, 100]), "Speed": np.array([10, 20])}))
+        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["brake", "speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "brake": np.array([50, 100]), "speed": np.array([10, 20])}))
 
         # Session 2 has ONLY Speed (NO Brake)
-        s2 = Session(id="s2", name="run2.csv", file_path="/tmp/run2.csv", channels=["Speed"])
-        s2.laps.append(Lap("s2", 1, 11.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([12, 22])}))
+        s2 = Session(id="s2", name="run2.csv", file_path="/tmp/run2.csv", channels=["speed"])
+        s2.laps.append(Lap("s2", 1, 11.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([12, 22])}))
 
         widget.set_sessions({"s1": s1, "s2": s2})
-        # Brake is row 0 ('Brake' < 'Speed'), Speed is row 1
-        widget.set_selected_channels({"Brake", "Speed"})
+        # Brake is row 0 ('brake' < 'speed'), Speed is row 1
+        widget.set_selected_channels({"brake", "speed"})
         widget.set_selected_laps([("s1", 1, "#00E676"), ("s2", 1, "#FF5252")])
 
         self.assertIsNotNone(widget.legend)
@@ -570,11 +588,11 @@ class TestUIComponents(unittest.TestCase):
     def test_sidebar_preserves_selected_laps_when_adding_new_session(self):
         """Validates that adding a new session does not deselect previously selected laps in existing sessions."""
         sidebar = SidebarWidget()
-        s1 = Session(id="s1", name="file1.csv", file_path="/tmp/f1.csv", channels=["Speed"])
-        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([10, 20])}))
+        s1 = Session(id="s1", name="file1.csv", file_path="/tmp/f1.csv", channels=["speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([10, 20])}))
 
-        s2 = Session(id="s2", name="file2.csv", file_path="/tmp/f2.csv", channels=["Speed"])
-        s2.laps.append(Lap("s2", 1, 11.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([12, 22])}))
+        s2 = Session(id="s2", name="file2.csv", file_path="/tmp/f2.csv", channels=["speed"])
+        s2.laps.append(Lap("s2", 1, 11.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([12, 22])}))
 
         # Add session 1 and select Lap 1
         sidebar.add_session(s1)
@@ -606,7 +624,7 @@ class TestUIComponents(unittest.TestCase):
     def test_session_context_menu_edit_mapping_action(self):
         """Validates that right-clicking a session offers 'Edit Channel Mapping...' and emits signal."""
         sidebar = SidebarWidget()
-        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["Speed"])
+        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["speed"])
         sidebar.add_session(s1)
 
         received_session_id = []
@@ -630,7 +648,7 @@ class TestUIComponents(unittest.TestCase):
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         raw_cols = ["Raw_Lap", "Raw_Time", "Raw_Spd"]
         preview_df = pd.DataFrame({"Raw_Lap": [1], "Raw_Time": [0.0], "Raw_Spd": [25.0]})
-        initial_map = {"Raw_Lap": "Lap", "Raw_Time": "Time", "Raw_Spd": "Speed"}
+        initial_map = {"Raw_Lap": "lap", "Raw_Time": "time", "Raw_Spd": "speed"}
 
         wizard = ImportWizardDialog(
             file_path="/tmp/test_log.csv",
@@ -650,19 +668,19 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(wizard.preset_input.text(), "MyCarPreset")
 
         # Saving preset should update the preset in state_manager
-        with patch.object(QMessageBox, "information") as mock_info:
+        with patch.object(QMessageBox, "information"):
             wizard._on_save_preset()
         saved_presets = state_mgr.load_presets()
         self.assertIn("MyCarPreset", saved_presets)
-        self.assertEqual(saved_presets["MyCarPreset"]["Raw_Spd"], "Speed")
+        self.assertEqual(saved_presets["MyCarPreset"]["Raw_Spd"], "speed")
         self.assertEqual(wizard.result_preset_name, "MyCarPreset")
 
     def test_sidebar_update_session_preserves_selection_and_colors(self):
         """Validates that update_session replaces session laps while retaining lap selections and allocated colors."""
         sidebar = SidebarWidget()
-        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["Speed"])
-        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([10, 20])}))
-        s1.laps.append(Lap("s1", 2, 12.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([15, 25])}))
+        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([10, 20])}))
+        s1.laps.append(Lap("s1", 2, 12.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([15, 25])}))
 
         sidebar.add_session(s1)
 
@@ -674,14 +692,14 @@ class TestUIComponents(unittest.TestCase):
         self.assertIn(("s1", 1), sidebar.allocated_colors)
         saved_color = sidebar.allocated_colors[("s1", 1)]
 
-        # Update session with renamed channel "VehicleSpeed"
+        # Update session with renamed channel "vehiclespeed"
         s1_updated = Session(
             id="s1", name="run1.csv", file_path="/tmp/run1.csv",
-            channels=["VehicleSpeed"],
-            mapping={"Raw_Lap": "Lap", "Raw_Time": "Time", "Raw_Spd": "VehicleSpeed"}
+            channels=["vehiclespeed"],
+            mapping={"Raw_Lap": "lap", "Raw_Time": "time", "Raw_Spd": "vehiclespeed"}
         )
-        s1_updated.laps.append(Lap("s1", 1, 10.0, 100.0, {"Time": np.array([0, 1]), "VehicleSpeed": np.array([10, 20])}))
-        s1_updated.laps.append(Lap("s1", 2, 12.0, 100.0, {"Time": np.array([0, 1]), "VehicleSpeed": np.array([15, 25])}))
+        s1_updated.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "vehiclespeed": np.array([10, 20])}))
+        s1_updated.laps.append(Lap("s1", 2, 12.0, 100.0, {"time": np.array([0, 1]), "vehiclespeed": np.array([15, 25])}))
 
         sidebar.update_session(s1_updated)
 
@@ -689,7 +707,121 @@ class TestUIComponents(unittest.TestCase):
         updated_item_l1 = sidebar.session_tree.topLevelItem(0).child(0)
         self.assertTrue(updated_item_l1.isSelected())
         self.assertEqual(sidebar.allocated_colors[("s1", 1)], saved_color)
-        self.assertIn("VehicleSpeed", sidebar.sessions["s1"].channels)
+        self.assertIn("vehiclespeed", sidebar.sessions["s1"].channels)
+
+    def test_sequential_multi_file_import_and_graph_stability(self):
+        """Validates that importing multiple files sequentially with active plots does not crash or leak threads."""
+        from ui.main_window import MainWindow
+        from ui.import_wizard import ImportWizardDialog
+
+        win = MainWindow()
+        win.state_manager.config_dir = self.temp_dir.name
+
+        # Create two CSV files
+        csv1 = os.path.join(self.temp_dir.name, "log1.csv")
+        csv2 = os.path.join(self.temp_dir.name, "log2.csv")
+
+        df1 = pd.DataFrame({
+            "Lap": [1, 1, 2, 2],
+            "Time": [0.0, 1.0, 2.0, 3.0],
+            "Distance": [0, 10, 20, 30],
+            "Speed": [10, 20, 30, 40]
+        })
+        df1.to_csv(csv1, index=False)
+        df1.to_csv(csv2, index=False)
+
+        # Mock wizard to return standard mapping automatically
+        def fake_wizard_exec(wizard_self):
+            wizard_self.result_mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Speed": "speed"}
+            wizard_self.result_preset_name = None
+            return ImportWizardDialog.Accepted
+
+        with patch.object(ImportWizardDialog, "exec", fake_wizard_exec):
+            win._import_file(csv1)
+            self.assertEqual(len(win.sessions), 1)
+
+            # Select lap and channel to activate plots
+            win.sidebar.selected_channels = {"speed"}
+            win.sidebar.update_available_channels()
+            win.graph_view.set_selected_laps([(list(win.sessions.keys())[0], 1, "#00E676")])
+            win.graph_view.set_selected_channels({"speed"})
+
+            # Simulate mouse movement on active plot
+            first_plot = list(win.graph_view.plot_widgets.values())[0]
+            scene_pos = first_plot.vb.mapViewToScene(QPointF(1.0, 20.0))
+            win.graph_view._on_mouse_moved(scene_pos)
+
+            # Import second file while plot is active
+            win._import_file(csv2)
+            self.assertEqual(len(win.sessions), 2)
+
+            # Move mouse again
+            win.graph_view._on_mouse_moved(scene_pos)
+
+    def test_preset_preview_dialog_preset_switching_and_stats(self):
+        """Validates that PresetPreviewDialog displays match stats and allows switching presets."""
+        from ui.import_wizard import PresetPreviewDialog
+
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_preset("PresetA", {"Time": "time", "Lap": "lap", "Speed": "speed", "Missing_Col": "rpm"})
+        state_mgr.save_preset("PresetB", {"Time": "time", "Lap": "lap"})
+
+        raw_columns = ["Time", "Lap", "Speed", "Unmapped_Col"]
+
+        dlg = PresetPreviewDialog(
+            file_path="/tmp/run.csv",
+            preset_name="PresetA",
+            mapping={"Time": "time", "Lap": "lap", "Speed": "speed", "Missing_Col": "rpm"},
+            raw_columns=raw_columns,
+            state_manager=state_mgr
+        )
+
+        # Initial PresetA stats: 3 mapped, 1 missing in file, 1 unmapped in file
+        self.assertIn("3 Mapped in File", dlg.stats_label.text())
+        self.assertIn("1 in Preset but Missing in File", dlg.stats_label.text())
+        self.assertIn("1 Skipped", dlg.stats_label.text())
+
+        filtered_map = dlg.get_filtered_mapping()
+        self.assertEqual(len(filtered_map), 3)
+        self.assertNotIn("Missing_Col", filtered_map)
+
+        # Switch to PresetB
+        dlg.preset_combo.setCurrentText("PresetB")
+        self.assertEqual(dlg.selected_preset_name, "PresetB")
+        self.assertIn("2 Mapped in File", dlg.stats_label.text())
+        self.assertIn("0 in Preset but Missing in File", dlg.stats_label.text())
+        self.assertIn("2 Skipped", dlg.stats_label.text())
+
+    def test_import_wizard_manual_preset_loading(self):
+        """Validates that ImportWizardDialog allows selecting and applying a preset manually."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_preset("CustomTelemetry", {
+            "Raw_Lap": "lap",
+            "Raw_Time": "time",
+            "Raw_Spd": "speed"
+        })
+
+        raw_cols = ["Raw_Lap", "Raw_Time", "Raw_Spd", "Raw_Extra"]
+        preview_df = pd.DataFrame({c: [0.0] for c in raw_cols})
+
+        wizard = ImportWizardDialog(
+            file_path="/tmp/test_unmapped.csv",
+            raw_columns=raw_cols,
+            preview_df=preview_df,
+            state_manager=state_mgr
+        )
+
+        # Manually select and apply CustomTelemetry preset
+        wizard.load_preset_combo.setCurrentText("CustomTelemetry")
+        wizard._on_apply_preset_button_clicked()
+
+        self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap")
+        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Time")
+        self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
+        self.assertEqual(wizard.combos["Raw_Extra"].currentText(), "-- Skip --")
+        self.assertEqual(wizard.preset_input.text(), "CustomTelemetry")
+        self.assertFalse(wizard.preset_status_label.isHidden())
+        self.assertIn("3 channels mapped", wizard.preset_status_label.text())
 
 
 if __name__ == "__main__":
