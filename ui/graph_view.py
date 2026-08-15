@@ -194,13 +194,13 @@ class GraphViewWidget(QWidget):
         self.selected_channels: List[str] = []
         self.selected_laps_info: List[Tuple[str, int, str]] = []
         self.custom_lap_labels: Dict[Tuple[str, int], str] = {}
-        self.x_axis_slug: str = SLUG_TIME
+        self.x_axis_slug: str = SLUG_DISTANCE
         self.time_label: str = STD_CHANNEL_TIME
         self.dist_label: str = STD_CHANNEL_DISTANCE
         self.is_dark: bool = True
 
         # View and Display toggles
-        self.show_x_grid: bool = True
+        self.show_x_grid: bool = False
         self.show_y_grid: bool = True
         self.show_cursor_values: bool = True
         self.show_legend: bool = True
@@ -239,7 +239,7 @@ class GraphViewWidget(QWidget):
         # 2. Toggle X-Axis Grid Button
         self.btn_x_grid = QPushButton()
         self.btn_x_grid.setCheckable(True)
-        self.btn_x_grid.setChecked(True)
+        self.btn_x_grid.setChecked(self.show_x_grid)
         self.btn_x_grid.setToolTip("Toggle X-Axis Grid Lines")
         self.btn_x_grid.setFixedSize(32, 28)
         self.btn_x_grid.setIconSize(QSize(18, 18))
@@ -249,7 +249,7 @@ class GraphViewWidget(QWidget):
         # 3. Toggle Y-Axis Grid Button
         self.btn_y_grid = QPushButton()
         self.btn_y_grid.setCheckable(True)
-        self.btn_y_grid.setChecked(True)
+        self.btn_y_grid.setChecked(self.show_y_grid)
         self.btn_y_grid.setToolTip("Toggle Y-Axis Grid Lines")
         self.btn_y_grid.setFixedSize(32, 28)
         self.btn_y_grid.setIconSize(QSize(18, 18))
@@ -259,7 +259,7 @@ class GraphViewWidget(QWidget):
         # 4. Toggle Cursor Values Display Button
         self.btn_cursor = QPushButton()
         self.btn_cursor.setCheckable(True)
-        self.btn_cursor.setChecked(True)
+        self.btn_cursor.setChecked(self.show_cursor_values)
         self.btn_cursor.setToolTip("Toggle Cursor Crosshair & Value Display")
         self.btn_cursor.setFixedSize(32, 28)
         self.btn_cursor.setIconSize(QSize(18, 18))
@@ -269,7 +269,7 @@ class GraphViewWidget(QWidget):
         # 5. Toggle Legend / Label Button
         self.btn_legend = QPushButton()
         self.btn_legend.setCheckable(True)
-        self.btn_legend.setChecked(True)
+        self.btn_legend.setChecked(self.show_legend)
         self.btn_legend.setToolTip("Toggle Curve Legend")
         self.btn_legend.setFixedSize(32, 28)
         self.btn_legend.setIconSize(QSize(18, 18))

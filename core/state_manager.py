@@ -70,6 +70,7 @@ class StateManager:
 
     def save_preset(self, preset_name: str, mapping: Dict[str, str]) -> None:
         """Save or update a preset mapping."""
+        os.makedirs(os.path.dirname(self.presets_file), exist_ok=True)
         presets = self.load_presets()
         presets[preset_name] = mapping
         with open(self.presets_file, "w", encoding="utf-8") as f:
@@ -80,6 +81,7 @@ class StateManager:
         presets = self.load_presets()
         if preset_name in presets:
             del presets[preset_name]
+            os.makedirs(os.path.dirname(self.presets_file), exist_ok=True)
             with open(self.presets_file, "w", encoding="utf-8") as f:
                 json.dump(presets, f, indent=4)
 
@@ -135,6 +137,7 @@ class StateManager:
 
     def save_channel_defs(self, channels: List[Dict[str, str]]) -> None:
         """Persists the channel definitions list to JSON."""
+        os.makedirs(os.path.dirname(self.channels_file), exist_ok=True)
         with open(self.channels_file, "w", encoding="utf-8") as f:
             json.dump(channels, f, indent=4)
 

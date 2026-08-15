@@ -5,8 +5,8 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import pandas as pd
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtWidgets import QApplication, QHeaderView, QMenu, QMessageBox
+from PySide6.QtCore import QPointF, QPoint, Qt
 
 from core.data_models import Session, Lap
 from core.state_manager import StateManager
@@ -588,6 +588,108 @@ class TestUIComponents(unittest.TestCase):
         sidebar.add_session(s2)
         self.assertTrue(item_s1_l1.isSelected())
         self.assertIn(("s1", 1), sidebar.allocated_colors)
+
+    def test_sidebar_tree_header_and_indentation_styling(self):
+        """Validates that time column is tight, channel header is hidden, and indentations are compact."""
+        sidebar = SidebarWidget()
+        # 1. Time column tight fit & no stretch
+        self.assertFalse(sidebar.session_tree.header().stretchLastSection())
+        self.assertEqual(sidebar.session_tree.header().sectionResizeMode(1), QHeaderView.ResizeToContents)
+
+        # 2. Reduced indentation in both trees
+        self.assertEqual(sidebar.session_tree.indentation(), 10)
+        self.assertEqual(sidebar.channel_tree.indentation(), 10)
+
+        # 3. Channel tree header hidden
+        self.assertTrue(sidebar.channel_tree.isHeaderHidden())
+
+    def test_session_context_menu_edit_mapping_action(self):
+        """Validates that right-clicking a session offers 'Edit Channel Mapping...' and emits signal."""
+        sidebar = SidebarWidget()
+        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["Speed"])
+        sidebar.add_session(s1)
+
+        received_session_id = []
+        sidebar.session_edit_mapping_requested.connect(lambda sid: received_session_id.append(sid))
+
+        item = sidebar.session_tree.topLevelItem(0)
+        menu = sidebar._create_session_context_menu(item)
+        self.assertIsNotNone(menu)
+
+        action_texts = [a.text() for a in menu.actions()]
+        self.assertIn("Edit Channel Mapping...", action_texts)
+
+        # Trigger Edit Channel Mapping action
+        edit_act = [a for a in menu.actions() if a.text() == "Edit Channel Mapping..."][0]
+        edit_act.trigger()
+
+        self.assertEqual(received_session_id, ["s1"])
+
+    def test_import_wizard_remapping_mode_and_initial_mapping(self):
+        """Validates that ImportWizardDialog pre-populates combos and preset name when is_remapping=True."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        raw_cols = ["Raw_Lap", "Raw_Time", "Raw_Spd"]
+        preview_df = pd.DataFrame({"Raw_Lap": [1], "Raw_Time": [0.0], "Raw_Spd": [25.0]})
+        initial_map = {"Raw_Lap": "Lap", "Raw_Time": "Time", "Raw_Spd": "Speed"}
+
+        wizard = ImportWizardDialog(
+            file_path="/tmp/test_log.csv",
+            raw_columns=raw_cols,
+            preview_df=preview_df,
+            state_manager=state_mgr,
+            initial_preset="MyCarPreset",
+            initial_mapping=initial_map,
+            is_remapping=True
+        )
+
+        self.assertIn("Edit Channel Mapping", wizard.windowTitle())
+        self.assertEqual(wizard.import_btn.text(), "Apply Changes")
+        self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap")
+        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Time")
+        self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
+        self.assertEqual(wizard.preset_input.text(), "MyCarPreset")
+
+        # Saving preset should update the preset in state_manager
+        with patch.object(QMessageBox, "information") as mock_info:
+            wizard._on_save_preset()
+        saved_presets = state_mgr.load_presets()
+        self.assertIn("MyCarPreset", saved_presets)
+        self.assertEqual(saved_presets["MyCarPreset"]["Raw_Spd"], "Speed")
+        self.assertEqual(wizard.result_preset_name, "MyCarPreset")
+
+    def test_sidebar_update_session_preserves_selection_and_colors(self):
+        """Validates that update_session replaces session laps while retaining lap selections and allocated colors."""
+        sidebar = SidebarWidget()
+        s1 = Session(id="s1", name="run1.csv", file_path="/tmp/run1.csv", channels=["Speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([10, 20])}))
+        s1.laps.append(Lap("s1", 2, 12.0, 100.0, {"Time": np.array([0, 1]), "Speed": np.array([15, 25])}))
+
+        sidebar.add_session(s1)
+
+        # Select Lap 1
+        item_l1 = sidebar.session_tree.topLevelItem(0).child(0)
+        item_l1.setSelected(True)
+        sidebar._on_lap_selection_changed()
+
+        self.assertIn(("s1", 1), sidebar.allocated_colors)
+        saved_color = sidebar.allocated_colors[("s1", 1)]
+
+        # Update session with renamed channel "VehicleSpeed"
+        s1_updated = Session(
+            id="s1", name="run1.csv", file_path="/tmp/run1.csv",
+            channels=["VehicleSpeed"],
+            mapping={"Raw_Lap": "Lap", "Raw_Time": "Time", "Raw_Spd": "VehicleSpeed"}
+        )
+        s1_updated.laps.append(Lap("s1", 1, 10.0, 100.0, {"Time": np.array([0, 1]), "VehicleSpeed": np.array([10, 20])}))
+        s1_updated.laps.append(Lap("s1", 2, 12.0, 100.0, {"Time": np.array([0, 1]), "VehicleSpeed": np.array([15, 25])}))
+
+        sidebar.update_session(s1_updated)
+
+        # Lap 1 must remain selected with same color
+        updated_item_l1 = sidebar.session_tree.topLevelItem(0).child(0)
+        self.assertTrue(updated_item_l1.isSelected())
+        self.assertEqual(sidebar.allocated_colors[("s1", 1)], saved_color)
+        self.assertIn("VehicleSpeed", sidebar.sessions["s1"].channels)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,8 @@ class SidebarWidget(QWidget):
     channels_selection_changed = Signal(set)
     # Signal (session_id string)
     session_removed = Signal(str)
+    # Signal (session_id string)
+    session_edit_mapping_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,8 +91,10 @@ class SidebarWidget(QWidget):
         self.session_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.session_tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.session_tree.setHeaderLabels(["Session / Lap", "Time"])
+        self.session_tree.header().setStretchLastSection(False)
         self.session_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.session_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.session_tree.setIndentation(10)
 
         self.session_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.session_tree.itemSelectionChanged.connect(self._on_lap_selection_changed)
@@ -110,8 +114,8 @@ class SidebarWidget(QWidget):
         self.channel_tree = QTreeWidget()
         self.channel_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.channel_tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.channel_tree.setHeaderLabels(["Channel Name"])
-        self.channel_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.channel_tree.setHeaderHidden(True)
+        self.channel_tree.setIndentation(10)
 
         self.channel_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.channel_tree.itemSelectionChanged.connect(self._on_channel_selection_changed)
@@ -127,14 +131,11 @@ class SidebarWidget(QWidget):
         )
         self.menu_container.setStyleSheet(bar_style)
 
-    def _show_session_context_menu(self, pos: QPoint):
-        item = self.session_tree.itemAt(pos)
-        if not item:
-            return
-
+    def _create_session_context_menu(self, item: QTreeWidgetItem) -> Optional[QMenu]:
+        """Creates the context menu for a session or lap tree item."""
         data = item.data(0, Qt.UserRole)
         if not data:
-            return
+            return None
 
         menu = QMenu(self)
 
@@ -150,6 +151,12 @@ class SidebarWidget(QWidget):
 
             menu.addSeparator()
 
+            edit_mapping_action = QAction("Edit Channel Mapping...", self)
+            edit_mapping_action.triggered.connect(lambda: self.session_edit_mapping_requested.emit(session_id))
+            menu.addAction(edit_mapping_action)
+
+            menu.addSeparator()
+
             remove_action = QAction("Remove Session", self)
             remove_action.triggered.connect(lambda: self.remove_session(session_id))
             menu.addAction(remove_action)
@@ -160,7 +167,15 @@ class SidebarWidget(QWidget):
             toggle_action.triggered.connect(lambda: item.setSelected(not is_selected))
             menu.addAction(toggle_action)
 
-        menu.exec(self.session_tree.viewport().mapToGlobal(pos))
+        return menu
+
+    def _show_session_context_menu(self, pos: QPoint):
+        item = self.session_tree.itemAt(pos)
+        if not item:
+            return
+        menu = self._create_session_context_menu(item)
+        if menu:
+            menu.exec(self.session_tree.viewport().mapToGlobal(pos))
 
     def _select_all_session_laps(self, session_item: QTreeWidgetItem, select: bool):
         max_laps = len(LAP_COLORS)
@@ -189,6 +204,59 @@ class SidebarWidget(QWidget):
             lap_item.setIcon(0, create_empty_icon())
             lap_item.setData(0, Qt.UserRole, ("lap", session.id, lap.lap_number))
         self.update_available_channels()
+
+    def update_session(self, updated_session: Session):
+        """Updates an existing session in the sidebar tree, preserving lap selections and colors."""
+        session_id = updated_session.id
+        self.sessions[session_id] = updated_session
+
+        target_session_item = None
+        for i in range(self.session_tree.topLevelItemCount()):
+            item = self.session_tree.topLevelItem(i)
+            if item and item.data(0, Qt.UserRole) == ("session", session_id):
+                target_session_item = item
+                break
+
+        if not target_session_item:
+            self.add_session(updated_session)
+            return
+
+        target_session_item.setText(0, updated_session.name)
+
+        # Remember currently selected lap numbers and their colors for this session
+        selected_lap_info = {}
+        for i in range(target_session_item.childCount()):
+            child = target_session_item.child(i)
+            if child.isSelected():
+                lap_data = child.data(0, Qt.UserRole)
+                if lap_data and len(lap_data) >= 3:
+                    lap_num = lap_data[2]
+                    selected_lap_info[lap_num] = self.allocated_colors.get((session_id, lap_num))
+
+        self.session_tree.blockSignals(True)
+        # Clear existing lap items and rebuild
+        target_session_item.takeChildren()
+
+        for lap in updated_session.laps:
+            lap_item = QTreeWidgetItem(target_session_item)
+            lap_item.setText(0, f"Lap {lap.lap_number}")
+            lap_item.setText(1, format_lap_time(lap.duration))
+            lap_item.setData(0, Qt.UserRole, ("lap", session_id, lap.lap_number))
+
+            if lap.lap_number in selected_lap_info:
+                color = selected_lap_info[lap.lap_number]
+                if not color:
+                    color = self._allocate_color((session_id, lap.lap_number))
+                else:
+                    self.allocated_colors[(session_id, lap.lap_number)] = color
+                lap_item.setIcon(0, create_color_icon(color))
+                lap_item.setSelected(True)
+            else:
+                lap_item.setIcon(0, create_empty_icon())
+
+        self.session_tree.blockSignals(False)
+        self.update_available_channels()
+        self._on_lap_selection_changed()
 
     def remove_session(self, session_id: str):
         """Removes a session, frees its allocated colors, and notifies the application."""

@@ -52,6 +52,7 @@ class Session:
     file_path: str
     laps: List[Lap] = field(default_factory=list)
     channels: List[str] = field(default_factory=list)
+    mapping: Dict[str, str] = field(default_factory=dict)
     preset_name: Optional[str] = None
     
     # Reference to original parsed dataframe if needed

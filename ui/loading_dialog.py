@@ -80,6 +80,9 @@ class LoadingDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         self.setModal(True)
         self.worker = worker
+        self.is_success = False
+        self.result_data = None
+        self.error_message = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -93,6 +96,41 @@ class LoadingDialog(QDialog):
         self.progress.setRange(0, 0)  # Indeterminate animated bar
         layout.addWidget(self.progress)
 
+    def exec_worker(self) -> bool:
+        """Starts worker thread, connects signals via queued connections, blocks modal dialog, and joins worker thread."""
+        if not self.worker:
+            return False
+
+        def _on_success(*args):
+            self.is_success = True
+            if len(args) == 1:
+                self.result_data = args[0]
+            elif len(args) > 1:
+                self.result_data = args
+            else:
+                self.result_data = None
+            self.accept()
+
+        def _on_error(err_msg: str):
+            self.is_success = False
+            self.error_message = str(err_msg)
+            self.reject()
+
+        self.worker.success.connect(_on_success, Qt.QueuedConnection)
+        self.worker.error.connect(_on_error, Qt.QueuedConnection)
+
+        self.worker.start()
+        self.exec()
+
+        # Guarantee the background worker thread has completely exited before continuing
+        if self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.worker.wait(3000)
+        else:
+            self.worker.wait()
+
+        return self.is_success
+
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
             self.worker.requestInterruption()
@@ -104,3 +142,8 @@ class LoadingDialog(QDialog):
             self.worker.requestInterruption()
             self.worker.wait(1000)
         super().reject()
+
+    def accept(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.wait(2000)
+        super().accept()

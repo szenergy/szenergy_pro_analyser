@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QUrl, QThread
 from PySide6.QtGui import QGuiApplication, QAction, QDesktopServices
 
 from core.state_manager import StateManager
-from core.file_parser import get_file_columns_and_preview, parse_session
+from core.file_parser import get_file_columns_and_preview, parse_session, parse_session_from_dataframe
 from core.data_models import Session
 from ui.sidebar import SidebarWidget
 from ui.graph_view import GraphViewWidget
@@ -33,7 +33,6 @@ class MainWindow(QMainWindow):
 
         self.state_manager = StateManager()
         self.sessions: Dict[str, Session] = {}
-        self._active_workers: List[QThread] = []
 
         self._init_ui()
         self._init_menu()
@@ -93,6 +92,7 @@ class MainWindow(QMainWindow):
         self.sidebar.laps_selection_changed.connect(self._on_laps_selection_changed)
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
         self.sidebar.session_removed.connect(self._on_session_removed)
+        self.sidebar.session_edit_mapping_requested.connect(self._on_edit_session_mapping)
         main_splitter.addWidget(self.sidebar)
 
         # Right Graph View
@@ -162,15 +162,6 @@ class MainWindow(QMainWindow):
         for path in file_paths:
             self._import_file(path)
 
-    def _track_worker(self, worker: QThread):
-        self._active_workers.append(worker)
-        worker.finished.connect(lambda: self._untrack_worker(worker))
-
-    def _untrack_worker(self, worker: QThread):
-        if worker in self._active_workers:
-            self._active_workers.remove(worker)
-        worker.deleteLater()
-
     def _import_file(self, file_path: str):
         """Processes file import using background QThread workers and loading dialogs."""
         filename = os.path.basename(file_path)
@@ -186,42 +177,25 @@ class MainWindow(QMainWindow):
 
         # 1. Background Header Reading
         preview_worker = FilePreviewWorker(file_path, parent=self)
-        self._track_worker(preview_worker)
-
         preview_dialog = LoadingDialog(
             f"Inspecting headers for '{filename}'...\nPlease wait.",
             worker=preview_worker,
             parent=self
         )
 
-        preview_data = {}
-
-        def on_preview_success(raw_cols, preview_df):
-            preview_data["raw_columns"] = raw_cols
-            preview_data["preview_df"] = preview_df
-            preview_dialog.accept()
-
-        def on_preview_error(err_msg):
-            preview_data["error"] = err_msg
-            preview_dialog.reject()
-
-        preview_worker.success.connect(on_preview_success)
-        preview_worker.error.connect(on_preview_error)
-
-        preview_worker.start()
-        preview_dialog.exec()
-
-        if "error" in preview_data:
-            QMessageBox.critical(self, "Import Error", f"Failed to read file '{file_path}':\n{preview_data['error']}")
-            return
-        if "raw_columns" not in preview_data:
+        if not preview_dialog.exec_worker():
+            if preview_dialog.error_message:
+                QMessageBox.critical(self, "Import Error", f"Failed to read file '{file_path}':\n{preview_dialog.error_message}")
             return
 
-        raw_columns = preview_data["raw_columns"]
-        preview_df = preview_data["preview_df"]
+        if not preview_dialog.result_data:
+            return
+
+        raw_columns, preview_df = preview_dialog.result_data
 
         matching_preset = self.state_manager.find_matching_preset(raw_columns)
         chosen_mapping = None
+        applied_preset_name = matching_preset
 
         if matching_preset:
             presets = self.state_manager.load_presets()
@@ -237,8 +211,10 @@ class MainWindow(QMainWindow):
             res = preview_dlg.exec()
             if preview_dlg.selected_action == PresetPreviewDialog.ACTION_APPLY:
                 chosen_mapping = preset_map
+                applied_preset_name = matching_preset
             elif preview_dlg.selected_action == PresetPreviewDialog.ACTION_EDIT:
                 chosen_mapping = None
+                applied_preset_name = matching_preset
             else:
                 return
 
@@ -248,18 +224,19 @@ class MainWindow(QMainWindow):
                 raw_columns=raw_columns,
                 preview_df=preview_df,
                 state_manager=self.state_manager,
-                initial_preset=matching_preset,
+                initial_preset=applied_preset_name,
                 parent=self
             )
             if wizard.exec() == ImportWizardDialog.Accepted:
                 chosen_mapping = wizard.result_mapping
+                applied_preset_name = wizard.result_preset_name or applied_preset_name
             else:
                 return
 
         if not chosen_mapping:
             return
 
-        # 2. Background Log Data Parsing
+        # 2. Background Log Data Parsing (initial load from disk)
         session_id = str(uuid.uuid4())
         parse_worker = FileParseWorker(
             file_path=file_path,
@@ -270,7 +247,6 @@ class MainWindow(QMainWindow):
             dist_label=self.state_manager.get_distance_label(),
             parent=self
         )
-        self._track_worker(parse_worker)
 
         parse_dialog = LoadingDialog(
             f"Parsing log data for '{filename}'...\nPlease wait.",
@@ -278,31 +254,86 @@ class MainWindow(QMainWindow):
             parent=self
         )
 
-        parse_result = {}
-
-        def on_parse_success(session):
-            parse_result["session"] = session
-            parse_dialog.accept()
-
-        def on_parse_error(err_msg):
-            parse_result["error"] = err_msg
-            parse_dialog.reject()
-
-        parse_worker.success.connect(on_parse_success)
-        parse_worker.error.connect(on_parse_error)
-
-        parse_worker.start()
-        parse_dialog.exec()
-
-        if "error" in parse_result:
-            QMessageBox.critical(self, "Parse Error", f"Failed to parse log file:\n{parse_result['error']}")
-            return
-        if "session" not in parse_result:
+        if not parse_dialog.exec_worker():
+            if parse_dialog.error_message:
+                QMessageBox.critical(self, "Parse Error", f"Failed to parse log file:\n{parse_dialog.error_message}")
             return
 
-        session = parse_result["session"]
+        session = parse_dialog.result_data
+        if not session:
+            return
+
+        session.preset_name = applied_preset_name
         self.sessions[session_id] = session
         self.sidebar.add_session(session)
+        self.graph_view.set_sessions(self.sessions)
+
+    def _on_edit_session_mapping(self, session_id: str):
+        """Allows editing channel mappings for an existing loaded session/file instantaneously in memory."""
+        session = self.sessions.get(session_id)
+        if not session:
+            return
+
+        # 1. Retrieve raw columns and preview DataFrame directly from memory (0 ms, NO loading bar)
+        if session.raw_df is not None and not session.raw_df.empty:
+            raw_columns = list(session.raw_df.columns)
+            preview_df = session.raw_df.head(10)
+        else:
+            if not os.path.exists(session.file_path):
+                QMessageBox.warning(self, "File Not Found", "The log file for this session could not be found.")
+                return
+            raw_columns, preview_df = get_file_columns_and_preview(session.file_path)
+
+        # Pre-fill preset name from session.preset_name or find best matching preset
+        initial_preset = session.preset_name or self.state_manager.find_matching_preset(raw_columns)
+
+        # 2. Open Wizard instantly
+        wizard = ImportWizardDialog(
+            file_path=session.file_path,
+            raw_columns=raw_columns,
+            preview_df=preview_df,
+            state_manager=self.state_manager,
+            initial_preset=initial_preset,
+            initial_mapping=session.mapping,
+            is_remapping=True,
+            parent=self
+        )
+
+        if wizard.exec() != ImportWizardDialog.Accepted:
+            return
+
+        new_mapping = wizard.result_mapping
+        if not new_mapping:
+            return
+
+        new_preset_name = wizard.result_preset_name or initial_preset
+
+        # 3. Re-parse session in memory (instantaneous, NO loading bar)
+        if session.raw_df is not None and not session.raw_df.empty:
+            new_session = parse_session_from_dataframe(
+                raw_df=session.raw_df,
+                file_path=session.file_path,
+                mapping=new_mapping,
+                session_id=session_id,
+                lap_label=self.state_manager.get_lap_label(),
+                time_label=self.state_manager.get_time_label(),
+                dist_label=self.state_manager.get_distance_label(),
+                preset_name=new_preset_name
+            )
+        else:
+            new_session = parse_session(
+                file_path=session.file_path,
+                mapping=new_mapping,
+                session_id=session_id,
+                lap_label=self.state_manager.get_lap_label(),
+                time_label=self.state_manager.get_time_label(),
+                dist_label=self.state_manager.get_distance_label(),
+                preset_name=new_preset_name
+            )
+
+        new_session.preset_name = new_preset_name
+        self.sessions[session_id] = new_session
+        self.sidebar.update_session(new_session)
         self.graph_view.set_sessions(self.sessions)
 
     def _on_laps_selection_changed(self, selected_laps_info: list):
@@ -313,8 +344,4 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Cleanly terminate any background worker threads on application exit."""
-        for worker in list(self._active_workers):
-            if worker.isRunning():
-                worker.requestInterruption()
-                worker.wait(1000)
         super().closeEvent(event)

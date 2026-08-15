@@ -5,6 +5,7 @@ metadata header preambles, and non-numeric value coercion.
 """
 
 import os
+import warnings
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
@@ -104,16 +105,18 @@ def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFram
         return list(df_preview.columns), df_preview
 
     elif ext in [".xlsx", ".xls"]:
-        with pd.ExcelFile(file_path) as excel_file:
-            # Select best sheet: 'Data', 'Telemetry', or first sheet
-            target_sheet = excel_file.sheet_names[0]
-            for s in excel_file.sheet_names:
-                if s.lower() in ["data", "telemetry", "log", "channels"]:
-                    target_sheet = s
-                    break
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+            with pd.ExcelFile(file_path) as excel_file:
+                # Select best sheet: 'Data', 'Telemetry', or first sheet
+                target_sheet = excel_file.sheet_names[0]
+                for s in excel_file.sheet_names:
+                    if s.lower() in ["data", "telemetry", "log", "channels"]:
+                        target_sheet = s
+                        break
 
-            df_preview = pd.read_excel(excel_file, sheet_name=target_sheet, nrows=5)
-            return [str(c) for c in df_preview.columns], df_preview
+                df_preview = pd.read_excel(excel_file, sheet_name=target_sheet, nrows=5)
+                return [str(c) for c in df_preview.columns], df_preview
 
     elif ext == ".tdms":
         with TdmsFile.open(file_path) as tdms:
@@ -148,13 +151,15 @@ def load_full_dataframe(file_path: str) -> pd.DataFrame:
         return _read_csv_with_fallback(file_path)
 
     elif ext in [".xlsx", ".xls"]:
-        with pd.ExcelFile(file_path) as excel_file:
-            target_sheet = excel_file.sheet_names[0]
-            for s in excel_file.sheet_names:
-                if s.lower() in ["data", "telemetry", "log", "channels"]:
-                    target_sheet = s
-                    break
-            return pd.read_excel(excel_file, sheet_name=target_sheet)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+            with pd.ExcelFile(file_path) as excel_file:
+                target_sheet = excel_file.sheet_names[0]
+                for s in excel_file.sheet_names:
+                    if s.lower() in ["data", "telemetry", "log", "channels"]:
+                        target_sheet = s
+                        break
+                return pd.read_excel(excel_file, sheet_name=target_sheet)
 
     elif ext == ".tdms":
         with TdmsFile.read(file_path) as tdms:
@@ -190,23 +195,21 @@ def load_full_dataframe(file_path: str) -> pd.DataFrame:
         raise ValueError(f"Unsupported file format: {ext}")
 
 
-def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
-                  lap_label: str = STD_CHANNEL_LAP,
-                  time_label: str = STD_CHANNEL_TIME,
-                  dist_label: str = STD_CHANNEL_DISTANCE,
-                  lap_slug: str = SLUG_LAP,
-                  time_slug: str = SLUG_TIME,
-                  dist_slug: str = SLUG_DISTANCE) -> Session:
+def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: Dict[str, str], session_id: str,
+                                lap_label: str = STD_CHANNEL_LAP,
+                                time_label: str = STD_CHANNEL_TIME,
+                                dist_label: str = STD_CHANNEL_DISTANCE,
+                                lap_slug: str = SLUG_LAP,
+                                time_slug: str = SLUG_TIME,
+                                dist_slug: str = SLUG_DISTANCE,
+                                preset_name: Optional[str] = None) -> Session:
     """
-    Parses a log file using the provided column mapping dictionary (raw_col -> mapped_col).
-    Splits data into Lap objects with numeric data coercion and safe lap time/distance calculations.
-    Preserves NaN values for multi-rate channels and missing telemetry samples.
+    Parses a Session in memory from an existing raw DataFrame and mapping dictionary.
+    Avoids re-reading files from disk and executes instantaneously.
     """
-    df = load_full_dataframe(file_path)
-
     # Filter only columns present in mapping and rename to target names
-    valid_mapping = {raw: mapped for raw, mapped in mapping.items() if raw in df.columns}
-    df = df[list(valid_mapping.keys())].rename(columns=valid_mapping)
+    valid_mapping = {raw: mapped for raw, mapped in mapping.items() if raw in raw_df.columns}
+    df = raw_df[list(valid_mapping.keys())].rename(columns=valid_mapping)
 
     # Coerce all mapped columns to numeric (non-numeric values become NaN)
     for col in df.columns:
@@ -236,7 +239,9 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         name=session_name,
         file_path=file_path,
         channels=[str(col) for col in df.columns if col != resolved_lap],
-        raw_df=None  # Do not retain full duplicate raw dataframe to save memory
+        mapping=valid_mapping,
+        preset_name=preset_name,
+        raw_df=raw_df
     )
 
     if df.empty:
@@ -334,3 +339,30 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         ))
 
     return session
+
+
+def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
+                  lap_label: str = STD_CHANNEL_LAP,
+                  time_label: str = STD_CHANNEL_TIME,
+                  dist_label: str = STD_CHANNEL_DISTANCE,
+                  lap_slug: str = SLUG_LAP,
+                  time_slug: str = SLUG_TIME,
+                  dist_slug: str = SLUG_DISTANCE,
+                  preset_name: Optional[str] = None) -> Session:
+    """
+    Parses a log file from disk into a Session object and retains raw_df in memory.
+    """
+    raw_df = load_full_dataframe(file_path)
+    return parse_session_from_dataframe(
+        raw_df=raw_df,
+        file_path=file_path,
+        mapping=mapping,
+        session_id=session_id,
+        lap_label=lap_label,
+        time_label=time_label,
+        dist_label=dist_label,
+        lap_slug=lap_slug,
+        time_slug=time_slug,
+        dist_slug=dist_slug,
+        preset_name=preset_name
+    )

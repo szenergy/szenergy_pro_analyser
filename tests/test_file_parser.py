@@ -9,7 +9,9 @@ import numpy as np
 import pandas as pd
 from nptdms import TdmsWriter, GroupObject, ChannelObject
 
-from core.file_parser import get_file_columns_and_preview, load_full_dataframe, parse_session
+from core.file_parser import (
+    get_file_columns_and_preview, load_full_dataframe, parse_session, parse_session_from_dataframe
+)
 
 
 class TestFileParser(unittest.TestCase):
@@ -266,6 +268,30 @@ class TestFileParser(unittest.TestCase):
         self.assertEqual(len(session_slugs.laps), 2)
         self.assertEqual(session_slugs.get_lap(1).duration, 5.0)
         self.assertEqual(session_slugs.get_lap(1).distance, 50.0)
+
+    def test_session_retains_raw_df_and_in_memory_reparsing(self):
+        """Validates that parse_session keeps raw_df in Session and parse_session_from_dataframe re-parses in memory."""
+        mapping = {"Lap": "Lap", "Time": "Time", "Distance": "Distance", "Speed": "Speed"}
+        session = parse_session(self.csv_path, mapping, "sess_raw", preset_name="OriginalPreset")
+
+        self.assertIsNotNone(session.raw_df)
+        self.assertIn("Notes", session.raw_df.columns)
+        self.assertEqual(session.preset_name, "OriginalPreset")
+
+        # Now re-parse directly from session.raw_df without disk I/O
+        updated_mapping = {"Lap": "Lap", "Time": "Time", "Distance": "Distance", "Notes": "Commentary"}
+        updated_session = parse_session_from_dataframe(
+            raw_df=session.raw_df,
+            file_path=session.file_path,
+            mapping=updated_mapping,
+            session_id="sess_raw",
+            preset_name="UpdatedPreset"
+        )
+
+        self.assertEqual(updated_session.preset_name, "UpdatedPreset")
+        self.assertIn("Commentary", updated_session.channels)
+        self.assertNotIn("Speed", updated_session.channels)
+        self.assertIsNotNone(updated_session.raw_df)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ Dialog wizard for mapping raw log file channels to standard internal channel nam
 Also includes PresetPreviewDialog for inspecting detected presets before importing.
 """
 
+import os
 import re
 import unicodedata
 from typing import Dict, List, Optional, Set
@@ -93,29 +94,37 @@ class ImportWizardDialog(QDialog):
     """Wizard dialog for mapping raw channels to internal standard names (2 columns layout)."""
 
     def __init__(self, file_path: str, raw_columns: List[str], preview_df: pd.DataFrame,
-                 state_manager: StateManager, initial_preset: Optional[str] = None, parent=None):
+                 state_manager: StateManager, initial_preset: Optional[str] = None,
+                 initial_mapping: Optional[Dict[str, str]] = None, is_remapping: bool = False,
+                 parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Import Log Wizard - {file_path}")
-        self.setMinimumSize(600, 500)
-
         self.file_path = file_path
         self.raw_columns = raw_columns
         self.preview_df = preview_df
         self.state_manager = state_manager
+        self.is_remapping = is_remapping
         self.result_mapping: Dict[str, str] = {}
+        self.result_preset_name: Optional[str] = initial_preset
+
+        if is_remapping:
+            self.setWindowTitle(f"Edit Channel Mapping - {os.path.basename(file_path)}")
+        else:
+            self.setWindowTitle(f"Import Log Wizard - {file_path}")
+        self.setMinimumSize(600, 500)
 
         self.suggested_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
-        self._init_ui(initial_preset)
+        self._init_ui(initial_preset, initial_mapping)
 
-    def _init_ui(self, initial_preset: Optional[str]):
+    def _init_ui(self, initial_preset: Optional[str], initial_mapping: Optional[Dict[str, str]]):
         layout = QVBoxLayout(self)
 
         lap_label = self.state_manager.get_lap_label()
         time_label = self.state_manager.get_time_label()
         dist_label = self.state_manager.get_distance_label()
 
+        instr_title = "Edit channel mappings:" if self.is_remapping else "Map channels for import:"
         instruction = QLabel(
-            "<b>Map channels for import:</b><br>"
+            f"<b>{instr_title}</b><br>"
             "Assign raw channels to standard internal names.<br>"
             f"<b>Must map '{lap_label}' and '{time_label}' or '{dist_label}'. Duplicate channel assignments are not allowed.</b>"
         )
@@ -132,6 +141,7 @@ class ImportWizardDialog(QDialog):
 
         presets = self.state_manager.load_presets()
         preset_map = presets.get(initial_preset, {}) if initial_preset else {}
+        mapping_source = initial_mapping if initial_mapping is not None else preset_map
 
         self.combos: Dict[str, QComboBox] = {}
         suggested_used: Set[str] = set()
@@ -145,9 +155,9 @@ class ImportWizardDialog(QDialog):
             combo.setEditable(True)
             combo.addItems(self.suggested_targets)
 
-            mapped_val = preset_map.get(raw_col)
-            # FIX: Do not auto-guess/suggest unmapped raw channels if editing a preset
-            if not mapped_val and not initial_preset:
+            mapped_val = mapping_source.get(raw_col)
+            # Do not auto-guess/suggest unmapped raw channels if editing existing mapping or preset
+            if not mapped_val and not initial_preset and not initial_mapping:
                 mapped_val = self._auto_guess_mapping(raw_col, suggested_used)
 
             if mapped_val:
@@ -186,7 +196,8 @@ class ImportWizardDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.import_btn = QPushButton("Import Data")
+        action_text = "Apply Changes" if self.is_remapping else "Import Data"
+        self.import_btn = QPushButton(action_text)
         self.import_btn.setStyleSheet("background-color: #00E676; color: black;")
         self.import_btn.clicked.connect(self._on_import)
         btn_layout.addWidget(self.import_btn)
@@ -337,6 +348,7 @@ class ImportWizardDialog(QDialog):
 
         self._save_new_custom_channels(mapping)
         self.state_manager.save_preset(preset_name, mapping)
+        self.result_preset_name = preset_name
         QMessageBox.information(self, "Preset Saved", f"Preset '{preset_name}' saved successfully!")
 
     def _on_import(self):
@@ -370,4 +382,7 @@ class ImportWizardDialog(QDialog):
 
         self._save_new_custom_channels(mapping)
         self.result_mapping = mapping
+        entered_preset = self.preset_input.text().strip()
+        if entered_preset:
+            self.result_preset_name = entered_preset
         self.accept()
