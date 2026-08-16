@@ -3,10 +3,11 @@ Entry point for SZenergy Pro Analyser desktop application.
 Includes modern stylesheet with smooth, thin scrollbars and system OS theme adaptation.
 """
 
+import os
 import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QIcon
 
 from ui.main_window import MainWindow
 from utils.constants import APP_NAME, ORGANIZATION_NAME
@@ -17,6 +18,10 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setStyle("Fusion")
+
+    logo_path = os.path.join(os.path.dirname(__file__), "szenergy_logo.jpg")
+    if os.path.exists(logo_path):
+        app.setWindowIcon(QIcon(logo_path))
 
     # Detect OS Theme (Light / Dark)
     hints = QGuiApplication.styleHints()
