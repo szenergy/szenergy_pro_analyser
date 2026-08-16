@@ -1147,6 +1147,138 @@ class TestUIComponents(unittest.TestCase):
         app.processEvents()
         self.assertEqual(p1.vb.viewRange()[0], initial_x)
 
+    def test_y_zoom_viewbox_drag_selection_and_zoom_single_plot(self):
+        """Validates that vertical dragging (dy > dx) zooms Y only on the active plot, leaving other plots and X intact."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed", "rpm"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        p2 = widget.plot_widgets["rpm"]
+
+        p1_x_initial = p1.vb.viewRange()[0]
+        p2_y_initial = p2.vb.viewRange()[1]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        # Pure vertical drag on p1 (speed) from Y=12.0 to Y=28.0
+        pt_start = p1.vb.mapFromView(QPointF(1.0, 12.0))
+        pt_curr = p1.vb.mapFromView(QPointF(1.0, 28.0))
+
+        # 1. During drag: only p1's scaleBox is visible; p2's is NOT visible
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_curr, finish=False))
+        app.processEvents()
+        self.assertTrue(p1.vb.rbScaleBox.isVisible())
+        self.assertFalse(p2.vb.rbScaleBox.isVisible())
+
+        # 2. Release drag: p1 zoomed in Y, p2 Y unchanged, X on both unchanged
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_curr, finish=True))
+        app.processEvents()
+        self.assertFalse(p1.vb.rbScaleBox.isVisible())
+        self.assertFalse(p2.vb.rbScaleBox.isVisible())
+
+        p1_y = p1.vb.viewRange()[1]
+        self.assertAlmostEqual(p1_y[0], 12.0, places=2)
+        self.assertAlmostEqual(p1_y[1], 28.0, places=2)
+
+        # Other plot's Y range must remain completely untouched
+        self.assertEqual(p2.vb.viewRange()[1], p2_y_initial)
+
+        # X range on all plots must remain completely untouched
+        self.assertEqual(p1.vb.viewRange()[0], p1_x_initial)
+        self.assertEqual(p2.vb.viewRange()[0], p1_x_initial)
+
+    def test_y_zoom_reverse_direction(self):
+        """Validates that dragging vertically in reverse direction (bottom-to-top) zooms correctly."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"rpm"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["rpm"]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        pt_start = p1.vb.mapFromView(QPointF(1.0, 2800.0))
+        pt_end = p1.vb.mapFromView(QPointF(1.0, 1200.0))
+
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_end, finish=True))
+        app.processEvents()
+
+        y_range = p1.vb.viewRange()[1]
+        self.assertAlmostEqual(y_range[0], 1200.0, places=1)
+        self.assertAlmostEqual(y_range[1], 2800.0, places=1)
+
+    def test_y_zoom_escape_cancels_drag(self):
+        """Validates that pressing Escape cancels vertical Y-axis drag selection."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        initial_y = p1.vb.viewRange()[1]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        pt_start = p1.vb.mapFromView(QPointF(1.0, 12.0))
+        pt_curr = p1.vb.mapFromView(QPointF(1.0, 28.0))
+
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_curr, finish=False))
+        self.assertTrue(p1.vb.rbScaleBox.isVisible())
+
+        # Press Escape
+        widget.cancel_drag_selection()
+        self.assertFalse(p1.vb.rbScaleBox.isVisible())
+
+        # Release mouse: no Y zoom
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_curr, finish=True))
+        app.processEvents()
+        self.assertEqual(p1.vb.viewRange()[1], initial_y)
+
 
 if __name__ == "__main__":
     unittest.main()
