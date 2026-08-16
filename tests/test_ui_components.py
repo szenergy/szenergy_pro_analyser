@@ -1279,6 +1279,79 @@ class TestUIComponents(unittest.TestCase):
         app.processEvents()
         self.assertEqual(p1.vb.viewRange()[1], initial_y)
 
+    def test_zoom_preserved_across_data_modifications_until_autorange_button(self):
+        """Validates that manual zoom is preserved across lap/channel data modifications until Auto Range button is clicked."""
+        # Create multi-lap session
+        data1 = {
+            "time": np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+            "distance": np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0]),
+            "speed": np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]),
+            "rpm": np.array([1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0]),
+        }
+        lap1 = Lap("s_multi", 1, 5.0, 50.0, data1)
+        data2 = {
+            "time": np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+            "distance": np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0]),
+            "speed": np.array([15.0, 25.0, 35.0, 45.0, 55.0, 65.0]),
+            "rpm": np.array([1200.0, 2200.0, 3200.0, 4200.0, 5200.0, 6200.0]),
+        }
+        lap2 = Lap("s_multi", 2, 5.0, 50.0, data2)
+        sess = Session(id="s_multi", name="multi.csv", file_path="/tmp/multi.csv", channels=["speed", "rpm"])
+        sess.laps.extend([lap1, lap2])
+
+        widget = GraphViewWidget()
+        widget.set_sessions({"s_multi": sess})
+        widget.set_selected_laps([("s_multi", 1, "#00E676")])
+        widget.set_selected_channels({"speed", "rpm"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        # Initially, has_manual_zoom_or_pan should be False
+        self.assertFalse(widget.has_manual_zoom_or_pan)
+
+        # 1. Modifying laps before any manual zoom triggers auto-range as normal
+        with patch.object(widget, "_on_autorange", wraps=widget._on_autorange) as mock_autorange:
+            widget.set_selected_laps([("s_multi", 1, "#00E676"), ("s_multi", 2, "#FF5252")])
+            mock_autorange.assert_called_once()
+
+        # 2. User manually zooms in on X range [1.0, 3.0]
+        widget.zoom_x_range(1.0, 3.0)
+        app.processEvents()
+        self.assertTrue(widget.has_manual_zoom_or_pan)
+        p1 = widget.plot_widgets["speed"]
+        self.assertAlmostEqual(p1.vb.viewRange()[0][0], 1.0, places=2)
+        self.assertAlmostEqual(p1.vb.viewRange()[0][1], 3.0, places=2)
+
+        # 3. User modifies data being displayed (e.g. removes Lap 2)
+        with patch.object(widget, "_on_autorange") as mock_autorange_skip:
+            widget.set_selected_laps([("s_multi", 1, "#00E676")])
+            app.processEvents()
+            # _on_autorange should NOT have been called!
+            mock_autorange_skip.assert_not_called()
+
+        # X zoom is preserved!
+        p1_after = widget.plot_widgets["speed"]
+        self.assertAlmostEqual(p1_after.vb.viewRange()[0][0], 1.0, places=2)
+        self.assertAlmostEqual(p1_after.vb.viewRange()[0][1], 3.0, places=2)
+
+        # 4. User modifies channels (e.g. only select "speed")
+        widget.set_selected_channels({"speed"})
+        app.processEvents()
+        p1_after_ch = widget.plot_widgets["speed"]
+        self.assertAlmostEqual(p1_after_ch.vb.viewRange()[0][0], 1.0, places=2)
+        self.assertAlmostEqual(p1_after_ch.vb.viewRange()[0][1], 3.0, places=2)
+
+        # 5. User clicks the Auto Range button: resets zoom and clears manual zoom flag
+        widget.btn_autorange.click()
+        app.processEvents()
+        self.assertFalse(widget.has_manual_zoom_or_pan)
+
+        # 6. Subsequent data modification auto-ranges again
+        with patch.object(widget, "_on_autorange", wraps=widget._on_autorange) as mock_autorange_again:
+            widget.set_selected_channels({"speed", "rpm"})
+            mock_autorange_again.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -271,6 +271,8 @@ class XZoomViewBox(pg.ViewBox):
                     if dy > 5 and (y_max_data - y_min_data) > 1e-6:
                         if not np.isnan(y_min_data) and not np.isnan(y_max_data) and not np.isinf(y_min_data) and not np.isinf(y_max_data):
                             self.setYRange(y_min_data, y_max_data, padding=0)
+                            if self.graph_widget is not None:
+                                self.graph_widget.mark_manual_zoom_or_pan()
             else:
                 if self._drag_canceled:
                     return
@@ -317,6 +319,11 @@ class GraphViewWidget(QWidget):
         self.time_label: str = STD_CHANNEL_TIME
         self.dist_label: str = STD_CHANNEL_DISTANCE
         self.is_dark: bool = True
+
+        # State tracking for zoom/pan preservation
+        self.has_manual_zoom_or_pan: bool = False
+        self.saved_x_range: Optional[List[float]] = None
+        self.saved_y_ranges: Dict[str, List[float]] = {}
 
         # View and Display toggles
         self.show_x_grid: bool = False
@@ -521,8 +528,33 @@ class GraphViewWidget(QWidget):
         """Sets the X-axis range on all linked plots without altering Y-axis ranges."""
         if not self.plot_widgets:
             return
+        self.has_manual_zoom_or_pan = True
         first_plot = list(self.plot_widgets.values())[0]
         first_plot.setXRange(x_min, x_max, padding=0)
+        self._record_current_view_ranges()
+
+    def mark_manual_zoom_or_pan(self):
+        """Marks that the user has manually zoomed or panned, and captures current view ranges."""
+        if getattr(self, "_is_rebuilding", False):
+            return
+        self.has_manual_zoom_or_pan = True
+        self._record_current_view_ranges()
+
+    def _record_current_view_ranges(self):
+        """Records current X and Y view ranges across active plot widgets."""
+        if not self.plot_widgets:
+            return
+        first_plot = list(self.plot_widgets.values())[0]
+        if hasattr(first_plot, "vb") and first_plot.vb is not None:
+            self.saved_x_range = list(first_plot.vb.viewRange()[0])
+        for ch, plot in self.plot_widgets.items():
+            if hasattr(plot, "vb") and plot.vb is not None:
+                self.saved_y_ranges[ch] = list(plot.vb.viewRange()[1])
+
+    def _on_manual_range_change(self, mask=None):
+        """Slot called when a ViewBox signals manual range change (pan, wheel, scale)."""
+        if not getattr(self, "_is_rebuilding", False):
+            self.mark_manual_zoom_or_pan()
 
     def cancel_drag_selection(self) -> bool:
         """Cancels any ongoing X-axis drag selection across all stacked plots."""
@@ -568,6 +600,9 @@ class GraphViewWidget(QWidget):
         slug = self.x_axis_combo.itemData(idx)
         if slug and slug != self.x_axis_slug:
             self.x_axis_slug = slug
+            self.has_manual_zoom_or_pan = False
+            self.saved_x_range = None
+            self.saved_y_ranges.clear()
             self.rebuild_plots()
 
     def _toggle_x_grid(self, checked: bool):
@@ -600,7 +635,11 @@ class GraphViewWidget(QWidget):
             self.legend.setVisible(self.show_legend)
 
     def _on_autorange(self, *args, **kwargs):
-        """Executes pyqtgraph's built-in 'View All' auto-range on every plot and master linked X-axis."""
+        """Executes pyqtgraph's built-in 'View All' auto-range on every plot and master linked X-axis, resetting manual zoom state."""
+        self.has_manual_zoom_or_pan = False
+        self.saved_x_range = None
+        self.saved_y_ranges.clear()
+
         if not self.plot_widgets:
             return
 
@@ -633,6 +672,9 @@ class GraphViewWidget(QWidget):
     def rebuild_plots(self):
         self._is_rebuilding = True
         try:
+            if self.has_manual_zoom_or_pan and self.plot_widgets:
+                self._record_current_view_ranges()
+
             self.glw.scene().blockSignals(True)
             self.glw.clear()
             self.plot_widgets.clear()
@@ -654,6 +696,7 @@ class GraphViewWidget(QWidget):
             for row, channel_name in enumerate(self.selected_channels):
                 vb = XZoomViewBox(graph_widget=self)
                 vb.update_theme(self.is_dark)
+                vb.sigRangeChangedManually.connect(self._on_manual_range_change)
                 plot = self.glw.addPlot(row=row, col=0, viewBox=vb)
 
                 display_label = channel_name
@@ -741,7 +784,21 @@ class GraphViewWidget(QWidget):
                         self.tracking_dots.append((dot, session_id, lap_num, channel_name))
 
             self._update_row_heights()
-            self._on_autorange()
+
+            # Apply auto-range only if no manual zoom or pan has occurred
+            if not self.has_manual_zoom_or_pan:
+                self._on_autorange()
+            else:
+                # Restore preserved manual zoom / view ranges
+                if self.saved_x_range is not None and first_plot is not None:
+                    first_plot.setXRange(self.saved_x_range[0], self.saved_x_range[1], padding=0)
+                for ch, plot in self.plot_widgets.items():
+                    if ch in self.saved_y_ranges:
+                        y_range = self.saved_y_ranges[ch]
+                        plot.setYRange(y_range[0], y_range[1], padding=0)
+                    else:
+                        plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+                        plot.autoRange(axis=pg.ViewBox.YAxis)
         finally:
             self.glw.scene().blockSignals(False)
             self._is_rebuilding = False
