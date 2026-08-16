@@ -12,7 +12,7 @@ import pyqtgraph as pg
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QFrame, QPushButton, QMessageBox
 )
-from PySide6.QtCore import Qt, QSize, QPointF, QTimer
+from PySide6.QtCore import Qt, QSize, QPointF, QTimer, QEvent
 from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
 
 from core.data_models import Session, Lap
@@ -185,6 +185,99 @@ def _get_nearest_channel_sample(
     return float(valid_x[nearest_idx]), float(valid_y[nearest_idx])
 
 
+class XZoomViewBox(pg.ViewBox):
+    """
+    Custom PyQtGraph ViewBox providing 1D horizontal (X-axis only) click-and-drag selection zoom.
+    Displays a vertical span selection highlight during left-click dragging and zooms all synchronized
+    stacked plots to the selected X range upon release. Pressing Escape cancels the ongoing drag.
+    """
+
+    def __init__(self, graph_widget: Optional['GraphViewWidget'] = None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.graph_widget = graph_widget
+        self._is_dragging: bool = False
+        self._drag_canceled: bool = False
+        self._setup_scale_box()
+
+    def _setup_scale_box(self):
+        is_dark = True
+        if self.graph_widget is not None:
+            is_dark = getattr(self.graph_widget, "is_dark", True)
+        self.update_theme(is_dark)
+
+    def update_theme(self, is_dark: bool):
+        color_hex = "#00E676" if is_dark else "#00C853"
+        fill_color = QColor(0, 230, 118, 45) if is_dark else QColor(0, 200, 83, 40)
+        self.rbScaleBox.setPen(pg.mkPen(color_hex, width=1.5, style=Qt.DashLine))
+        self.rbScaleBox.setBrush(pg.mkBrush(fill_color))
+
+    def show_x_drag_box(self, x_min_data: float, x_max_data: float):
+        """Updates and renders the selection rectangle across the full height of this ViewBox."""
+        pt1 = self.mapFromView(QPointF(x_min_data, 0))
+        pt2 = self.mapFromView(QPointF(x_max_data, 0))
+        self.updateScaleBox(QPointF(pt1.x(), 0), QPointF(pt2.x(), self.height()))
+
+    def cancel_drag(self) -> bool:
+        """Cancels an in-progress drag selection and hides the selection rectangle."""
+        had_drag = self._is_dragging or self._drag_canceled
+        self._drag_canceled = True
+        self._is_dragging = False
+        self.rbScaleBox.hide()
+        return had_drag
+
+    def mouseDragEvent(self, ev, axis=None):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            ev.accept()
+            p1 = ev.buttonDownPos()
+            p2 = ev.pos()
+            v1 = self.mapToView(p1)
+            v2 = self.mapToView(p2)
+            x_min_data = min(v1.x(), v2.x())
+            x_max_data = max(v1.x(), v2.x())
+
+            if ev.isFinish():
+                was_canceled = self._drag_canceled
+                self._is_dragging = False
+                self._drag_canceled = False
+
+                if self.graph_widget is not None:
+                    self.graph_widget.hide_drag_selection()
+                else:
+                    self.rbScaleBox.hide()
+
+                if was_canceled:
+                    return
+
+                # Drag threshold: must have moved horizontally by at least 5 pixels and valid data range
+                if abs(p2.x() - p1.x()) > 5 and (x_max_data - x_min_data) > 1e-6:
+                    if not np.isnan(x_min_data) and not np.isnan(x_max_data) and not np.isinf(x_min_data) and not np.isinf(x_max_data):
+                        if self.graph_widget is not None:
+                            self.graph_widget.zoom_x_range(x_min_data, x_max_data)
+                        else:
+                            self.setXRange(x_min_data, x_max_data, padding=0)
+            else:
+                if self._drag_canceled:
+                    return
+                self._is_dragging = True
+                if (x_max_data - x_min_data) > 0 and not np.isnan(x_min_data) and not np.isnan(x_max_data):
+                    if self.graph_widget is not None:
+                        self.graph_widget.show_drag_selection(x_min_data, x_max_data)
+                    else:
+                        self.show_x_drag_box(x_min_data, x_max_data)
+        else:
+            super().mouseDragEvent(ev, axis=axis)
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape and (self._is_dragging or self._drag_canceled):
+            if self.graph_widget is not None:
+                self.graph_widget.cancel_drag_selection()
+            else:
+                self.cancel_drag()
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
 class GraphViewWidget(QWidget):
     """Main plotting area with vertically stacked charts, toolbar toggles, and on-graph value readouts."""
 
@@ -302,6 +395,10 @@ class GraphViewWidget(QWidget):
         self.glw = pg.GraphicsLayoutWidget()
         layout.addWidget(self.glw)
 
+        # Install event filters to capture Escape key during drag operations
+        self.glw.installEventFilter(self)
+        self.glw.scene().installEventFilter(self)
+
         # Connect scene mouse-move signal ONCE globally on initialization
         self.glw.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
@@ -371,7 +468,54 @@ class GraphViewWidget(QWidget):
         self.btn_rename_legend.setIcon(create_icon_rename_legend(is_dark))
         self.btn_autorange.setIcon(create_icon_autorange(is_dark))
 
+        for plot in self.plot_widgets.values():
+            if hasattr(plot, "vb") and hasattr(plot.vb, "update_theme"):
+                plot.vb.update_theme(is_dark)
+
         self.rebuild_plots()
+
+    def show_drag_selection(self, x_min_data: float, x_max_data: float):
+        """Displays the synchronized X-axis selection box on all stacked plots."""
+        for plot in self.plot_widgets.values():
+            if hasattr(plot, "vb") and hasattr(plot.vb, "show_x_drag_box"):
+                plot.vb.show_x_drag_box(x_min_data, x_max_data)
+
+    def hide_drag_selection(self):
+        """Hides the selection box on all stacked plots."""
+        for plot in self.plot_widgets.values():
+            if hasattr(plot, "vb") and hasattr(plot.vb, "rbScaleBox"):
+                plot.vb.rbScaleBox.hide()
+
+    def zoom_x_range(self, x_min: float, x_max: float):
+        """Sets the X-axis range on all linked plots without altering Y-axis ranges."""
+        if not self.plot_widgets:
+            return
+        first_plot = list(self.plot_widgets.values())[0]
+        first_plot.setXRange(x_min, x_max, padding=0)
+
+    def cancel_drag_selection(self) -> bool:
+        """Cancels any ongoing X-axis drag selection across all stacked plots."""
+        canceled = False
+        for plot in self.plot_widgets.values():
+            if hasattr(plot, "vb") and hasattr(plot.vb, "cancel_drag"):
+                if plot.vb.cancel_drag():
+                    canceled = True
+        self.hide_drag_selection()
+        return canceled
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            if self.cancel_drag_selection():
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            if self.cancel_drag_selection():
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def set_sessions(self, sessions: Dict[str, Session]):
         self.sessions = sessions
@@ -477,7 +621,9 @@ class GraphViewWidget(QWidget):
             title_color = "#E0E0E0" if self.is_dark else "#202020"
 
             for row, channel_name in enumerate(self.selected_channels):
-                plot = self.glw.addPlot(row=row, col=0)
+                vb = XZoomViewBox(graph_widget=self)
+                vb.update_theme(self.is_dark)
+                plot = self.glw.addPlot(row=row, col=0, viewBox=vb)
 
                 display_label = channel_name
                 if self.state_manager:

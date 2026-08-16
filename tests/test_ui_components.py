@@ -8,11 +8,12 @@ import pandas as pd
 from PySide6.QtWidgets import (
     QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu
 )
-from PySide6.QtCore import QPointF, QPoint, Qt
+from PySide6.QtCore import QPointF, QPoint, Qt, QEvent
+from PySide6.QtGui import QKeyEvent
 
 from core.data_models import Session, Lap
 from core.state_manager import StateManager
-from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample
+from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
 from ui.sidebar import SidebarWidget
 from ui.import_wizard import ImportWizardDialog
 from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog
@@ -822,6 +823,329 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(wizard.preset_input.text(), "CustomTelemetry")
         self.assertFalse(wizard.preset_status_label.isHidden())
         self.assertIn("3 channels mapped", wizard.preset_status_label.text())
+
+    def test_x_zoom_viewbox_drag_selection_and_zoom(self):
+        """Validates that left-click dragging horizontally across a graph shows the selection box on all plots and zooms on release."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed", "rpm"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        self.assertEqual(len(widget.plot_widgets), 2)
+        p1 = widget.plot_widgets["speed"]
+        p2 = widget.plot_widgets["rpm"]
+        self.assertIsInstance(p1.vb, XZoomViewBox)
+        self.assertIsInstance(p2.vb, XZoomViewBox)
+
+        # Initial X range should span the full data (0.0 to 2.0)
+        initial_x = p1.vb.viewRange()[0]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False, button=Qt.MouseButton.LeftButton):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self._button = button
+                self.accepted = False
+            def button(self): return self._button
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        # Map data coordinates X=0.5 and X=1.5 to ViewBox pixels
+        pt_start = p1.vb.mapFromView(QPointF(0.5, 15.0))
+        pt_curr = p1.vb.mapFromView(QPointF(1.5, 25.0))
+
+        # 1. Drag move event: selection box should become visible on ALL stacked plots
+        ev_drag = FakeDragEvent(pt_start, pt_curr, finish=False)
+        p1.vb.mouseDragEvent(ev_drag)
+        self.assertTrue(ev_drag.accepted)
+        self.assertTrue(p1.vb.rbScaleBox.isVisible())
+        self.assertTrue(p2.vb.rbScaleBox.isVisible())
+
+        # 2. Release / Finish drag event: selection boxes hide and view zooms to [0.5, 1.5]
+        ev_finish = FakeDragEvent(pt_start, pt_curr, finish=True)
+        p1.vb.mouseDragEvent(ev_finish)
+        app.processEvents()
+
+        self.assertFalse(p1.vb.rbScaleBox.isVisible())
+        self.assertFalse(p2.vb.rbScaleBox.isVisible())
+
+        # Check zoomed X range on all stacked plots
+        x_range_1 = p1.vb.viewRange()[0]
+        x_range_2 = p2.vb.viewRange()[0]
+        self.assertAlmostEqual(x_range_1[0], 0.5, places=2)
+        self.assertAlmostEqual(x_range_1[1], 1.5, places=2)
+        self.assertAlmostEqual(x_range_2[0], 0.5, places=2)
+        self.assertAlmostEqual(x_range_2[1], 1.5, places=2)
+
+    def test_x_zoom_viewbox_drag_reverse_direction(self):
+        """Validates that dragging from right to left properly zooms to the selected X interval."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        pt_start = p1.vb.mapFromView(QPointF(1.8, 20.0))
+        pt_end = p1.vb.mapFromView(QPointF(0.4, 20.0))
+
+        ev_finish = FakeDragEvent(pt_start, pt_end, finish=True)
+        p1.vb.mouseDragEvent(ev_finish)
+        app.processEvents()
+
+        x_range = p1.vb.viewRange()[0]
+        self.assertAlmostEqual(x_range[0], 0.4, places=2)
+        self.assertAlmostEqual(x_range[1], 1.8, places=2)
+
+    def test_x_zoom_viewbox_drag_on_secondary_plot(self):
+        """Validates that dragging on the second stacked plot updates and zooms all stacked plots."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed", "rpm"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        p2 = widget.plot_widgets["rpm"]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        pt_start = p2.vb.mapFromView(QPointF(0.2, 1500.0))
+        pt_end = p2.vb.mapFromView(QPointF(1.2, 2500.0))
+
+        ev_finish = FakeDragEvent(pt_start, pt_end, finish=True)
+        p2.vb.mouseDragEvent(ev_finish)
+        app.processEvents()
+
+        x_range_1 = p1.vb.viewRange()[0]
+        x_range_2 = p2.vb.viewRange()[0]
+        self.assertAlmostEqual(x_range_1[0], 0.2, places=2)
+        self.assertAlmostEqual(x_range_1[1], 1.2, places=2)
+        self.assertAlmostEqual(x_range_2[0], 0.2, places=2)
+        self.assertAlmostEqual(x_range_2[1], 1.2, places=2)
+
+    def test_x_zoom_viewbox_click_without_drag_does_not_zoom(self):
+        """Validates that a simple click or tiny movement below the threshold does not zoom the graphs."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        x_range_before = p1.vb.viewRange()[0]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        # Click with only 2 pixels delta (under 5 px threshold)
+        pt_start = QPointF(100.0, 100.0)
+        pt_end = QPointF(102.0, 100.0)
+
+        ev_finish = FakeDragEvent(pt_start, pt_end, finish=True)
+        p1.vb.mouseDragEvent(ev_finish)
+        app.processEvents()
+
+        x_range_after = p1.vb.viewRange()[0]
+        self.assertEqual(x_range_before, x_range_after)
+
+    def test_x_zoom_viewbox_autorange_restores_view(self):
+        """Validates that clicking the Auto Range toolbar button resets the zoomed view."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        widget.zoom_x_range(0.5, 1.0)
+        app.processEvents()
+
+        self.assertAlmostEqual(p1.vb.viewRange()[0][0], 0.5, places=2)
+        self.assertAlmostEqual(p1.vb.viewRange()[0][1], 1.0, places=2)
+
+        # Click auto range button
+        widget.btn_autorange.click()
+        app.processEvents()
+
+        # View should be restored to include 0.0 to 2.0
+        x_range = p1.vb.viewRange()[0]
+        self.assertLessEqual(x_range[0], 0.05)
+        self.assertGreaterEqual(x_range[1], 1.95)
+
+    def test_x_zoom_viewbox_theme_update(self):
+        """Validates that XZoomViewBox theme pen and brush change correctly on theme toggle."""
+        vb = XZoomViewBox()
+        vb.update_theme(is_dark=True)
+        self.assertEqual(vb.rbScaleBox.pen().color().name().lower(), "#00e676")
+
+        vb.update_theme(is_dark=False)
+        self.assertEqual(vb.rbScaleBox.pen().color().name().lower(), "#00c853")
+
+    def test_x_zoom_escape_cancels_drag_selection(self):
+        """Validates that pressing Escape while dragging cancels selection and prevents zooming."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed", "rpm"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        p2 = widget.plot_widgets["rpm"]
+        initial_x_range = p1.vb.viewRange()[0]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        pt_start = p1.vb.mapFromView(QPointF(0.3, 15.0))
+        pt_curr = p1.vb.mapFromView(QPointF(1.7, 25.0))
+
+        # 1. Start drag
+        ev_drag = FakeDragEvent(pt_start, pt_curr, finish=False)
+        p1.vb.mouseDragEvent(ev_drag)
+        self.assertTrue(p1.vb.rbScaleBox.isVisible())
+        self.assertTrue(p2.vb.rbScaleBox.isVisible())
+
+        # 2. Cancel drag via cancel_drag_selection (simulating Escape key press)
+        canceled = widget.cancel_drag_selection()
+        self.assertTrue(canceled)
+        self.assertFalse(p1.vb.rbScaleBox.isVisible())
+        self.assertFalse(p2.vb.rbScaleBox.isVisible())
+
+        # 3. Further mouse move should NOT make the box visible again
+        pt_further = p1.vb.mapFromView(QPointF(1.9, 25.0))
+        ev_move = FakeDragEvent(pt_start, pt_further, finish=False)
+        p1.vb.mouseDragEvent(ev_move)
+        self.assertFalse(p1.vb.rbScaleBox.isVisible())
+        self.assertFalse(p2.vb.rbScaleBox.isVisible())
+
+        # 4. Finish/release mouse: must NOT zoom
+        ev_finish = FakeDragEvent(pt_start, pt_further, finish=True)
+        p1.vb.mouseDragEvent(ev_finish)
+        app.processEvents()
+
+        self.assertEqual(p1.vb.viewRange()[0], initial_x_range)
+        self.assertEqual(p2.vb.viewRange()[0], initial_x_range)
+
+        # 5. Subsequent drag works normally and zooms
+        ev_new_drag = FakeDragEvent(pt_start, pt_curr, finish=False)
+        p1.vb.mouseDragEvent(ev_new_drag)
+        self.assertTrue(p1.vb.rbScaleBox.isVisible())
+
+        ev_new_finish = FakeDragEvent(pt_start, pt_curr, finish=True)
+        p1.vb.mouseDragEvent(ev_new_finish)
+        app.processEvents()
+
+        self.assertAlmostEqual(p1.vb.viewRange()[0][0], 0.3, places=2)
+        self.assertAlmostEqual(p1.vb.viewRange()[0][1], 1.7, places=2)
+
+    def test_x_zoom_escape_key_event_delivery(self):
+        """Validates that a QKeyEvent with Qt.Key_Escape delivered to GraphViewWidget cancels active drag."""
+        widget = GraphViewWidget()
+        sessions = {self.session.id: self.session}
+        widget.set_sessions(sessions)
+        widget.set_selected_laps([(self.session.id, 1, "#00E676")])
+        widget.set_selected_channels({"speed"})
+        widget.resize(800, 600)
+        widget.show()
+        app.processEvents()
+
+        p1 = widget.plot_widgets["speed"]
+        initial_x = p1.vb.viewRange()[0]
+
+        class FakeDragEvent:
+            def __init__(self, p1, p2, finish=False):
+                self._p1 = p1
+                self._p2 = p2
+                self.finish = finish
+                self.accepted = False
+            def button(self): return Qt.MouseButton.LeftButton
+            def buttonDownPos(self): return self._p1
+            def pos(self): return self._p2
+            def isFinish(self): return self.finish
+            def accept(self): self.accepted = True
+
+        pt_start = p1.vb.mapFromView(QPointF(0.4, 20.0))
+        pt_curr = p1.vb.mapFromView(QPointF(1.6, 20.0))
+
+        # Start drag
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_curr, finish=False))
+        self.assertTrue(p1.vb.rbScaleBox.isVisible())
+
+        # Send Escape key event to widget
+        key_ev = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+        app.sendEvent(widget, key_ev)
+        app.processEvents()
+
+        self.assertFalse(p1.vb.rbScaleBox.isVisible())
+
+        # Release mouse: no zoom
+        p1.vb.mouseDragEvent(FakeDragEvent(pt_start, pt_curr, finish=True))
+        app.processEvents()
+        self.assertEqual(p1.vb.viewRange()[0], initial_x)
 
 
 if __name__ == "__main__":

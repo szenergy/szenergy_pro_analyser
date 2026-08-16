@@ -347,6 +347,13 @@ class MainWindow(QMainWindow):
     def _on_channels_selection_changed(self, selected_channels: set):
         self.graph_view.set_selected_channels(selected_channels)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            if hasattr(self, "graph_view") and self.graph_view.cancel_drag_selection():
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event):
         """Cleanly terminate any background worker threads on application exit."""
         super().closeEvent(event)

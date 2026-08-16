@@ -27,7 +27,7 @@ A lightweight, high-performance, cross-platform desktop application for visualiz
 ### 📊 Vertically Stacked Synchronized Graphs
 - **High Performance:** Built on `pyqtgraph` for smooth rendering of high-frequency telemetry data.
 - **Horizontal Titles:** Channel names are displayed as horizontal, left-justified titles above each plot canvas (instead of vertical Y-axis text labels), completely eliminating text overlap issues.
-- **Synchronized X-Axis:** Zooming or panning one graph automatically syncs the X-axis across all vertically stacked charts.
+- **Synchronized X-Axis & Drag-to-Zoom:** Left-click and drag horizontally on any graph to select an X-axis interval with a synchronized visual selection band across all stacked charts; releasing the mouse zooms all charts to that exact interval while preserving individual Y ranges.
 - **Lap Overlay Normalization:** Automatically normalizes each lap's X-axis data relative to the start of that lap ($X_{\text{overlay}} = X - X[0]$) so laps overlay on top of each other at $0.0\text{s}$ or $0.0\text{m}$ for direct comparison.
 - **Aligned Y-Axes:** Aligns left Y-axes across stacked charts so all plot canvases start at the exact same pixel position.
 - **Auto-Ranging:** Automatically auto-ranges plots when channels, laps, or X-axis modes change.
