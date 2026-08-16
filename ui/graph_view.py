@@ -315,7 +315,7 @@ class GraphViewWidget(QWidget):
         self.selected_channels: List[str] = []
         self.selected_laps_info: List[Tuple[str, int, str]] = []
         self.custom_lap_labels: Dict[Tuple[str, int], str] = {}
-        self.x_axis_slug: str = SLUG_TIME
+        self.x_axis_slug: str = SLUG_DISTANCE
         self.time_label: str = STD_CHANNEL_TIME
         self.dist_label: str = STD_CHANNEL_DISTANCE
         self.is_dark: bool = True
@@ -329,7 +329,7 @@ class GraphViewWidget(QWidget):
         self.show_x_grid: bool = False
         self.show_y_grid: bool = True
         self.show_cursor_values: bool = True
-        self.show_legend: bool = True
+        self.show_legend: bool = False
         self._is_rebuilding: bool = False
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
