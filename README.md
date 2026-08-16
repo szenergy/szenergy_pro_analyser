@@ -12,7 +12,7 @@ A lightweight, high-performance, cross-platform desktop application for visualiz
 - **Channel Mapping Wizard:** Map raw log column names to standard internal channels (`Lap`, `Time`, `Distance`, `Speed`, `RPM`, etc.) via a clean, 2-column layout.
 - **Auto-Saving Custom Channels:** If you type a new custom mapping target label in the Import Wizard (e.g. `BrakeTemp`), it is automatically added to your standard channel list and saved persistently upon import/saving.
 - **Validation:** Enforces that your current configured `Lap` and at least one X-Axis (`Time` or `Distance`) channels are mapped before proceeding (even if you renamed them to custom labels).
-- **Preset System:** Save mapping configurations as presets. When a matching file structure is detected, a **Preset Preview Dialog** opens with **[Apply Preset]**, **[Edit in Wizard]**, and **[Cancel]** options.
+- **Unified Import Wizard:** Clean, consistent interface with filename display, editable preset dropdown with **Save** and **Load** buttons, 3 live summary badges (*Matched*, *In Preset but Missing in File*, *Skipped*), and an interactive 3-column mapping table with status icons (`✓` / `⊘`).
 - **Duplicate Validation:** Prevents mapping multiple raw columns to the same target channel.
 - **Duplicate File Loading Protection:** Prevents importing the same log file multiple times to avoid workspace clutter.
 

@@ -1,6 +1,6 @@
 """
-Dialog wizard for mapping raw log file channels to standard internal channel names and saving presets.
-Also includes PresetPreviewDialog for inspecting detected presets before importing.
+Dialog wizard for mapping raw log file channels to standard internal channel names and managing presets.
+Unified interface for initial file import, preset matching, and session channel remapping.
 """
 
 import os
@@ -10,276 +10,148 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QComboBox, QPushButton, QLabel, QLineEdit, QMessageBox, QHeaderView,
+    QComboBox, QPushButton, QLabel, QMessageBox, QHeaderView,
     QAbstractItemView
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 
 from core.state_manager import StateManager, generate_slug
 from utils.constants import SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
 
 
-class PresetPreviewDialog(QDialog):
-    """Preview dialog showing how a detected preset maps channels before applying."""
-
-    ACTION_APPLY = 1
-    ACTION_EDIT = 2
-
-    def __init__(self, file_path: str, preset_name: str, mapping: Dict[str, str],
-                 raw_columns: Optional[List[str]] = None,
-                 state_manager=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Preset Matching & Preview")
-        self.setMinimumSize(580, 480)
-        self.selected_action = QDialog.Rejected
-
-        self.file_path = file_path
-        self.preset_name = preset_name
-        self.selected_preset_name = preset_name
-        self.mapping = mapping
-        self.raw_columns = list(raw_columns) if raw_columns is not None else list(mapping.keys())
-        self.state_manager = state_manager
-
-        self._init_ui()
-
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-
-        filename = os.path.basename(self.file_path)
-        header_label = QLabel(
-            f"<b>Matching telemetry log:</b> <code>{filename}</code>"
-        )
-        header_label.setTextFormat(Qt.RichText)
-        layout.addWidget(header_label)
-
-        # Preset selection row
-        preset_select_layout = QHBoxLayout()
-        preset_select_layout.addWidget(QLabel("<b>Selected Preset:</b>"))
-        self.preset_combo = QComboBox()
-        presets = self.state_manager.load_presets() if self.state_manager else {}
-        preset_names = sorted(list(presets.keys()))
-        if self.preset_name and self.preset_name not in preset_names:
-            preset_names.insert(0, self.preset_name)
-        self.preset_combo.addItems(preset_names)
-        idx = self.preset_combo.findText(self.preset_name)
-        if idx >= 0:
-            self.preset_combo.setCurrentIndex(idx)
-        self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
-        preset_select_layout.addWidget(self.preset_combo, stretch=1)
-        layout.addLayout(preset_select_layout)
-
-        # Stats summary badge
-        self.stats_label = QLabel()
-        self.stats_label.setStyleSheet(
-            "background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); "
-            "border-radius: 4px; padding: 6px 10px; font-weight: bold;"
-        )
-        layout.addWidget(self.stats_label)
-
-        # Mapping Table (3 Columns: Raw Channel, Mapped Target Name, Status)
-        self.table = QTableWidget(0, 3)
-        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.table.setHorizontalHeaderLabels(["Channel in File / Preset", "Mapped Target Name", "Match Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        layout.addWidget(self.table)
-
-        self._refresh_table()
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-
-        edit_btn = QPushButton("Edit Mapping in Wizard")
-        edit_btn.clicked.connect(self._on_edit)
-        btn_layout.addWidget(edit_btn)
-
-        apply_btn = QPushButton("Apply Preset & Import")
-        apply_btn.setStyleSheet("background-color: #00E676; color: black; font-weight: bold;")
-        apply_btn.clicked.connect(self._on_apply)
-        btn_layout.addWidget(apply_btn)
-
-        layout.addLayout(btn_layout)
-
-    def _on_preset_changed(self, new_preset_name: str):
-        if not new_preset_name:
-            return
-        self.selected_preset_name = new_preset_name
-        presets = self.state_manager.load_presets() if self.state_manager else {}
-        self.mapping = presets.get(new_preset_name, {})
-        self._refresh_table()
-
-    def _refresh_table(self):
-        raw_set = set(self.raw_columns)
-        preset_cols = list(self.mapping.keys())
-
-        matched_cols = [c for c in preset_cols if c in raw_set]
-        missing_in_file_cols = [c for c in preset_cols if c not in raw_set]
-        unmapped_in_file_cols = [c for c in self.raw_columns if c not in self.mapping]
-
-        total_rows = len(matched_cols) + len(missing_in_file_cols) + len(unmapped_in_file_cols)
-        self.table.setRowCount(total_rows)
-
-        # Update stats label
-        self.stats_label.setText(
-            f"✓ {len(matched_cols)} Mapped in File &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"⚠ {len(missing_in_file_cols)} in Preset but Missing in File &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"⊘ {len(unmapped_in_file_cols)} Skipped (Not in Preset)"
-        )
-
-        row = 0
-        # 1. Matched Channels
-        for raw_col in matched_cols:
-            slug_val = self.mapping[raw_col]
-            display_label = slug_val
-            if self.state_manager:
-                display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
-
-            item0 = QTableWidgetItem(raw_col)
-            item1 = QTableWidgetItem(display_label)
-            item2 = QTableWidgetItem("✓ Mapped")
-            item2.setForeground(Qt.green)
-
-            self.table.setItem(row, 0, item0)
-            self.table.setItem(row, 1, item1)
-            self.table.setItem(row, 2, item2)
-            row += 1
-
-        # 2. Missing in File Channels (present in preset, absent in file)
-        for raw_col in missing_in_file_cols:
-            slug_val = self.mapping[raw_col]
-            display_label = slug_val
-            if self.state_manager:
-                display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
-
-            item0 = QTableWidgetItem(f"{raw_col} (not in file)")
-            item0.setForeground(Qt.gray)
-            item1 = QTableWidgetItem(display_label)
-            item1.setForeground(Qt.gray)
-            item2 = QTableWidgetItem("⚠ Missing in file (skipped)")
-            item2.setForeground(Qt.yellow)
-
-            self.table.setItem(row, 0, item0)
-            self.table.setItem(row, 1, item1)
-            self.table.setItem(row, 2, item2)
-            row += 1
-
-        # 3. Unmapped File Channels (present in file, absent in preset)
-        for raw_col in unmapped_in_file_cols:
-            item0 = QTableWidgetItem(raw_col)
-            item1 = QTableWidgetItem("-- Skip --")
-            item1.setForeground(Qt.gray)
-            item2 = QTableWidgetItem("⊘ Skipped (unmapped)")
-            item2.setForeground(Qt.gray)
-
-            self.table.setItem(row, 0, item0)
-            self.table.setItem(row, 1, item1)
-            self.table.setItem(row, 2, item2)
-            row += 1
-
-    def get_filtered_mapping(self) -> Dict[str, str]:
-        """Returns the mapping dictionary containing only channels present in the actual file."""
-        return {raw_col: slug for raw_col, slug in self.mapping.items() if raw_col in self.raw_columns}
-
-    def _on_apply(self):
-        self.selected_action = self.ACTION_APPLY
-        self.accept()
-
-    def _on_edit(self):
-        self.selected_action = self.ACTION_EDIT
-        self.done(self.ACTION_EDIT)
-
-
 class ImportWizardDialog(QDialog):
-    """Wizard dialog for mapping raw channels to internal standard names (2 columns layout)."""
+    """
+    Unified Wizard dialog for mapping raw log file channels to standard internal channel names.
+    Provides preset selection, loading, saving, live matching statistics, and interactive channel mapping.
+    """
 
-    def __init__(self, file_path: str, raw_columns: List[str], preview_df: pd.DataFrame,
-                 state_manager: StateManager, initial_preset: Optional[str] = None,
-                 initial_mapping: Optional[Dict[str, str]] = None, is_remapping: bool = False,
+    def __init__(self, file_path: str, raw_columns: List[str],
+                 state_manager: StateManager, preview_df: Optional[pd.DataFrame] = None,
+                 initial_preset: Optional[str] = None,
+                 initial_mapping: Optional[Dict[str, str]] = None,
+                 is_remapping: bool = False,
                  parent=None):
         super().__init__(parent)
         self.file_path = file_path
-        self.raw_columns = raw_columns
+        self.raw_columns = list(raw_columns)
         self.preview_df = preview_df
         self.state_manager = state_manager
         self.is_remapping = is_remapping
         self.result_mapping: Dict[str, str] = {}
+        self.loaded_preset_name: Optional[str] = initial_preset
         self.result_preset_name: Optional[str] = initial_preset
 
+        self.combos: Dict[str, QComboBox] = {}
+        self.status_items: Dict[str, QTableWidgetItem] = {}
+
+        filename = os.path.basename(file_path)
         if is_remapping:
-            self.setWindowTitle(f"Edit Channel Mapping - {os.path.basename(file_path)}")
+            self.setWindowTitle(f"Edit Channel Mapping - {filename}")
         else:
-            self.setWindowTitle(f"Import Log Wizard - {file_path}")
-        self.setMinimumSize(600, 500)
+            self.setWindowTitle(f"Import Log Wizard - {filename}")
+        self.setMinimumSize(660, 560)
 
         self.suggested_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
         self._init_ui(initial_preset, initial_mapping)
 
     def _init_ui(self, initial_preset: Optional[str], initial_mapping: Optional[Dict[str, str]]):
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
-        lap_label = self.state_manager.get_lap_label()
-        time_label = self.state_manager.get_time_label()
-        dist_label = self.state_manager.get_distance_label()
+        # 1. Top File Name Display
+        filename = os.path.basename(self.file_path)
+        header_label = QLabel(f"<b>File:</b> <code>{filename}</code>")
+        header_label.setTextFormat(Qt.RichText)
+        header_label.setStyleSheet("font-size: 13px; padding-bottom: 2px;")
+        layout.addWidget(header_label)
 
-        instr_title = "Edit channel mappings:" if self.is_remapping else "Map channels for import:"
-        instruction = QLabel(
-            f"<b>{instr_title}</b><br>"
-            "Assign raw channels to standard internal names.<br>"
-            f"<b>Must map '{lap_label}' and '{time_label}' or '{dist_label}'. Duplicate channel assignments are not allowed.</b>"
-        )
-        instruction.setTextFormat(Qt.RichText)
-        layout.addWidget(instruction)
+        # 2. Preset Selection Row (Combo Box + Save & Load Buttons)
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("<b>Preset:</b>")
+        preset_label.setStyleSheet("font-size: 13px;")
+        preset_layout.addWidget(preset_label)
 
-        # Load Existing Preset Row (above table)
-        load_preset_layout = QHBoxLayout()
-        load_preset_layout.addWidget(QLabel("<b>Apply Saved Preset:</b>"))
-        self.load_preset_combo = QComboBox()
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(True)
         presets = self.state_manager.load_presets()
-        preset_list = ["-- Select a Preset --"] + sorted(list(presets.keys()))
-        self.load_preset_combo.addItems(preset_list)
-        if initial_preset and initial_preset in preset_list:
-            self.load_preset_combo.setCurrentText(initial_preset)
-        self.load_preset_combo.currentTextChanged.connect(self._on_load_preset_selected)
-        load_preset_layout.addWidget(self.load_preset_combo, stretch=1)
+        preset_names = sorted(list(presets.keys()))
 
-        self.load_preset_btn = QPushButton("Apply Preset")
-        self.load_preset_btn.clicked.connect(self._on_apply_preset_button_clicked)
-        load_preset_layout.addWidget(self.load_preset_btn)
-        layout.addLayout(load_preset_layout)
+        # If an initial preset was passed but isn't in preset_names, add it
+        if initial_preset and initial_preset not in preset_names:
+            preset_names.insert(0, initial_preset)
 
-        # Preset status banner
-        self.preset_status_label = QLabel()
-        self.preset_status_label.setVisible(False)
-        self.preset_status_label.setStyleSheet("color: #00E676; font-size: 12px; padding: 2px;")
-        layout.addWidget(self.preset_status_label)
+        self.preset_combo.addItems([""] + preset_names)
 
-        # Mapping Table (2 columns: raw channel, combo box)
-        self.table = QTableWidget(len(self.raw_columns), 2)
+        if initial_preset:
+            idx = self.preset_combo.findText(initial_preset)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+            else:
+                self.preset_combo.setEditText(initial_preset)
+        else:
+            self.preset_combo.setCurrentIndex(0)
+
+        preset_layout.addWidget(self.preset_combo, stretch=1)
+
+        self.save_btn = QPushButton("Save Preset")
+        self.save_btn.setToolTip("Save the current channel mapping below to the preset name above")
+        self.save_btn.clicked.connect(self._on_save_preset)
+        preset_layout.addWidget(self.save_btn)
+
+        self.load_btn = QPushButton("Load Preset")
+        self.load_btn.setToolTip("Apply the selected preset mapping to the table below")
+        self.load_btn.clicked.connect(self._on_load_preset)
+        preset_layout.addWidget(self.load_btn)
+
+        layout.addLayout(preset_layout)
+
+        # 3. Live 3-Stat Summary Badges
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(10)
+
+        self.stat_matched = QLabel("✓ 0 Matched")
+        self.stat_missing = QLabel("⚠ 0 In Preset (Not in File)")
+        self.stat_skipped = QLabel("⊘ 0 Skipped")
+
+        stats_layout.addWidget(self.stat_matched)
+        stats_layout.addWidget(self.stat_missing)
+        stats_layout.addWidget(self.stat_skipped)
+        stats_layout.addStretch()
+
+        layout.addLayout(stats_layout)
+
+        # 4. Mapping Table (3 Columns: Status Icon, File Channel, Mapped Channel)
+        self.table = QTableWidget(len(self.raw_columns), 3)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.table.setHorizontalHeaderLabels(["Raw Channel (File)", "Mapped Channel Name"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.setHorizontalHeaderLabels(["Status", "Channel in File", "Mapped Target Channel"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
 
         preset_map = presets.get(initial_preset, {}) if initial_preset else {}
         mapping_source = initial_mapping if initial_mapping is not None else preset_map
 
-        self.combos: Dict[str, QComboBox] = {}
         suggested_used: Set[str] = set()
 
         for row, raw_col in enumerate(self.raw_columns):
-            raw_item = QTableWidgetItem(raw_col)
-            raw_item.setFlags(Qt.ItemIsEnabled)
-            self.table.setItem(row, 0, raw_item)
+            # Col 0: Status Icon
+            status_item = QTableWidgetItem()
+            status_item.setTextAlignment(Qt.AlignCenter)
+            font = status_item.font()
+            font.setBold(True)
+            status_item.setFont(font)
+            status_item.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(row, 0, status_item)
+            self.status_items[raw_col] = status_item
 
+            # Col 1: Raw File Channel Name
+            raw_item = QTableWidgetItem(raw_col)
+            raw_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(row, 1, raw_item)
+
+            # Col 2: Mapped Channel Combobox
             combo = QComboBox()
             combo.setEditable(True)
             combo.addItems(self.suggested_targets)
@@ -288,7 +160,7 @@ class ImportWizardDialog(QDialog):
             if mapped_val:
                 mapped_val = self.state_manager.get_label_by_slug(mapped_val, mapped_val)
 
-            # Do not auto-guess/suggest unmapped raw channels if editing existing mapping or preset
+            # Auto-guess if no preset or mapping source provided
             if not mapped_val and not initial_preset and not initial_mapping:
                 mapped_val = self._auto_guess_mapping(raw_col, suggested_used)
 
@@ -300,27 +172,16 @@ class ImportWizardDialog(QDialog):
                 else:
                     combo.setEditText(mapped_val)
             else:
-                combo.setCurrentIndex(0)
+                combo.setCurrentIndex(0)  # -- Skip --
 
+            combo.currentTextChanged.connect(lambda _, c=raw_col: self._on_channel_mapping_changed(c))
             self.combos[raw_col] = combo
-            self.table.setCellWidget(row, 1, combo)
+            self.table.setCellWidget(row, 2, combo)
 
         layout.addWidget(self.table)
+        self._refresh_icons_and_stats()
 
-        # Save Preset Row
-        preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Save as Preset Name:"))
-        self.preset_input = QLineEdit()
-        if initial_preset:
-            self.preset_input.setText(initial_preset)
-        preset_layout.addWidget(self.preset_input)
-
-        self.save_preset_btn = QPushButton("Save Preset")
-        self.save_preset_btn.clicked.connect(self._on_save_preset)
-        preset_layout.addWidget(self.save_preset_btn)
-        layout.addLayout(preset_layout)
-
-        # Action buttons
+        # 5. Bottom Action Buttons (Cancel and Submit)
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -329,25 +190,138 @@ class ImportWizardDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
 
         action_text = "Apply Changes" if self.is_remapping else "Import Data"
-        self.import_btn = QPushButton(action_text)
-        self.import_btn.setStyleSheet("background-color: #00E676; color: black;")
-        self.import_btn.clicked.connect(self._on_import)
-        btn_layout.addWidget(self.import_btn)
+        self.submit_btn = QPushButton(action_text)
+        self.submit_btn.setStyleSheet("background-color: #00E676; color: black; font-weight: bold; padding: 6px 16px;")
+        self.submit_btn.clicked.connect(self._on_submit)
+        btn_layout.addWidget(self.submit_btn)
 
         layout.addLayout(btn_layout)
 
-    def _apply_preset_to_table(self, preset_name: str):
-        if not preset_name or preset_name == "-- Select a Preset --":
-            return
-        presets = self.state_manager.load_presets()
-        preset_map = presets.get(preset_name, {})
-        if not preset_map:
+    def _on_channel_mapping_changed(self, raw_col: str):
+        """Called when a single channel's dropdown changes."""
+        self._refresh_icons_and_stats()
+
+    def _refresh_icons_and_stats(self):
+        """Updates row status icons, missing preset rows, and live stats counters based on the loaded preset."""
+        matched_count = 0
+        skipped_count = 0
+
+        # Update file channels
+        for row, raw_col in enumerate(self.raw_columns):
+            combo = self.combos.get(raw_col)
+            status_item = self.status_items.get(raw_col)
+            text = combo.currentText().strip() if combo else ""
+            if text and text != "-- Skip --":
+                matched_count += 1
+                if status_item:
+                    status_item.setText("✓")
+                    status_item.setForeground(QColor("#00E676"))
+            else:
+                skipped_count += 1
+                if status_item:
+                    status_item.setText("⊘")
+                    status_item.setForeground(QColor("#808080"))
+
+        current_preset = self.loaded_preset_name
+        presets = self.state_manager.load_presets() if self.state_manager else {}
+        missing_in_file_cols = []
+        if current_preset and current_preset in presets:
+            preset_cols = presets[current_preset].keys()
+            raw_set = set(self.raw_columns)
+            missing_in_file_cols = [c for c in preset_cols if c not in raw_set]
+
+        # Dynamically append/remove 'in preset but not in file' rows at the end of the table
+        total_rows = len(self.raw_columns) + len(missing_in_file_cols)
+        self.table.setRowCount(total_rows)
+
+        preset_map = presets.get(current_preset, {})
+        for i, missing_col in enumerate(missing_in_file_cols):
+            row = len(self.raw_columns) + i
+
+            # Col 0: ⚠ warning icon
+            status_item = QTableWidgetItem("⚠")
+            status_item.setTextAlignment(Qt.AlignCenter)
+            font = status_item.font()
+            font.setBold(True)
+            status_item.setFont(font)
+            status_item.setForeground(QColor("#FFD740"))
+            status_item.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(row, 0, status_item)
+
+            # Col 1: File Channel name item (not in file)
+            raw_item = QTableWidgetItem(f"{missing_col} (not in file)")
+            raw_item.setForeground(QColor("#808080"))
+            raw_item.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(row, 1, raw_item)
+
+            # Col 2: Target channel name (non-editable text, not a combobox)
+            self.table.setCellWidget(row, 2, None)
+            slug_val = preset_map.get(missing_col, "")
+            display_label = slug_val
+            if self.state_manager and slug_val:
+                display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
+            target_item = QTableWidgetItem(display_label)
+            target_item.setForeground(QColor("#808080"))
+            target_item.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(row, 2, target_item)
+
+        # 1. Matched Stat: only color, background, and border if count > 0
+        self.stat_matched.setText(f"✓ {matched_count} Matched")
+        if matched_count > 0:
+            self.stat_matched.setStyleSheet(
+                "background-color: rgba(0, 230, 118, 0.12); color: #00E676; "
+                "border: 1px solid rgba(0, 230, 118, 0.35); border-radius: 4px; "
+                "padding: 5px 12px; font-weight: bold;"
+            )
+        else:
+            self.stat_matched.setStyleSheet(
+                "background-color: transparent; color: #808080; "
+                "border: none; padding: 5px 12px; font-weight: bold;"
+            )
+
+        # 2. In Preset (Not in File) Stat: only color, background, and border if count > 0
+        missing_count = len(missing_in_file_cols)
+        self.stat_missing.setText(f"⚠ {missing_count} In Preset (Not in File)")
+        if missing_count > 0:
+            self.stat_missing.setStyleSheet(
+                "background-color: rgba(255, 215, 64, 0.12); color: #FFD740; "
+                "border: 1px solid rgba(255, 215, 64, 0.35); border-radius: 4px; "
+                "padding: 5px 12px; font-weight: bold;"
+            )
+        else:
+            self.stat_missing.setStyleSheet(
+                "background-color: transparent; color: #808080; "
+                "border: none; padding: 5px 12px; font-weight: bold;"
+            )
+
+        # 3. Skipped Stat: never has background or border
+        self.stat_skipped.setText(f"⊘ {skipped_count} Skipped")
+        if skipped_count > 0:
+            self.stat_skipped.setStyleSheet(
+                "background-color: transparent; color: #9E9E9E; "
+                "border: none; padding: 5px 12px; font-weight: bold;"
+            )
+        else:
+            self.stat_skipped.setStyleSheet(
+                "background-color: transparent; color: #808080; "
+                "border: none; padding: 5px 12px; font-weight: bold;"
+            )
+
+    def _on_load_preset(self):
+        """Loads and applies the currently selected preset to the table."""
+        preset_name = self.preset_combo.currentText().strip()
+        if not preset_name:
+            QMessageBox.warning(self, "Warning", "Please select or type a preset name to load.")
             return
 
-        mapped_count = 0
-        unmapped_count = 0
+        presets = self.state_manager.load_presets() if self.state_manager else {}
+        preset_map = presets.get(preset_name)
+        if not preset_map:
+            QMessageBox.warning(self, "Warning", f"Preset '{preset_name}' was not found in saved presets.")
+            return
 
         for raw_col, combo in self.combos.items():
+            combo.blockSignals(True)
             if raw_col in preset_map:
                 slug_val = preset_map[raw_col]
                 display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
@@ -356,25 +330,41 @@ class ImportWizardDialog(QDialog):
                     combo.setCurrentIndex(idx)
                 else:
                     combo.setEditText(display_label)
-                mapped_count += 1
             else:
                 combo.setCurrentIndex(0)  # -- Skip --
-                unmapped_count += 1
+            combo.blockSignals(False)
 
-        self.preset_input.setText(preset_name)
+        self.loaded_preset_name = preset_name
         self.result_preset_name = preset_name
-        self.preset_status_label.setText(
-            f"✓ Applied preset '{preset_name}': {mapped_count} channels mapped, {unmapped_count} unmapped in file."
-        )
-        self.preset_status_label.setVisible(True)
+        self._refresh_icons_and_stats()
 
-    def _on_load_preset_selected(self, preset_name: str):
-        if preset_name and preset_name != "-- Select a Preset --":
-            self._apply_preset_to_table(preset_name)
+    def _on_save_preset(self):
+        """Saves the table's current configuration to the preset name specified in the combobox."""
+        preset_name = self.preset_combo.currentText().strip()
+        if not preset_name:
+            QMessageBox.warning(self, "Warning", "Please enter a preset name to save.")
+            return
 
-    def _on_apply_preset_button_clicked(self):
-        preset_name = self.load_preset_combo.currentText()
-        self._apply_preset_to_table(preset_name)
+        label_mapping = self._get_current_label_mapping()
+        if not label_mapping:
+            QMessageBox.warning(self, "Warning", "No mapped channels to save in preset.")
+            return
+
+        if not self._validate_no_duplicates(label_mapping):
+            return
+
+        self._save_new_custom_channels(label_mapping)
+        mapping = self._get_current_mapping()
+        self.state_manager.save_preset(preset_name, mapping)
+        self.loaded_preset_name = preset_name
+        self.result_preset_name = preset_name
+
+        # Ensure preset is in the combobox items
+        if self.preset_combo.findText(preset_name) < 0:
+            self.preset_combo.addItem(preset_name)
+
+        self._refresh_icons_and_stats()
+        QMessageBox.information(self, "Preset Saved", f"Preset '{preset_name}' saved successfully!")
 
     def _auto_guess_mapping(self, raw_col: str, already_used: Set[str]) -> Optional[str]:
         # Normalize accents and convert to lowercase
@@ -496,7 +486,7 @@ class ImportWizardDialog(QDialog):
         """Detects newly entered mapping target labels, adds them to standard channel defs, and saves them."""
         existing_labels = self.state_manager.get_channel_labels()
         existing_defs = self.state_manager.get_channel_defs()
-        
+
         updated = False
         for raw, target in mapping.items():
             if target not in existing_labels:
@@ -507,33 +497,15 @@ class ImportWizardDialog(QDialog):
                 while slug in existing_slugs:
                     slug = f"{base_slug}_{counter}"
                     counter += 1
-                
+
                 existing_defs.append({"label": target, "slug": slug})
                 existing_labels.append(target)
                 updated = True
-                
+
         if updated:
             self.state_manager.save_channel_defs(existing_defs)
 
-    def _on_save_preset(self):
-        preset_name = self.preset_input.text().strip()
-        if not preset_name:
-            QMessageBox.warning(self, "Warning", "Please enter a preset name.")
-            return
-        label_mapping = self._get_current_label_mapping()
-        if not label_mapping:
-            QMessageBox.warning(self, "Warning", "No mapped channels to save in preset.")
-            return
-        if not self._validate_no_duplicates(label_mapping):
-            return
-
-        self._save_new_custom_channels(label_mapping)
-        mapping = self._get_current_mapping()
-        self.state_manager.save_preset(preset_name, mapping)
-        self.result_preset_name = preset_name
-        QMessageBox.information(self, "Preset Saved", f"Preset '{preset_name}' saved successfully!")
-
-    def _on_import(self):
+    def _on_submit(self):
         label_mapping = self._get_current_label_mapping()
         if not self._validate_no_duplicates(label_mapping):
             return
@@ -558,7 +530,33 @@ class ImportWizardDialog(QDialog):
             return
 
         self.result_mapping = mapping
-        entered_preset = self.preset_input.text().strip()
-        if entered_preset:
-            self.result_preset_name = entered_preset
+        entered_preset = self.preset_combo.currentText().strip()
+        self.result_preset_name = entered_preset if entered_preset else None
         self.accept()
+
+
+class PresetPreviewDialog(ImportWizardDialog):
+    """Backward-compatible wrapper for legacy references to PresetPreviewDialog."""
+    ACTION_APPLY = 1
+    ACTION_EDIT = 2
+
+    def __init__(self, file_path: str, preset_name: str, mapping: Dict[str, str],
+                 raw_columns: Optional[List[str]] = None,
+                 state_manager=None, parent=None):
+        raw_cols = list(raw_columns) if raw_columns is not None else list(mapping.keys())
+        super().__init__(
+            file_path=file_path,
+            raw_columns=raw_cols,
+            state_manager=state_manager,
+            initial_preset=preset_name,
+            initial_mapping=mapping,
+            parent=parent
+        )
+        self.selected_action = self.ACTION_APPLY
+
+    @property
+    def selected_preset_name(self) -> Optional[str]:
+        return self.result_preset_name
+
+    def get_filtered_mapping(self) -> Dict[str, str]:
+        return self.result_mapping

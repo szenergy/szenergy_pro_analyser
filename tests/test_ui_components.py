@@ -662,11 +662,11 @@ class TestUIComponents(unittest.TestCase):
         )
 
         self.assertIn("Edit Channel Mapping", wizard.windowTitle())
-        self.assertEqual(wizard.import_btn.text(), "Apply Changes")
+        self.assertEqual(wizard.submit_btn.text(), "Apply Changes")
         self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap")
         self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Time")
         self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
-        self.assertEqual(wizard.preset_input.text(), "MyCarPreset")
+        self.assertEqual(wizard.preset_combo.currentText(), "MyCarPreset")
 
         # Saving preset should update the preset in state_manager
         with patch.object(QMessageBox, "information"):
@@ -760,41 +760,42 @@ class TestUIComponents(unittest.TestCase):
             win.graph_view._on_mouse_moved(scene_pos)
 
     def test_preset_preview_dialog_preset_switching_and_stats(self):
-        """Validates that PresetPreviewDialog displays match stats and allows switching presets."""
-        from ui.import_wizard import PresetPreviewDialog
-
+        """Validates that ImportWizardDialog / PresetPreviewDialog displays match stats and allows switching presets."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         state_mgr.save_preset("PresetA", {"Time": "time", "Lap": "lap", "Speed": "speed", "Missing_Col": "rpm"})
         state_mgr.save_preset("PresetB", {"Time": "time", "Lap": "lap"})
 
         raw_columns = ["Time", "Lap", "Speed", "Unmapped_Col"]
 
-        dlg = PresetPreviewDialog(
+        dlg = ImportWizardDialog(
             file_path="/tmp/run.csv",
-            preset_name="PresetA",
-            mapping={"Time": "time", "Lap": "lap", "Speed": "speed", "Missing_Col": "rpm"},
             raw_columns=raw_columns,
-            state_manager=state_mgr
+            state_manager=state_mgr,
+            initial_preset="PresetA"
         )
 
         # Initial PresetA stats: 3 mapped, 1 missing in file, 1 unmapped in file
-        self.assertIn("3 Mapped in File", dlg.stats_label.text())
-        self.assertIn("1 in Preset but Missing in File", dlg.stats_label.text())
-        self.assertIn("1 Skipped", dlg.stats_label.text())
+        self.assertEqual(dlg.stat_matched.text(), "✓ 3 Matched")
+        self.assertEqual(dlg.stat_missing.text(), "⚠ 1 In Preset (Not in File)")
+        self.assertEqual(dlg.stat_skipped.text(), "⊘ 1 Skipped")
+        self.assertEqual(dlg.table.rowCount(), 5) # 4 file columns + 1 missing in preset
 
-        filtered_map = dlg.get_filtered_mapping()
-        self.assertEqual(len(filtered_map), 3)
-        self.assertNotIn("Missing_Col", filtered_map)
-
-        # Switch to PresetB
+        # Change text in combo without loading yet: stats and missing rows should remain unchanged!
         dlg.preset_combo.setCurrentText("PresetB")
-        self.assertEqual(dlg.selected_preset_name, "PresetB")
-        self.assertIn("2 Mapped in File", dlg.stats_label.text())
-        self.assertIn("0 in Preset but Missing in File", dlg.stats_label.text())
-        self.assertIn("2 Skipped", dlg.stats_label.text())
+        app.processEvents()
+        self.assertEqual(dlg.stat_missing.text(), "⚠ 1 In Preset (Not in File)")
+        self.assertEqual(dlg.table.rowCount(), 5)
 
-    def test_import_wizard_manual_preset_loading(self):
-        """Validates that ImportWizardDialog allows selecting and applying a preset manually."""
+        # Now click load preset
+        dlg._on_load_preset()
+        self.assertEqual(dlg.result_preset_name, "PresetB")
+        self.assertEqual(dlg.stat_matched.text(), "✓ 2 Matched")
+        self.assertEqual(dlg.stat_missing.text(), "⚠ 0 In Preset (Not in File)")
+        self.assertEqual(dlg.stat_skipped.text(), "⊘ 2 Skipped")
+        self.assertEqual(dlg.table.rowCount(), 4) # 4 file columns + 0 missing in preset
+
+    def test_import_wizard_manual_preset_loading_and_save(self):
+        """Validates that ImportWizardDialog allows selecting and applying a preset manually, editing, and saving a new preset."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         state_mgr.save_preset("CustomTelemetry", {
             "Raw_Lap": "lap",
@@ -813,16 +814,31 @@ class TestUIComponents(unittest.TestCase):
         )
 
         # Manually select and apply CustomTelemetry preset
-        wizard.load_preset_combo.setCurrentText("CustomTelemetry")
-        wizard._on_apply_preset_button_clicked()
+        wizard.preset_combo.setCurrentText("CustomTelemetry")
+        wizard._on_load_preset()
 
         self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap")
         self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Time")
         self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
         self.assertEqual(wizard.combos["Raw_Extra"].currentText(), "-- Skip --")
-        self.assertEqual(wizard.preset_input.text(), "CustomTelemetry")
-        self.assertFalse(wizard.preset_status_label.isHidden())
-        self.assertIn("3 channels mapped", wizard.preset_status_label.text())
+        self.assertEqual(wizard.status_items["Raw_Lap"].text(), "✓")
+        self.assertEqual(wizard.status_items["Raw_Extra"].text(), "⊘")
+        self.assertEqual(wizard.stat_matched.text(), "✓ 3 Matched")
+        self.assertEqual(wizard.stat_missing.text(), "⚠ 0 In Preset (Not in File)")
+        self.assertEqual(wizard.stat_skipped.text(), "⊘ 1 Skipped")
+
+        # Type a new preset name and save
+        wizard.preset_combo.setEditText("BrandNewPreset")
+        wizard.combos["Raw_Extra"].setCurrentText("RPM")
+        app.processEvents()
+        self.assertEqual(wizard.status_items["Raw_Extra"].text(), "✓")
+        self.assertEqual(wizard.stat_matched.text(), "✓ 4 Matched")
+
+        with patch.object(QMessageBox, "information"):
+            wizard._on_save_preset()
+        saved = state_mgr.load_presets()
+        self.assertIn("BrandNewPreset", saved)
+        self.assertEqual(saved["BrandNewPreset"]["Raw_Extra"], "rpm")
 
     def test_x_zoom_viewbox_drag_selection_and_zoom(self):
         """Validates that left-click dragging horizontally across a graph shows the selection box on all plots and zooms on release."""
@@ -1351,6 +1367,55 @@ class TestUIComponents(unittest.TestCase):
         with patch.object(widget, "_on_autorange", wraps=widget._on_autorange) as mock_autorange_again:
             widget.set_selected_channels({"speed", "rpm"})
             mock_autorange_again.assert_called_once()
+
+    def test_unified_import_wizard_full_flow_validation_and_stats(self):
+        """Validates that unified ImportWizardDialog validates required channels, rejects duplicates, and returns results on submit."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        raw_cols = ["file_lap", "file_time", "file_spd", "file_unused"]
+
+        wizard = ImportWizardDialog(
+            file_path="/path/to/my_data_log.csv",
+            raw_columns=raw_cols,
+            state_manager=state_mgr
+        )
+
+        # 1. Check title and header display
+        self.assertIn("Import Log Wizard - my_data_log.csv", wizard.windowTitle())
+
+        # 2. Test duplicate validation
+        wizard.combos["file_lap"].setCurrentText("Lap")
+        wizard.combos["file_time"].setCurrentText("Speed")
+        wizard.combos["file_spd"].setCurrentText("Speed") # duplicate
+        app.processEvents()
+
+        with patch.object(QMessageBox, "critical") as mock_crit:
+            wizard._on_submit()
+            mock_crit.assert_called()
+
+        # 3. Test missing X-axis validation (missing Time / Distance)
+        wizard.combos["file_time"].setCurrentText("RPM")
+        wizard.combos["file_spd"].setCurrentText("Speed")
+        app.processEvents()
+
+        with patch.object(QMessageBox, "critical") as mock_crit_x:
+            wizard._on_submit()
+            mock_crit_x.assert_called()
+
+        # 4. Valid configuration submit
+        wizard.combos["file_time"].setCurrentText("Time")
+        wizard.combos["file_unused"].setCurrentText("-- Skip --")
+        wizard.preset_combo.setEditText("TrackDayPreset")
+        app.processEvents()
+
+        self.assertEqual(wizard.stat_matched.text(), "✓ 3 Matched")
+        self.assertEqual(wizard.stat_skipped.text(), "⊘ 1 Skipped")
+
+        wizard._on_submit()
+        self.assertEqual(wizard.result_preset_name, "TrackDayPreset")
+        self.assertEqual(wizard.result_mapping["file_lap"], "lap")
+        self.assertEqual(wizard.result_mapping["file_time"], "time")
+        self.assertEqual(wizard.result_mapping["file_spd"], "speed")
+        self.assertNotIn("file_unused", wizard.result_mapping)
 
 
 if __name__ == "__main__":

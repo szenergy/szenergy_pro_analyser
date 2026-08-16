@@ -198,46 +198,20 @@ class MainWindow(QMainWindow):
         raw_columns, preview_df = preview_dialog.result_data
 
         matching_preset = self.state_manager.find_matching_preset(raw_columns)
-        chosen_mapping = None
-        applied_preset_name = matching_preset
 
-        if matching_preset:
-            presets = self.state_manager.load_presets()
-            preset_map = presets.get(matching_preset, {})
+        wizard = ImportWizardDialog(
+            file_path=file_path,
+            raw_columns=raw_columns,
+            preview_df=preview_df,
+            state_manager=self.state_manager,
+            initial_preset=matching_preset,
+            parent=self
+        )
+        if wizard.exec() != ImportWizardDialog.Accepted:
+            return
 
-            preview_dlg = PresetPreviewDialog(
-                file_path=file_path,
-                preset_name=matching_preset,
-                mapping=preset_map,
-                raw_columns=raw_columns,
-                state_manager=self.state_manager,
-                parent=self
-            )
-
-            res = preview_dlg.exec()
-            if preview_dlg.selected_action == PresetPreviewDialog.ACTION_APPLY:
-                chosen_mapping = preview_dlg.get_filtered_mapping()
-                applied_preset_name = preview_dlg.selected_preset_name
-            elif preview_dlg.selected_action == PresetPreviewDialog.ACTION_EDIT:
-                chosen_mapping = None
-                applied_preset_name = preview_dlg.selected_preset_name
-            else:
-                return
-
-        if not chosen_mapping:
-            wizard = ImportWizardDialog(
-                file_path=file_path,
-                raw_columns=raw_columns,
-                preview_df=preview_df,
-                state_manager=self.state_manager,
-                initial_preset=applied_preset_name,
-                parent=self
-            )
-            if wizard.exec() == ImportWizardDialog.Accepted:
-                chosen_mapping = wizard.result_mapping
-                applied_preset_name = wizard.result_preset_name or applied_preset_name
-            else:
-                return
+        chosen_mapping = wizard.result_mapping
+        applied_preset_name = wizard.result_preset_name
 
         if not chosen_mapping:
             return
