@@ -13,7 +13,7 @@ from PySide6.QtCore import Signal, Qt, QPoint
 from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
 
 from core.data_models import Session, Lap
-from utils.constants import LAP_COLORS
+from utils.constants import LAP_COLORS, MAX_SELECTED_CHANNELS
 
 
 def create_color_icon(hex_color: str, size: int = 14) -> QIcon:
@@ -407,13 +407,13 @@ class SidebarWidget(QWidget):
     def _on_channel_selection_changed(self):
         selected_items = self.channel_tree.selectedItems()
 
-        # Limit maximum channels selectable to 6
-        if len(selected_items) > 6:
+        # Limit maximum channels selectable
+        if len(selected_items) > MAX_SELECTED_CHANNELS:
             self.channel_tree.blockSignals(True)
             # Prioritize already selected channels
             kept_items = [item for item in selected_items if item.data(0, Qt.UserRole) in self.selected_channels]
             for item in selected_items:
-                if len(kept_items) >= 6:
+                if len(kept_items) >= MAX_SELECTED_CHANNELS:
                     break
                 if item not in kept_items:
                     kept_items.append(item)
@@ -422,7 +422,7 @@ class SidebarWidget(QWidget):
                 if item not in kept_items:
                     item.setSelected(False)
             self.channel_tree.blockSignals(False)
-            QMessageBox.warning(self, "Limit Reached", "You can select a maximum of 6 channels simultaneously.")
+            QMessageBox.warning(self, "Limit Reached", f"You can select a maximum of {MAX_SELECTED_CHANNELS} channels simultaneously.")
             selected_items = kept_items
 
         self.selected_channels = set()

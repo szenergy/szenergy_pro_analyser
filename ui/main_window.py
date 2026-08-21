@@ -23,6 +23,14 @@ from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker
 from utils.constants import APP_NAME, APP_VERSION
 
 
+def is_dark_theme() -> bool:
+    """Detects whether the system environment is currently in Dark Mode."""
+    hints = QGuiApplication.styleHints()
+    if hasattr(hints, "colorScheme"):
+        return hints.colorScheme() == Qt.ColorScheme.Dark
+    return True
+
+
 class MainWindow(QMainWindow):
     """Main window of the SZenergy Pro Analyser desktop application."""
 
@@ -112,11 +120,7 @@ class MainWindow(QMainWindow):
         self.graph_view.set_x_axis_labels(time_label, dist_label)
 
     def update_system_theme(self):
-        hints = QGuiApplication.styleHints()
-        is_dark = True
-        if hasattr(hints, "colorScheme"):
-            is_dark = (hints.colorScheme() == Qt.ColorScheme.Dark)
-
+        is_dark = is_dark_theme()
         self.sidebar.apply_theme(is_dark)
         self.graph_view.apply_theme(is_dark)
 

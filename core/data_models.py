@@ -36,10 +36,6 @@ class Lap:
                 return arr
         return None
 
-    def get_channel_by_slug(self, slug: str) -> Optional[np.ndarray]:
-        """Gets channel data array for a specific slug (e.g. 'time', 'distance', 'lap')."""
-        return self.get_channel(slug)
-
 
 @dataclass
 class Session:

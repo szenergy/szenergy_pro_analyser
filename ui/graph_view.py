@@ -17,8 +17,9 @@ from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
 
 from core.data_models import Session, Lap
 from utils.constants import (
-    STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE,
-    SLUG_TIME, SLUG_DISTANCE
+    STD_CH_LAP_TIME, STD_CH_LAP_DIST,
+    STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG,
+    CROSSHAIR_LINE_COLOR
 )
 
 
@@ -315,9 +316,9 @@ class GraphViewWidget(QWidget):
         self.selected_channels: List[str] = []
         self.selected_laps_info: List[Tuple[str, int, str]] = []
         self.custom_lap_labels: Dict[Tuple[str, int], str] = {}
-        self.x_axis_slug: str = SLUG_DISTANCE
-        self.time_label: str = STD_CHANNEL_TIME
-        self.dist_label: str = STD_CHANNEL_DISTANCE
+        self.x_axis_slug: str = STD_CH_LAP_DIST_SLUG
+        self.time_label: str = STD_CH_LAP_TIME
+        self.dist_label: str = STD_CH_LAP_DIST
         self.is_dark: bool = True
 
         # State tracking for zoom/pan preservation
@@ -342,7 +343,7 @@ class GraphViewWidget(QWidget):
     @property
     def x_axis_channel(self) -> str:
         """Returns the active display label for the selected X-axis slug."""
-        return self.dist_label if self.x_axis_slug == SLUG_DISTANCE else self.time_label
+        return self.dist_label if self.x_axis_slug == STD_CH_LAP_DIST_SLUG else self.time_label
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -416,8 +417,8 @@ class GraphViewWidget(QWidget):
         # 7. X-Axis Selector (Using immutable Slugs as userData)
         c_layout.addWidget(QLabel("<b>X-Axis:</b>"))
         self.x_axis_combo = QComboBox()
-        self.x_axis_combo.addItem(self.time_label, userData=SLUG_TIME)
-        self.x_axis_combo.addItem(self.dist_label, userData=SLUG_DISTANCE)
+        self.x_axis_combo.addItem(self.time_label, userData=STD_CH_LAP_TIME_SLUG)
+        self.x_axis_combo.addItem(self.dist_label, userData=STD_CH_LAP_DIST_SLUG)
         self.x_axis_combo.currentIndexChanged.connect(self._on_x_axis_changed)
         c_layout.addWidget(self.x_axis_combo)
 
@@ -465,8 +466,8 @@ class GraphViewWidget(QWidget):
 
         self.x_axis_combo.blockSignals(True)
         self.x_axis_combo.clear()
-        self.x_axis_combo.addItem(self.time_label, userData=SLUG_TIME)
-        self.x_axis_combo.addItem(self.dist_label, userData=SLUG_DISTANCE)
+        self.x_axis_combo.addItem(self.time_label, userData=STD_CH_LAP_TIME_SLUG)
+        self.x_axis_combo.addItem(self.dist_label, userData=STD_CH_LAP_DIST_SLUG)
 
         target_idx = 0
         for idx in range(self.x_axis_combo.count()):
@@ -744,7 +745,7 @@ class GraphViewWidget(QWidget):
                 # Synchronized vertical crosshair
                 v_line = pg.InfiniteLine(
                     angle=90, movable=False,
-                    pen=pg.mkPen("#FFD740", width=1, style=Qt.DashLine)
+                    pen=pg.mkPen(CROSSHAIR_LINE_COLOR, width=1, style=Qt.DashLine)
                 )
                 v_line.setVisible(self.show_cursor_values)
                 plot.addItem(v_line, ignoreBounds=True)
@@ -765,7 +766,14 @@ class GraphViewWidget(QWidget):
                     raw_y = lap.get_channel(channel_name)
 
                     if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
-                        x_normalized = raw_x - raw_x[0]
+                        if np.isnan(raw_x[0]):
+                            valid_x0_indices = np.where(~np.isnan(raw_x))[0]
+                            if len(valid_x0_indices) == 0:
+                                continue
+                            x0 = raw_x[valid_x0_indices[0]]
+                        else:
+                            x0 = raw_x[0]
+                        x_normalized = raw_x - x0
                         pen = pg.mkPen(color=color, width=1.8)
 
                         curve = plot.plot(x_normalized, raw_y, pen=pen)
@@ -824,6 +832,7 @@ class GraphViewWidget(QWidget):
                 pass
 
         title_color = "#E0E0E0" if self.is_dark else "#202020"
+        samples: Dict[Tuple[str, int, str], Optional[Tuple[float, float]]] = {}
 
         # Update tracking dots position on every curve (snapping directly to nearest actual curve vertex)
         for dot, session_id, lap_num, channel_name in self.tracking_dots:
@@ -841,6 +850,7 @@ class GraphViewWidget(QWidget):
                 raw_y = lap.get_channel(channel_name)
 
                 sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+                samples[(session_id, lap_num, channel_name)] = sample
                 if sample is not None:
                     actual_x, actual_y = sample
                     dot.setData(x=[actual_x], y=[actual_y])
@@ -850,8 +860,8 @@ class GraphViewWidget(QWidget):
             except Exception:
                 pass
 
-        # Update each plot's header directly with its current channel values
-        for channel_name, plot in list(self.plot_widgets.items()):
+        # Update each plot's header directly with its current channel values using cached samples
+        for channel_name, plot in self.plot_widgets.items():
             try:
                 display_label = channel_name
                 if self.state_manager:
@@ -859,17 +869,7 @@ class GraphViewWidget(QWidget):
                 title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"]
 
                 for session_id, lap_num, color in self.selected_laps_info:
-                    session = self.sessions.get(session_id)
-                    if not session:
-                        continue
-                    lap = session.get_lap(lap_num)
-                    if not lap:
-                        continue
-
-                    raw_x = lap.get_channel(self.x_axis_slug)
-                    raw_y = lap.get_channel(channel_name)
-
-                    sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+                    sample = samples.get((session_id, lap_num, channel_name))
                     if sample is not None:
                         _, actual_y = sample
                         title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{actual_y:.2f}</span>")

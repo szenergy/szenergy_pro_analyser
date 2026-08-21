@@ -8,7 +8,7 @@ from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
 
 from core.file_parser import parse_session, get_file_columns_and_preview
-from utils.constants import SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
+from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 
 
 class FileParseWorker(QThread):
@@ -18,7 +18,7 @@ class FileParseWorker(QThread):
 
     def __init__(self, file_path: str, mapping: dict, session_id: str,
                  lap_label: str, time_label: str, dist_label: str,
-                 lap_slug: str = SLUG_LAP, time_slug: str = SLUG_TIME, dist_slug: str = SLUG_DISTANCE,
+                 lap_slug: str = STD_CH_LAP_NUM_SLUG, time_slug: str = STD_CH_LAP_TIME_SLUG, dist_slug: str = STD_CH_LAP_DIST_SLUG,
                  parent=None):
         super().__init__(parent)
         self.file_path = file_path

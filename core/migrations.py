@@ -6,10 +6,9 @@ Migrations run sequentially on program startup to upgrade legacy formats.
 
 import json
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from core.state_manager import StateManager, generate_slug, _read_versioned_json, _write_versioned_json
+from core.state_manager import StateManager, generate_slug, read_versioned_json, write_versioned_json
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +104,7 @@ def _apply_migrations(
     Reads a config file, applies sequential migrations, and writes back.
     Returns True if any migration was applied.
     """
-    version, data = _read_versioned_json(file_path)
+    version, data = read_versioned_json(file_path)
 
     if data is None and version == 0:
         # File doesn't exist yet — nothing to migrate
@@ -122,7 +121,7 @@ def _apply_migrations(
             version = to_v
 
     if version != original_version:
-        _write_versioned_json(file_path, version, data)
+        write_versioned_json(file_path, version, data)
         logger.info(f"Successfully migrated {file_label} to v{version}.")
         return True
 

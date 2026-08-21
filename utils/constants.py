@@ -1,36 +1,48 @@
 """
-Global constants and configuration defaults for SZenergy Pro Analyser.
+Global constants and configuration defaults for the app.
 """
 
+# Application Metadata
 APP_NAME = "SZenergy Pro Analyser"
 ORGANIZATION_NAME = "SZenergy"
 APP_VERSION = "1.0.0"
+APP_LOGO_FILENAME = "szenergy_logo.png"
 
-# Standard / Reserved Internal Channel Names (Default Display Labels)
-STD_CHANNEL_LAP = "Lap"
-STD_CHANNEL_TIME = "Time"
-STD_CHANNEL_DISTANCE = "Distance"
+# Default Channel Labels
+STD_CH_LAP_NUM = "Lap Number"
+STD_CH_LAP_TIME = "Lap Time"
+STD_CH_LAP_DIST = "Lap Distance"
 
-# Standard / Reserved Internal Channel Slugs (Immutable Keys)
-SLUG_LAP = "lap"
-SLUG_TIME = "time"
-SLUG_DISTANCE = "distance"
+# Default Channel Slugs/Keys
+STD_CH_LAP_NUM_SLUG = "lap_num"
+STD_CH_LAP_TIME_SLUG = "lap_time"
+STD_CH_LAP_DIST_SLUG = "lap_dist"
 
-REQUIRED_SLUGS = [SLUG_LAP]
-STANDARD_SLUGS = [SLUG_LAP, SLUG_TIME, SLUG_DISTANCE]
+# Default Channel Definitions
+DEFAULT_CHANNEL_DEFS = [
+    {"label": STD_CH_LAP_NUM, "slug": STD_CH_LAP_NUM_SLUG},
+    {"label": STD_CH_LAP_TIME, "slug": STD_CH_LAP_TIME_SLUG},
+    {"label": STD_CH_LAP_DIST, "slug": STD_CH_LAP_DIST_SLUG},
+]
 
-# Pool of distinct colors for dynamic assignment to selected laps
+# Application Limits
+MAX_SELECTED_CHANNELS = 6
+
+# UI Colors
+CROSSHAIR_LINE_COLOR = "#FFD740"
+
+# The number of selectable laps depends on the length of this list
 LAP_COLORS = [
-    "#00E676",  # Bright Green
-    "#FF5252",  # Bright Red
-    "#40C4FF",  # Light Blue
-    "#FFD740",  # Yellow
-    "#E040FB",  # Purple
-    "#FF6E40",  # Orange
-    "#1DE9B6",  # Teal
-    "#FF4081",  # Pink
-    "#7C4DFF",  # Deep Purple
-    "#A7FF83",  # Mint
-    "#FFAB40",  # Amber
-    "#00B0FF",  # Vivid Blue
+    "#FF0000",
+    "#00FF00",
+    "#0000FF",
+    "#FFFF00",
+    "#00FFFF",
+    "#FF00FF",
+    "#FF9600",
+    "#FF0096",
+    "#00FF96",
+    "#96FF00",
+    "#9600FF",
+    "#0096FF",
 ]

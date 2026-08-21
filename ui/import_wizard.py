@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
 from core.state_manager import StateManager, generate_slug
-from utils.constants import SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
+from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 
 
 class ImportWizardDialog(QDialog):
@@ -484,26 +484,7 @@ class ImportWizardDialog(QDialog):
 
     def _save_new_custom_channels(self, mapping: Dict[str, str]):
         """Detects newly entered mapping target labels, adds them to standard channel defs, and saves them."""
-        existing_labels = self.state_manager.get_channel_labels()
-        existing_defs = self.state_manager.get_channel_defs()
-
-        updated = False
-        for raw, target in mapping.items():
-            if target not in existing_labels:
-                base_slug = generate_slug(target)
-                slug = base_slug
-                counter = 1
-                existing_slugs = [ch["slug"] for ch in existing_defs]
-                while slug in existing_slugs:
-                    slug = f"{base_slug}_{counter}"
-                    counter += 1
-
-                existing_defs.append({"label": target, "slug": slug})
-                existing_labels.append(target)
-                updated = True
-
-        if updated:
-            self.state_manager.save_channel_defs(existing_defs)
+        self.state_manager.save_new_custom_channels(list(mapping.values()))
 
     def _on_submit(self):
         label_mapping = self._get_current_label_mapping()
@@ -518,11 +499,11 @@ class ImportWizardDialog(QDialog):
         time_label = self.state_manager.get_time_label()
         dist_label = self.state_manager.get_distance_label()
 
-        if SLUG_LAP not in mapped_slugs:
+        if STD_CH_LAP_NUM_SLUG not in mapped_slugs:
             QMessageBox.critical(self, "Validation Error", f"You must map at least one channel to '{lap_label}'.")
             return
 
-        if SLUG_TIME not in mapped_slugs and SLUG_DISTANCE not in mapped_slugs:
+        if STD_CH_LAP_TIME_SLUG not in mapped_slugs and STD_CH_LAP_DIST_SLUG not in mapped_slugs:
             QMessageBox.critical(
                 self, "Validation Error",
                 f"You must map an X-Axis channel (either '{time_label}' or '{dist_label}')."

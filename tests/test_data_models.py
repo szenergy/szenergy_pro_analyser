@@ -27,8 +27,7 @@ class TestDataModels(unittest.TestCase):
         self.assertEqual(lap.duration, 65.4)
         self.assertEqual(lap.distance, 1200.0)
         np.testing.assert_array_equal(lap.get_channel("speed"), np.array([20.0, 25.0, 30.0]))
-        # Test get_channel_by_slug is also available
-        np.testing.assert_array_equal(lap.get_channel_by_slug("time"), np.array([0.0, 0.1, 0.2]))
+        np.testing.assert_array_equal(lap.get_channel("time"), np.array([0.0, 0.1, 0.2]))
         self.assertIsNone(lap.get_channel("nonexistent"))
 
     def test_session_lap_lookup(self):

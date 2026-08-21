@@ -68,7 +68,7 @@ class TestFileParser(unittest.TestCase):
         self.assertIn("Speed", cols)
         self.assertEqual(len(preview), 5)
 
-        mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Speed": "speed"}
+        mapping = {"Lap": "lap_num", "Time": "lap_time", "Distance": "lap_dist", "Speed": "speed"}
         session = parse_session(self.csv_path, mapping, "sess_csv")
 
         self.assertEqual(session.name, "test.csv")
@@ -89,7 +89,7 @@ class TestFileParser(unittest.TestCase):
         self.assertIn("Lap_No", cols)
         self.assertIn("RPM", cols)
 
-        mapping = {"Lap_No": "lap", "Timestamp": "time", "Dist": "distance", "RPM": "rpm"}
+        mapping = {"Lap_No": "lap_num", "Timestamp": "lap_time", "Dist": "lap_dist", "RPM": "rpm"}
         session = parse_session(self.xlsx_path, mapping, "sess_xlsx")
 
         self.assertEqual(len(session.laps), 2)
@@ -103,9 +103,9 @@ class TestFileParser(unittest.TestCase):
         self.assertIn("Telemetry/Speed", cols)
 
         mapping = {
-            "Telemetry/Lap": "lap",
-            "Telemetry/Time": "time",
-            "Telemetry/Distance": "distance",
+            "Telemetry/Lap": "lap_num",
+            "Telemetry/Time": "lap_time",
+            "Telemetry/Distance": "lap_dist",
             "Telemetry/Speed": "speed"
         }
         session = parse_session(self.tdms_path, mapping, "sess_tdms")
@@ -132,7 +132,16 @@ class TestFileParser(unittest.TestCase):
         motec_csv = os.path.join(sample_dir, "sample_motec.csv")
         if os.path.exists(motec_csv):
             cols, _ = get_file_columns_and_preview(motec_csv)
-            mapping = {c: c for c in cols}
+            mapping = {
+                "Lap": "lap_num",
+                "Time": "lap_time",
+                "Distance": "lap_dist",
+                "Speed": "speed",
+                "RPM": "rpm",
+                "Throttle": "throttle",
+                "Voltage": "voltage",
+                "Current": "current"
+            }
             session = parse_session(motec_csv, mapping, "s_motec")
             self.assertEqual(len(session.laps), 3)
 
@@ -140,9 +149,9 @@ class TestFileParser(unittest.TestCase):
         if os.path.exists(ecu_xlsx):
             cols, _ = get_file_columns_and_preview(ecu_xlsx)
             mapping = {
-                "Lap_Index": "lap",
-                "Timestamp_s": "time",
-                "Distance_m": "distance",
+                "Lap_Index": "lap_num",
+                "Timestamp_s": "lap_time",
+                "Distance_m": "lap_dist",
                 "Speed_kmh": "speed"
             }
             session = parse_session(ecu_xlsx, mapping, "s_ecu")
@@ -152,9 +161,9 @@ class TestFileParser(unittest.TestCase):
         if os.path.exists(ni_tdms):
             cols, _ = get_file_columns_and_preview(ni_tdms)
             mapping = {
-                "Vehicle/Lap": "lap",
-                "Vehicle/Time": "time",
-                "Vehicle/Distance": "distance",
+                "Vehicle/Lap": "lap_num",
+                "Vehicle/Time": "lap_time",
+                "Vehicle/Distance": "lap_dist",
                 "Vehicle/Speed": "speed"
             }
             session = parse_session(ni_tdms, mapping, "s_ni")
@@ -173,9 +182,9 @@ class TestFileParser(unittest.TestCase):
         df_nan.to_csv(nan_csv_path, index=False)
 
         mapping = {
-            "Lap": "lap",
-            "Time": "time",
-            "Distance": "distance",
+            "Lap": "lap_num",
+            "Time": "lap_time",
+            "Distance": "lap_dist",
             "SensorA": "sensora",
             "SensorB": "sensorb"
         }
@@ -224,9 +233,9 @@ class TestFileParser(unittest.TestCase):
 
         # 1. Hungarian custom configured labels
         mapping_hu = {
-            "kor_szam": "lap",
-            "ido": "time",
-            "tavolsag": "distance",
+            "kor_szam": "lap_num",
+            "ido": "lap_time",
+            "tavolsag": "lap_dist",
             "sebesseg": "speed"
         }
         session_hu = parse_session(
@@ -240,12 +249,12 @@ class TestFileParser(unittest.TestCase):
 
         # 2. Configured label mismatch fallback to standard / slug
         mapping_std = {
-            "kor_szam": "lap",
-            "ido": "time",
-            "tavolsag": "distance",
+            "kor_szam": "lap_num",
+            "ido": "lap_time",
+            "tavolsag": "lap_dist",
             "sebesseg": "speed"
         }
-        # lap_label passed as custom "Kör", but mapped to standard "Lap"
+        # lap_label passed as custom "Kör", but mapped to standard "Lap Number"
         session_fallback = parse_session(
             custom_csv_path, mapping_std, "sess_fb",
             lap_label="Kör", time_label="Idő", dist_label="Távolság"
@@ -271,7 +280,7 @@ class TestFileParser(unittest.TestCase):
 
     def test_session_retains_raw_df_and_in_memory_reparsing(self):
         """Validates that parse_session keeps raw_df in Session and parse_session_from_dataframe re-parses in memory."""
-        mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Speed": "speed"}
+        mapping = {"Lap": "lap_num", "Time": "lap_time", "Distance": "lap_dist", "Speed": "speed"}
         session = parse_session(self.csv_path, mapping, "sess_raw", preset_name="OriginalPreset")
 
         self.assertIsNotNone(session.raw_df)
@@ -279,7 +288,7 @@ class TestFileParser(unittest.TestCase):
         self.assertEqual(session.preset_name, "OriginalPreset")
 
         # Now re-parse directly from session.raw_df without disk I/O
-        updated_mapping = {"Lap": "lap", "Time": "time", "Distance": "distance", "Notes": "commentary"}
+        updated_mapping = {"Lap": "lap_num", "Time": "lap_time", "Distance": "lap_dist", "Notes": "commentary"}
         updated_session = parse_session_from_dataframe(
             raw_df=session.raw_df,
             file_path=session.file_path,

@@ -14,7 +14,7 @@ from core.migrations import (
     _migrate_presets_v0_to_v1,
     run_migrations,
 )
-from core.state_manager import StateManager, _read_versioned_json, _write_versioned_json
+from core.state_manager import StateManager, read_versioned_json, write_versioned_json
 
 
 class TestMigrations(unittest.TestCase):
@@ -78,7 +78,7 @@ class TestMigrations(unittest.TestCase):
         run_migrations(self.state_mgr)
 
         # 3. Check version and content in presets.json
-        preset_ver, preset_data = _read_versioned_json(self.state_mgr.presets_file)
+        preset_ver, preset_data = read_versioned_json(self.state_mgr.presets_file)
         self.assertEqual(preset_ver, CURRENT_PRESETS_VERSION)
         self.assertIn("OldPreset", preset_data)
         self.assertEqual(preset_data["OldPreset"]["lap_raw"], "lap")
@@ -86,19 +86,19 @@ class TestMigrations(unittest.TestCase):
         self.assertEqual(preset_data["OldPreset"]["speed_raw"], "speed")
 
         # 4. Check version and content in custom_channels.json
-        chan_ver, chan_data = _read_versioned_json(self.state_mgr.channels_file)
+        chan_ver, chan_data = read_versioned_json(self.state_mgr.channels_file)
         self.assertEqual(chan_ver, CURRENT_CHANNELS_VERSION)
         labels = [c["label"] for c in chan_data]
         self.assertIn("Coolant Temp", labels)
 
     def test_run_migrations_idempotent_on_up_to_date_files(self):
         """Validates that run_migrations does nothing if files are already at latest version."""
-        _write_versioned_json(
+        write_versioned_json(
             self.state_mgr.presets_file,
             CURRENT_PRESETS_VERSION,
             {"V1Preset": {"raw": "slug"}}
         )
-        _write_versioned_json(
+        write_versioned_json(
             self.state_mgr.channels_file,
             CURRENT_CHANNELS_VERSION,
             [{"label": "Lap", "slug": "lap"}]
@@ -107,7 +107,7 @@ class TestMigrations(unittest.TestCase):
         # Run migrations
         run_migrations(self.state_mgr)
 
-        preset_ver, preset_data = _read_versioned_json(self.state_mgr.presets_file)
+        preset_ver, preset_data = read_versioned_json(self.state_mgr.presets_file)
         self.assertEqual(preset_ver, CURRENT_PRESETS_VERSION)
         self.assertEqual(preset_data, {"V1Preset": {"raw": "slug"}})
 

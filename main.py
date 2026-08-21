@@ -9,8 +9,8 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QIcon
 
-from ui.main_window import MainWindow
-from utils.constants import APP_NAME, ORGANIZATION_NAME
+from ui.main_window import MainWindow, is_dark_theme
+from utils.constants import APP_NAME, ORGANIZATION_NAME, APP_LOGO_FILENAME
 
 
 def main():
@@ -19,15 +19,12 @@ def main():
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setStyle("Fusion")
 
-    logo_path = os.path.join(os.path.dirname(__file__), "szenergy_logo.jpg")
+    logo_path = os.path.join(os.path.dirname(__file__), APP_LOGO_FILENAME)
     if os.path.exists(logo_path):
         app.setWindowIcon(QIcon(logo_path))
 
     # Detect OS Theme (Light / Dark)
-    hints = QGuiApplication.styleHints()
-    is_dark = True
-    if hasattr(hints, "colorScheme"):
-        is_dark = (hints.colorScheme() == Qt.ColorScheme.Dark)
+    is_dark = is_dark_theme()
 
     if is_dark:
         stylesheet = """

@@ -192,11 +192,11 @@ class TestUIComponents(unittest.TestCase):
 
         expected_matches = {
             # Lap
-            "lap": "Lap", "lap_no": "Lap", "kor": "Lap", "round": "Lap", "korszam": "Lap", "kor_szam": "Lap",
+            "lap": "Lap Number", "lap_no": "Lap Number", "kor": "Lap Number", "round": "Lap Number", "korszam": "Lap Number", "kor_szam": "Lap Number",
             # Time
-            "time": "Time", "timestamp": "Time", "ido": "Time", "sec": "Time", "t": "Time",
+            "time": "Lap Time", "timestamp": "Lap Time", "ido": "Lap Time", "sec": "Lap Time", "t": "Lap Time",
             # Distance
-            "distance": "Distance", "dist": "Distance", "tavolsag": "Distance", "pos": "Distance", "position": "Distance", "odo": "Distance", "d": "Distance", "dist_m": "Distance",
+            "distance": "Lap Distance", "dist": "Lap Distance", "tavolsag": "Lap Distance", "pos": "Lap Distance", "position": "Lap Distance", "odo": "Lap Distance", "d": "Lap Distance", "dist_m": "Lap Distance",
             # Speed
             "speed": "Speed", "spd": "Speed", "velocity": "Speed", "vel": "Speed", "sebesseg": "Speed", "kmh": "Speed", "kph": "Speed", "mph": "Speed",
             # RPM
@@ -233,9 +233,9 @@ class TestUIComponents(unittest.TestCase):
         """Validates that auto-guess resolves candidate labels dynamically from custom state_manager channels."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         custom_defs = [
-            {"label": "Kör", "slug": "lap"},
-            {"label": "Idő", "slug": "time"},
-            {"label": "Távolság", "slug": "distance"},
+            {"label": "Kör", "slug": "lap_num"},
+            {"label": "Idő", "slug": "lap_time"},
+            {"label": "Távolság", "slug": "lap_dist"},
             {"label": "Sebesség", "slug": "speed"},
             {"label": "Áram", "slug": "current"},
             {"label": "Feszültség", "slug": "voltage"},
@@ -300,9 +300,9 @@ class TestUIComponents(unittest.TestCase):
         """Validates that renaming non-system channels regenerates slugs, while system slugs are preserved."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         custom_defs = [
-            {"label": "Lap", "slug": "lap"},
-            {"label": "Time", "slug": "time"},
-            {"label": "Distance", "slug": "distance"},
+            {"label": "Lap Number", "slug": "lap_num"},
+            {"label": "Lap Time", "slug": "lap_time"},
+            {"label": "Lap Distance", "slug": "lap_dist"},
             {"label": "Old Sensor", "slug": "old_sensor"}
         ]
         state_mgr.save_channel_defs(custom_defs)
@@ -323,7 +323,7 @@ class TestUIComponents(unittest.TestCase):
             dlg._on_rename_channel()
 
         self.assertEqual(dlg.channels[0]["label"], "Kör")
-        self.assertEqual(dlg.channels[0]["slug"], "lap")  # System slug must be preserved
+        self.assertEqual(dlg.channels[0]["slug"], "lap_num")  # System slug must be preserved
 
     def test_sidebar_lap_multi_selection_limit_clamping(self):
         """Validates that selecting >12 laps at once clamps selection to 12 and updates state cleanly."""
@@ -474,9 +474,9 @@ class TestUIComponents(unittest.TestCase):
 
     def test_crosshair_nearest_sample_with_nans_duplicates_and_non_monotonic(self):
         """Validates that _get_nearest_channel_sample snaps to nearest recorded sample without interpolation."""
-        # 1. Array with NaNs
-        raw_x = np.array([0.0, np.nan, 2.0, 4.0])
-        raw_y = np.array([10.0, 20.0, np.nan, 50.0])
+        # 1. Array with NaNs (including leading NaN)
+        raw_x = np.array([np.nan, 0.0, np.nan, 2.0, 4.0])
+        raw_y = np.array([np.nan, 10.0, 20.0, np.nan, 50.0])
         # valid points: (0.0, 10.0) and (4.0, 50.0). At x_val=1.5, closest point is (0.0, 10.0)
         sample = _get_nearest_channel_sample(raw_x, raw_y, 1.5)
         self.assertIsNotNone(sample)
@@ -498,9 +498,10 @@ class TestUIComponents(unittest.TestCase):
         self.assertIsNone(_get_nearest_channel_sample(raw_x_dup, raw_y_dup, -5.0))
         self.assertIsNone(_get_nearest_channel_sample(raw_x_dup, raw_y_dup, 100.0))
 
-        # 4. None or empty arrays
+        # 4. None or empty arrays or all-NaN arrays
         self.assertIsNone(_get_nearest_channel_sample(None, None, 1.0))
         self.assertIsNone(_get_nearest_channel_sample(np.array([]), np.array([]), 1.0))
+        self.assertIsNone(_get_nearest_channel_sample(np.array([np.nan, np.nan]), np.array([1.0, 2.0]), 1.0))
 
     def test_custom_lap_labels_cleanup_on_session_removal(self):
         """Validates that stale custom lap labels are cleaned up when sessions are removed."""
@@ -518,33 +519,33 @@ class TestUIComponents(unittest.TestCase):
     def test_x_axis_selection_preservation_during_sync(self):
         """Validates that user X-axis choice (Distance or Time) uses slugs and is preserved when labels are re-synced."""
         widget = GraphViewWidget()
-        # Default is Time slug
-        self.assertEqual(widget.x_axis_slug, "time")
-        self.assertEqual(widget.x_axis_channel, widget.time_label)
-
-        # User chooses Distance
-        dist_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == "distance"][0]
-        widget.x_axis_combo.setCurrentIndex(dist_idx)
-        self.assertEqual(widget.x_axis_slug, "distance")
+        # Default is Distance slug
+        self.assertEqual(widget.x_axis_slug, "lap_dist")
         self.assertEqual(widget.x_axis_channel, widget.dist_label)
+
+        # User chooses Time
+        time_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == "lap_time"][0]
+        widget.x_axis_combo.setCurrentIndex(time_idx)
+        self.assertEqual(widget.x_axis_slug, "lap_time")
+        self.assertEqual(widget.x_axis_channel, widget.time_label)
 
         # Sync labels to Hungarian
         widget.set_x_axis_labels("Idő", "Távolság")
-        self.assertEqual(widget.x_axis_slug, "distance")
-        self.assertEqual(widget.x_axis_channel, "Távolság")
-        self.assertEqual(widget.x_axis_combo.currentText(), "Távolság")
-
-        # User switches to Time (Idő)
-        time_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == "time"][0]
-        widget.x_axis_combo.setCurrentIndex(time_idx)
-        self.assertEqual(widget.x_axis_slug, "time")
+        self.assertEqual(widget.x_axis_slug, "lap_time")
         self.assertEqual(widget.x_axis_channel, "Idő")
+        self.assertEqual(widget.x_axis_combo.currentText(), "Idő")
+
+        # User switches to Distance (Távolság)
+        dist_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == "lap_dist"][0]
+        widget.x_axis_combo.setCurrentIndex(dist_idx)
+        self.assertEqual(widget.x_axis_slug, "lap_dist")
+        self.assertEqual(widget.x_axis_channel, "Távolság")
 
         # Sync labels back to English
-        widget.set_x_axis_labels("Time", "Distance")
-        self.assertEqual(widget.x_axis_slug, "time")
-        self.assertEqual(widget.x_axis_channel, "Time")
-        self.assertEqual(widget.x_axis_combo.currentText(), "Time")
+        widget.set_x_axis_labels("Lap Time", "Lap Distance")
+        self.assertEqual(widget.x_axis_slug, "lap_dist")
+        self.assertEqual(widget.x_axis_channel, "Lap Distance")
+        self.assertEqual(widget.x_axis_combo.currentText(), "Lap Distance")
 
     def test_auto_range_triggered_on_laps_and_channels_selection_changed(self):
         """Validates that auto-range is automatically invoked when lap or channel selection changes."""
@@ -649,7 +650,7 @@ class TestUIComponents(unittest.TestCase):
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         raw_cols = ["Raw_Lap", "Raw_Time", "Raw_Spd"]
         preview_df = pd.DataFrame({"Raw_Lap": [1], "Raw_Time": [0.0], "Raw_Spd": [25.0]})
-        initial_map = {"Raw_Lap": "lap", "Raw_Time": "time", "Raw_Spd": "speed"}
+        initial_map = {"Raw_Lap": "lap_num", "Raw_Time": "lap_time", "Raw_Spd": "speed"}
 
         wizard = ImportWizardDialog(
             file_path="/tmp/test_log.csv",
@@ -663,8 +664,8 @@ class TestUIComponents(unittest.TestCase):
 
         self.assertIn("Edit Channel Mapping", wizard.windowTitle())
         self.assertEqual(wizard.submit_btn.text(), "Apply Changes")
-        self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap")
-        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Time")
+        self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap Number")
+        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time")
         self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
         self.assertEqual(wizard.preset_combo.currentText(), "MyCarPreset")
 
@@ -798,8 +799,8 @@ class TestUIComponents(unittest.TestCase):
         """Validates that ImportWizardDialog allows selecting and applying a preset manually, editing, and saving a new preset."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         state_mgr.save_preset("CustomTelemetry", {
-            "Raw_Lap": "lap",
-            "Raw_Time": "time",
+            "Raw_Lap": "lap_num",
+            "Raw_Time": "lap_time",
             "Raw_Spd": "speed"
         })
 
@@ -817,8 +818,8 @@ class TestUIComponents(unittest.TestCase):
         wizard.preset_combo.setCurrentText("CustomTelemetry")
         wizard._on_load_preset()
 
-        self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap")
-        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Time")
+        self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap Number")
+        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time")
         self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
         self.assertEqual(wizard.combos["Raw_Extra"].currentText(), "-- Skip --")
         self.assertEqual(wizard.status_items["Raw_Lap"].text(), "✓")
@@ -1383,7 +1384,7 @@ class TestUIComponents(unittest.TestCase):
         self.assertIn("Import Log Wizard - my_data_log.csv", wizard.windowTitle())
 
         # 2. Test duplicate validation
-        wizard.combos["file_lap"].setCurrentText("Lap")
+        wizard.combos["file_lap"].setCurrentText("Lap Number")
         wizard.combos["file_time"].setCurrentText("Speed")
         wizard.combos["file_spd"].setCurrentText("Speed") # duplicate
         app.processEvents()
@@ -1402,7 +1403,7 @@ class TestUIComponents(unittest.TestCase):
             mock_crit_x.assert_called()
 
         # 4. Valid configuration submit
-        wizard.combos["file_time"].setCurrentText("Time")
+        wizard.combos["file_time"].setCurrentText("Lap Time")
         wizard.combos["file_unused"].setCurrentText("-- Skip --")
         wizard.preset_combo.setEditText("TrackDayPreset")
         app.processEvents()
@@ -1412,8 +1413,8 @@ class TestUIComponents(unittest.TestCase):
 
         wizard._on_submit()
         self.assertEqual(wizard.result_preset_name, "TrackDayPreset")
-        self.assertEqual(wizard.result_mapping["file_lap"], "lap")
-        self.assertEqual(wizard.result_mapping["file_time"], "time")
+        self.assertEqual(wizard.result_mapping["file_lap"], "lap_num")
+        self.assertEqual(wizard.result_mapping["file_time"], "lap_time")
         self.assertEqual(wizard.result_mapping["file_spd"], "speed")
         self.assertNotIn("file_unused", wizard.result_mapping)
 

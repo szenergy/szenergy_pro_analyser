@@ -15,8 +15,8 @@ from nptdms import TdmsFile
 from core.data_models import Session, Lap
 from core.state_manager import generate_slug
 from utils.constants import (
-    STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE,
-    SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
+    STD_CH_LAP_NUM, STD_CH_LAP_TIME, STD_CH_LAP_DIST,
+    STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
 
 
@@ -94,6 +94,64 @@ def _resolve_channel_column(
     return None
 
 
+def _read_excel_dataframe(file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
+    """Reads an Excel workbook using its primary sheet."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+        with pd.ExcelFile(file_path) as excel_file:
+            target_sheet = excel_file.sheet_names[0]
+            df = pd.read_excel(excel_file, sheet_name=target_sheet, nrows=nrows)
+            df.columns = [str(c) for c in df.columns]
+            return df
+
+
+def _read_tdms_with_alignment(file_path: str, nrows: Optional[int] = None) -> Tuple[List[str], pd.DataFrame]:
+    """Reads a TDMS file, returning all channel names and aligning channels with padding."""
+    if nrows is not None:
+        with TdmsFile.open(file_path) as tdms:
+            all_channels = []
+            data_dict = {}
+            for group in tdms.groups():
+                for channel in group.channels():
+                    chan_name = f"{group.name}/{channel.name}"
+                    all_channels.append(chan_name)
+                    slice_data = list(channel[:nrows])
+                    if len(slice_data) < nrows:
+                        slice_data.extend([None] * (nrows - len(slice_data)))
+                    data_dict[chan_name] = slice_data
+            return all_channels, pd.DataFrame(data_dict)
+
+    with TdmsFile.read(file_path) as tdms:
+        all_channels = []
+        data_dict = {}
+        max_len = 0
+
+        for group in tdms.groups():
+            for channel in group.channels():
+                chan_name = f"{group.name}/{channel.name}"
+                all_channels.append(chan_name)
+                arr = channel[:]
+                data_dict[chan_name] = arr
+                if len(arr) > max_len:
+                    max_len = len(arr)
+
+        padded_dict = {}
+        for chan_name, arr in data_dict.items():
+            if len(arr) < max_len:
+                if np.issubdtype(arr.dtype, np.number):
+                    padded = np.full(max_len, np.nan, dtype=float)
+                    padded[:len(arr)] = arr
+                    padded_dict[chan_name] = padded
+                else:
+                    padded_obj = np.empty(max_len, dtype=object)
+                    padded_obj[:len(arr)] = arr
+                    padded_dict[chan_name] = padded_obj
+            else:
+                padded_dict[chan_name] = arr
+
+        return all_channels, pd.DataFrame(padded_dict)
+
+
 def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFrame]:
     """
     Inspects a telemetry file and returns its raw column headers and a preview DataFrame (first 5 rows).
@@ -104,42 +162,11 @@ def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFram
     if ext == ".csv":
         df_preview = _read_csv_with_fallback(file_path, nrows=5)
         return list(df_preview.columns), df_preview
-
     elif ext in [".xlsx", ".xls"]:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
-            with pd.ExcelFile(file_path) as excel_file:
-                # Select best sheet: 'Data', 'Telemetry', or first sheet
-                target_sheet = excel_file.sheet_names[0]
-                for s in excel_file.sheet_names:
-                    if s.lower() in ["data", "telemetry", "log", "channels"]:
-                        target_sheet = s
-                        break
-
-                df_preview = pd.read_excel(excel_file, sheet_name=target_sheet, nrows=5)
-                return [str(c) for c in df_preview.columns], df_preview
-
+        df_preview = _read_excel_dataframe(file_path, nrows=5)
+        return list(df_preview.columns), df_preview
     elif ext == ".tdms":
-        with TdmsFile.open(file_path) as tdms:
-            all_channels = []
-            data_dict = {}
-            max_rows = 5
-
-            for group in tdms.groups():
-                for channel in group.channels():
-                    chan_name = f"{group.name}/{channel.name}"
-                    all_channels.append(chan_name)
-                    slice_data = channel[:max_rows]
-                    data_dict[chan_name] = list(slice_data)
-
-            # Pad unequal preview lengths with None to allow DataFrame creation
-            for chan_name, vals in data_dict.items():
-                if len(vals) < max_rows:
-                    vals.extend([None] * (max_rows - len(vals)))
-
-            df_preview = pd.DataFrame(data_dict)
-            return all_channels, df_preview
-
+        return _read_tdms_with_alignment(file_path, nrows=5)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
@@ -150,59 +177,22 @@ def load_full_dataframe(file_path: str) -> pd.DataFrame:
 
     if ext == ".csv":
         return _read_csv_with_fallback(file_path)
-
     elif ext in [".xlsx", ".xls"]:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
-            with pd.ExcelFile(file_path) as excel_file:
-                target_sheet = excel_file.sheet_names[0]
-                for s in excel_file.sheet_names:
-                    if s.lower() in ["data", "telemetry", "log", "channels"]:
-                        target_sheet = s
-                        break
-                return pd.read_excel(excel_file, sheet_name=target_sheet)
-
+        return _read_excel_dataframe(file_path)
     elif ext == ".tdms":
-        with TdmsFile.read(file_path) as tdms:
-            data_dict = {}
-            max_len = 0
-
-            for group in tdms.groups():
-                for channel in group.channels():
-                    chan_name = f"{group.name}/{channel.name}"
-                    arr = channel[:]
-                    data_dict[chan_name] = arr
-                    if len(arr) > max_len:
-                        max_len = len(arr)
-
-            # Handle multi-rate TDMS channels: pad shorter arrays with NaN to max_len
-            padded_dict = {}
-            for chan_name, arr in data_dict.items():
-                if len(arr) < max_len:
-                    if np.issubdtype(arr.dtype, np.number):
-                        padded = np.full(max_len, np.nan, dtype=float)
-                        padded[:len(arr)] = arr
-                        padded_dict[chan_name] = padded
-                    else:
-                        padded_obj = np.empty(max_len, dtype=object)
-                        padded_obj[:len(arr)] = arr
-                        padded_dict[chan_name] = padded_obj
-                else:
-                    padded_dict[chan_name] = arr
-
-            return pd.DataFrame(padded_dict)
-
+        _, df = _read_tdms_with_alignment(file_path)
+        return df
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
 
 def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: Dict[str, str], session_id: str,
-                                lap_label: str = STD_CHANNEL_LAP,
-                                time_label: str = STD_CHANNEL_TIME,
-                                dist_label: str = STD_CHANNEL_DISTANCE,
-                                lap_slug: str = SLUG_LAP,
-                                time_slug: str = SLUG_TIME,
-                                dist_slug: str = SLUG_DISTANCE,
+                                lap_label: str = STD_CH_LAP_NUM,
+                                time_label: str = STD_CH_LAP_TIME,
+                                dist_label: str = STD_CH_LAP_DIST,
+                                lap_slug: str = STD_CH_LAP_NUM_SLUG,
+                                time_slug: str = STD_CH_LAP_TIME_SLUG,
+                                dist_slug: str = STD_CH_LAP_DIST_SLUG,
                                 preset_name: Optional[str] = None) -> Session:
     """
     Parses a Session in memory from an existing raw DataFrame and mapping dictionary.
@@ -219,9 +209,9 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
 
     # Resolve actual lap, time, and distance columns using configured labels or slug fallbacks.
     # After renaming, columns are slugs, so we resolve against slug names.
-    resolved_lap = _resolve_channel_column(list(df.columns), lap_slug, SLUG_LAP, lap_slug)
-    resolved_time = _resolve_channel_column(list(df.columns), time_slug, SLUG_TIME, time_slug, ["timestamp"])
-    resolved_dist = _resolve_channel_column(list(df.columns), dist_slug, SLUG_DISTANCE, dist_slug, ["dist"])
+    resolved_lap = _resolve_channel_column(list(df.columns), lap_slug, lap_label, lap_slug)
+    resolved_time = _resolve_channel_column(list(df.columns), time_slug, time_label, time_slug)
+    resolved_dist = _resolve_channel_column(list(df.columns), dist_slug, dist_label, dist_slug)
 
     session_name = os.path.basename(file_path)
     session = Session(
@@ -329,12 +319,12 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
 
 
 def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
-                  lap_label: str = STD_CHANNEL_LAP,
-                  time_label: str = STD_CHANNEL_TIME,
-                  dist_label: str = STD_CHANNEL_DISTANCE,
-                  lap_slug: str = SLUG_LAP,
-                  time_slug: str = SLUG_TIME,
-                  dist_slug: str = SLUG_DISTANCE,
+                  lap_label: str = STD_CH_LAP_NUM,
+                  time_label: str = STD_CH_LAP_TIME,
+                  dist_label: str = STD_CH_LAP_DIST,
+                  lap_slug: str = STD_CH_LAP_NUM_SLUG,
+                  time_slug: str = STD_CH_LAP_TIME_SLUG,
+                  dist_slug: str = STD_CH_LAP_DIST_SLUG,
                   preset_name: Optional[str] = None) -> Session:
     """
     Parses a log file from disk into a Session object and retains raw_df in memory.

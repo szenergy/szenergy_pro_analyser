@@ -11,27 +11,10 @@ import re
 from typing import Dict, List, Optional
 from PySide6.QtCore import QStandardPaths, QSettings
 from utils.constants import (
-    APP_NAME, ORGANIZATION_NAME, STD_CHANNEL_LAP, STD_CHANNEL_TIME, STD_CHANNEL_DISTANCE,
-    SLUG_LAP, SLUG_TIME, SLUG_DISTANCE, STANDARD_SLUGS, REQUIRED_SLUGS
+    APP_NAME, ORGANIZATION_NAME, DEFAULT_CHANNEL_DEFS,
+    STD_CH_LAP_NUM, STD_CH_LAP_TIME, STD_CH_LAP_DIST,
+    STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
-
-
-DEFAULT_CHANNEL_DEFS = [
-    {"label": STD_CHANNEL_LAP, "slug": SLUG_LAP},
-    {"label": STD_CHANNEL_TIME, "slug": SLUG_TIME},
-    {"label": STD_CHANNEL_DISTANCE, "slug": SLUG_DISTANCE},
-    {"label": "Speed", "slug": "speed"},
-    {"label": "RPM", "slug": "rpm"},
-    {"label": "Current", "slug": "current"},
-    {"label": "Voltage", "slug": "voltage"},
-    {"label": "Power", "slug": "power"},
-    {"label": "Energy", "slug": "energy"},
-    {"label": "Throttle", "slug": "throttle"},
-    {"label": "SteeringAngle", "slug": "steering_angle"},
-    {"label": "Temperature", "slug": "temperature"},
-    {"label": "GPS_Lat", "slug": "gps_lat"},
-    {"label": "GPS_Lon", "slug": "gps_lon"},
-]
 
 
 def generate_slug(label: str) -> str:
@@ -40,7 +23,7 @@ def generate_slug(label: str) -> str:
     return slug if slug else "channel"
 
 
-def _read_versioned_json(file_path: str):
+def read_versioned_json(file_path: str):
     """
     Reads a JSON file and returns (schema_version, data).
     Handles both versioned envelope and legacy flat formats.
@@ -59,7 +42,7 @@ def _read_versioned_json(file_path: str):
     return 0, raw
 
 
-def _write_versioned_json(file_path: str, version: int, data) -> None:
+def write_versioned_json(file_path: str, version: int, data) -> None:
     """Writes data in the versioned envelope format."""
     try:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -67,6 +50,11 @@ def _write_versioned_json(file_path: str, version: int, data) -> None:
             json.dump({"schema_version": version, "data": data}, f, indent=4)
     except OSError:
         pass
+
+
+# Aliases for backward compatibility
+_read_versioned_json = read_versioned_json
+_write_versioned_json = write_versioned_json
 
 
 class StateManager:
@@ -207,6 +195,41 @@ class StateManager:
         """Persists the channel definitions list to JSON in versioned format."""
         _write_versioned_json(self.channels_file, 1, channels)
 
+    def generate_unique_slug(self, label: str, existing_slugs: Optional[List[str]] = None) -> str:
+        """Generates a unique slug identifier for a given label, appending _1, _2, etc. if already taken."""
+        if existing_slugs is None:
+            existing_slugs = [ch["slug"] for ch in self.get_channel_defs()]
+        base_slug = generate_slug(label)
+        slug = base_slug
+        counter = 1
+        while slug in existing_slugs:
+            slug = f"{base_slug}_{counter}"
+            counter += 1
+        return slug
+
+    def save_new_custom_channels(self, labels: List[str]) -> bool:
+        """
+        Adds any new custom channel labels to the saved channels definitions.
+        Returns True if any new channel was added and persisted.
+        """
+        existing_defs = self.get_channel_defs()
+        existing_labels = set(ch["label"] for ch in existing_defs)
+        existing_slugs = [ch["slug"] for ch in existing_defs]
+
+        updated = False
+        for label in labels:
+            label_clean = label.strip()
+            if label_clean and label_clean != "-- Skip --" and label_clean not in existing_labels:
+                slug = self.generate_unique_slug(label_clean, existing_slugs)
+                existing_defs.append({"label": label_clean, "slug": slug})
+                existing_labels.add(label_clean)
+                existing_slugs.append(slug)
+                updated = True
+
+        if updated:
+            self.save_channel_defs(existing_defs)
+        return updated
+
     def get_channel_labels(self) -> List[str]:
         """Returns just the display labels of all defined channels."""
         return [ch["label"] for ch in self.get_channel_defs()]
@@ -219,18 +242,18 @@ class StateManager:
         return None
 
     def get_label_by_slug(self, slug: str, default: Optional[str] = None) -> str:
-        """Finds display label for a specific system slug (e.g. 'lap', 'time', 'distance')."""
+        """Finds display label for a specific system slug (e.g. 'lap_num', 'lap_time', 'lap_dist')."""
         for ch in self.get_channel_defs():
             if ch.get("slug") == slug:
                 return ch["label"]
         if default is not None:
             return default
-        if slug == SLUG_LAP:
-            return STD_CHANNEL_LAP
-        elif slug == SLUG_TIME:
-            return STD_CHANNEL_TIME
-        elif slug == SLUG_DISTANCE:
-            return STD_CHANNEL_DISTANCE
+        if slug == STD_CH_LAP_NUM_SLUG:
+            return STD_CH_LAP_NUM
+        elif slug == STD_CH_LAP_TIME_SLUG:
+            return STD_CH_LAP_TIME
+        elif slug == STD_CH_LAP_DIST_SLUG:
+            return STD_CH_LAP_DIST
         return slug
 
     def label_to_slug_mapping(self) -> Dict[str, str]:
@@ -238,10 +261,10 @@ class StateManager:
         return {ch["label"]: ch["slug"] for ch in self.get_channel_defs()}
 
     def get_lap_label(self) -> str:
-        return self.get_label_by_slug(SLUG_LAP, STD_CHANNEL_LAP)
+        return self.get_label_by_slug(STD_CH_LAP_NUM_SLUG, STD_CH_LAP_NUM)
 
     def get_time_label(self) -> str:
-        return self.get_label_by_slug(SLUG_TIME, STD_CHANNEL_TIME)
+        return self.get_label_by_slug(STD_CH_LAP_TIME_SLUG, STD_CH_LAP_TIME)
 
     def get_distance_label(self) -> str:
-        return self.get_label_by_slug(SLUG_DISTANCE, STD_CHANNEL_DISTANCE)
+        return self.get_label_by_slug(STD_CH_LAP_DIST_SLUG, STD_CH_LAP_DIST)

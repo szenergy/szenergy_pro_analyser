@@ -90,15 +90,15 @@ class TestStateManager(unittest.TestCase):
 
     def test_channel_defs_and_labels(self):
         labels = self.state_manager.get_channel_labels()
-        self.assertIn("Lap", labels)
-        self.assertIn("Time", labels)
-        self.assertIn("Distance", labels)
+        self.assertIn("Lap Number", labels)
+        self.assertIn("Lap Time", labels)
+        self.assertIn("Lap Distance", labels)
         self.assertIn("Speed", labels)
 
         custom_channels = [
-            {"label": "Kör", "slug": "lap"},
-            {"label": "Idő", "slug": "time"},
-            {"label": "Távolság", "slug": "distance"}
+            {"label": "Kör", "slug": "lap_num"},
+            {"label": "Idő", "slug": "lap_time"},
+            {"label": "Távolság", "slug": "lap_dist"}
         ]
         self.state_manager.save_channel_defs(custom_channels)
 
@@ -126,8 +126,9 @@ class TestStateManager(unittest.TestCase):
 
     def test_label_to_slug_mapping(self):
         mapping = self.state_manager.label_to_slug_mapping()
-        self.assertEqual(mapping["Lap"], "lap")
-        self.assertEqual(mapping["Time"], "time")
+        self.assertEqual(mapping["Lap Number"], "lap_num")
+        self.assertEqual(mapping["Lap Time"], "lap_time")
+        self.assertEqual(mapping["Lap Distance"], "lap_dist")
 
     def test_legacy_channel_defs_migration(self):
         """Validates that legacy string-only channel definitions are migrated to dicts and persisted once."""
@@ -156,6 +157,25 @@ class TestStateManager(unittest.TestCase):
         with patch.object(self.state_manager, "save_channel_defs") as mock_save:
             _ = self.state_manager.get_channel_defs()
             mock_save.assert_not_called()
+
+    def test_unique_slug_generation_and_custom_channel_persistence(self):
+        """Validates generate_unique_slug appends numeric counters and save_new_custom_channels persists."""
+        slug1 = self.state_manager.generate_unique_slug("Speed", ["speed", "rpm"])
+        self.assertEqual(slug1, "speed_1")
+        slug2 = self.state_manager.generate_unique_slug("Speed", ["speed", "speed_1", "speed_2"])
+        self.assertEqual(slug2, "speed_3")
+
+        # Adding new channels
+        added = self.state_manager.save_new_custom_channels(["Brake Pressure", "Coolant Temp", "Speed"])
+        self.assertTrue(added)
+        labels = self.state_manager.get_channel_labels()
+        self.assertIn("Brake Pressure", labels)
+        self.assertIn("Coolant Temp", labels)
+        self.assertEqual(self.state_manager.get_slug_by_label("Brake Pressure"), "brake_pressure")
+
+        # Second call with same channels does not re-add or change anything
+        added_again = self.state_manager.save_new_custom_channels(["Brake Pressure"])
+        self.assertFalse(added_again)
 
 
 if __name__ == "__main__":

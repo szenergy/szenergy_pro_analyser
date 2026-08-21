@@ -16,11 +16,11 @@ from PySide6.QtGui import QColor, QPixmap, QIcon
 from core.data_models import Session
 from core.state_manager import StateManager, generate_slug
 from utils.constants import (
-    STANDARD_SLUGS, SLUG_LAP, SLUG_TIME, SLUG_DISTANCE
+    STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
 
 
-SYSTEM_REQUIRED_SLUGS = list(STANDARD_SLUGS)
+SYSTEM_REQUIRED_SLUGS = [STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG]
 
 
 class PresetManagerDialog(QDialog):
@@ -207,30 +207,14 @@ class PresetManagerDialog(QDialog):
         return mapping
 
     def _save_new_custom_channels_from_table(self):
-        existing_labels = self.state_manager.get_channel_labels()
-        existing_defs = self.state_manager.get_channel_defs()
-
-        updated = False
+        targets = []
         for row in range(self.table.rowCount()):
             combo = self.table.cellWidget(row, 1)
             if isinstance(combo, QComboBox):
                 label = combo.currentText().strip()
-                if label and label != "-- Skip --" and label not in existing_labels:
-                    from core.state_manager import generate_slug
-                    base_slug = generate_slug(label)
-                    slug = base_slug
-                    counter = 1
-                    existing_slugs = [ch["slug"] for ch in existing_defs]
-                    while slug in existing_slugs:
-                        slug = f"{base_slug}_{counter}"
-                        counter += 1
-
-                    existing_defs.append({"label": label, "slug": slug})
-                    existing_labels.append(label)
-                    updated = True
-
-        if updated:
-            self.state_manager.save_channel_defs(existing_defs)
+                if label:
+                    targets.append(label)
+        self.state_manager.save_new_custom_channels(targets)
 
     def _on_save_preset(self):
         new_preset_name = self.preset_name_input.text().strip()
@@ -392,13 +376,8 @@ class ChannelManagerDialog(QDialog):
             QMessageBox.warning(self, "Duplicate Label", f"A channel with label '{new_label}' already exists.")
             return
 
-        base_slug = generate_slug(new_label)
-        slug = base_slug
-        counter = 1
         existing_slugs = [ch["slug"] for ch in self.channels]
-        while slug in existing_slugs:
-            slug = f"{base_slug}_{counter}"
-            counter += 1
+        slug = self.state_manager.generate_unique_slug(new_label, existing_slugs)
 
         self.channels.append({"label": new_label, "slug": slug})
         self.label_input.clear()
@@ -425,15 +404,10 @@ class ChannelManagerDialog(QDialog):
                 return
 
             if ch["slug"] not in SYSTEM_REQUIRED_SLUGS:
-                base_slug = generate_slug(new_label)
-                slug = base_slug
-                counter = 1
                 existing_slugs = [
                     other["slug"] for idx, other in enumerate(self.channels) if idx != current_row
                 ]
-                while slug in existing_slugs:
-                    slug = f"{base_slug}_{counter}"
-                    counter += 1
+                slug = self.state_manager.generate_unique_slug(new_label, existing_slugs)
                 ch["slug"] = slug
 
             ch["label"] = new_label
