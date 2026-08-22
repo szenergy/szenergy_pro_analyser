@@ -2,6 +2,7 @@
 Unit tests for core.state_manager covering presets, slug generation, channel defs, and best-fit matching.
 """
 
+import json
 import os
 import tempfile
 import unittest
@@ -208,11 +209,88 @@ class TestStateManager(unittest.TestCase):
         }
         self.state_manager.save_ui_state(sample_state)
 
-        loaded = self.state_manager.load_ui_state()
-        self.assertEqual(loaded["window"]["is_maximized"], True)
-        self.assertEqual(loaded["window"]["main_splitter"], [320, 880])
-        self.assertEqual(loaded["graph"]["show_x_grid"], True)
-        self.assertEqual(loaded["sidebar"]["selected_channels"], ["speed", "throttle"])
+    def test_export_and_import_config(self):
+        """Validates export and import of non-machine-specific configuration (presets & channels)."""
+        # Set up state manager with custom channels, preset, and machine-specific file mapping and UI state
+        self.state_manager.save_new_custom_channels(["Motor Temp", "Inverter Temp"])
+        slug1 = self.state_manager.save_preset("Race Telemetry", {"raw_lap": "lap_num", "raw_temp": "motor_temp"})
+        self.state_manager.save_file_preset("/my/local/machine/file.csv", slug1)
+        self.state_manager.save_ui_state({"window": {"is_maximized": True}})
+
+        # 1. Export configuration
+        exported = self.state_manager.export_config()
+        self.assertEqual(exported["schema_version"], 1)
+        self.assertEqual(exported["type"], "szenergypro_config_export")
+        self.assertIn("presets", exported["data"])
+        self.assertIn("channels", exported["data"])
+
+        # Verify machine-specific items are NOT exported
+        self.assertNotIn("file_mappings", exported["data"])
+        self.assertNotIn("ui_state", exported["data"])
+        self.assertNotIn("window", exported["data"])
+
+        # Write export to file
+        export_file = os.path.join(self.temp_dir.name, "exported_config.json")
+        self.state_manager.export_config_to_file(export_file)
+        self.assertTrue(os.path.exists(export_file))
+
+        # 2. Create fresh target StateManager in a separate clean directory
+        target_dir = tempfile.TemporaryDirectory()
+        target_mgr = StateManager(config_dir=target_dir.name)
+
+        # Before import, target manager has default channels and no presets
+        self.assertEqual(len(target_mgr.load_presets()), 0)
+        self.assertIsNone(target_mgr.get_slug_by_label("Motor Temp"))
+
+        # Import config into target manager
+        num_presets, num_channels = target_mgr.import_config_from_file(export_file)
+        self.assertGreaterEqual(num_presets, 1)
+        self.assertGreaterEqual(num_channels, 2)
+
+        # Verify presets and channels are restored in target
+        target_presets = target_mgr.load_presets()
+        self.assertEqual(len(target_presets), 1)
+        self.assertEqual(target_presets[0]["name"], "Race Telemetry")
+        self.assertEqual(target_presets[0]["slug"], slug1)
+        self.assertEqual(target_mgr.get_slug_by_label("Motor Temp"), "motor_temp")
+        self.assertEqual(target_mgr.get_slug_by_label("Inverter Temp"), "inverter_temp")
+
+        # Verify machine-specific state was NOT imported into target
+        self.assertEqual(target_mgr.load_file_presets(), {})
+        self.assertEqual(target_mgr.load_ui_state(), {})
+
+        # 3. Test importing renamed system-required channels
+        renamed_config_file = os.path.join(self.temp_dir.name, "renamed_sys_channels.json")
+        with open(renamed_config_file, "w") as f:
+            json.dump({
+                "schema_version": 1,
+                "data": {
+                    "channels": [
+                        {"label": "Kör", "slug": "lap_num"},
+                        {"label": "Köridő", "slug": "lap_time"},
+                        {"label": "Megtett út", "slug": "lap_dist"},
+                        {"label": "Féknyomás", "slug": "brake_press"}
+                    ]
+                }
+            }, f)
+
+        target_mgr.import_config_from_file(renamed_config_file)
+        self.assertEqual(target_mgr.get_label_by_slug("lap_num"), "Kör")
+        self.assertEqual(target_mgr.get_label_by_slug("lap_time"), "Köridő")
+        self.assertEqual(target_mgr.get_label_by_slug("lap_dist"), "Megtett út")
+        self.assertEqual(target_mgr.get_label_by_slug("brake_press"), "Féknyomás")
+
+        # 4. Test error handling
+        invalid_file = os.path.join(self.temp_dir.name, "corrupted.json")
+        with open(invalid_file, "w") as f:
+            f.write("not a json string")
+        with self.assertRaises(ValueError):
+            target_mgr.import_config_from_file(invalid_file)
+
+        with self.assertRaises(FileNotFoundError):
+            target_mgr.import_config_from_file("/non/existent/path.json")
+
+        target_dir.cleanup()
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import numpy as np
 import pandas as pd
 from PySide6.QtWidgets import (
-    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu
+    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog
 )
 from PySide6.QtCore import QPointF, QPoint, Qt, QEvent
 from PySide6.QtGui import QKeyEvent
@@ -20,6 +20,7 @@ from core.state_manager import StateManager
 from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
 from ui.sidebar import SidebarWidget
 from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog, FileMappingManagerDialog
+from ui.import_wizard import ImportWizardDialog
 
 app = QApplication.instance()
 if app is None:
@@ -113,7 +114,9 @@ class TestUIComponents(unittest.TestCase):
             self.assertFalse(v_line.isVisible())
 
         # 4. Test Legend Toggle
-        self.assertTrue(widget.btn_legend.isChecked())
+        self.assertFalse(widget.btn_legend.isChecked())
+        widget.btn_legend.setChecked(True)
+        self.assertTrue(widget.show_legend)
         widget.btn_legend.setChecked(False)
         self.assertFalse(widget.show_legend)
         if widget.legend:
@@ -1661,6 +1664,47 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(loaded_sessions[0][1], [1])
         self.assertEqual(loaded_sessions[0][2], {1: "P1"})
         self.assertEqual(loaded_sessions[1][1], [2])
+
+    def test_export_and_import_config_actions(self):
+        """Validates Export and Import Configuration actions in MainWindow."""
+        from ui.main_window import MainWindow
+
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_preset("ExportTestPreset", {"time": "lap_time", "dist": "lap_dist"})
+        state_mgr.save_new_custom_channels(["Oil Pressure"])
+
+        win = MainWindow()
+        win.state_manager = state_mgr
+
+        # 1. Test Export Action
+        export_path = os.path.join(self.temp_dir.name, "exported_ui_test.json")
+        with patch.object(QFileDialog, "getSaveFileName", return_value=(export_path, "JSON Files (*.json)")):
+            with patch.object(QMessageBox, "information") as mock_info:
+                win._on_export_config()
+                mock_info.assert_called_once()
+
+        self.assertTrue(os.path.exists(export_path))
+
+        # 2. Test Import Action in a fresh state
+        target_dir = tempfile.TemporaryDirectory()
+        target_mgr = StateManager(config_dir=target_dir.name)
+
+        win2 = MainWindow()
+        win2.state_manager = target_mgr
+
+        self.assertEqual(len(target_mgr.load_presets()), 0)
+        self.assertIsNone(target_mgr.get_slug_by_label("Oil Pressure"))
+
+        with patch.object(QFileDialog, "getOpenFileName", return_value=(export_path, "JSON Files (*.json)")):
+            with patch.object(QMessageBox, "information") as mock_info:
+                win2._on_import_config()
+                mock_info.assert_called_once()
+
+        self.assertEqual(len(target_mgr.load_presets()), 1)
+        self.assertEqual(target_mgr.load_presets()[0]["name"], "ExportTestPreset")
+        self.assertEqual(target_mgr.get_slug_by_label("Oil Pressure"), "oil_pressure")
+
+        target_dir.cleanup()
 
 
 if __name__ == "__main__":

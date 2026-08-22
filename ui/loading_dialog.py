@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from PySide6.QtCore import QThread, Signal, Qt
@@ -5,6 +6,8 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
 
 from core.file_parser import parse_session, get_file_columns_and_preview
 from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
+
+logger = logging.getLogger(__name__)
 
 
 class FileParseWorker(QThread):
@@ -29,6 +32,7 @@ class FileParseWorker(QThread):
 
     def run(self):
         try:
+            logger.debug("FileParseWorker started for: %s", os.path.basename(self.file_path))
             session = parse_session(
                 self.file_path,
                 self.mapping,
@@ -41,8 +45,10 @@ class FileParseWorker(QThread):
                 self.dist_slug
             )
             if not self.isInterruptionRequested():
+                logger.debug("FileParseWorker completed successfully for: %s", os.path.basename(self.file_path))
                 self.success.emit(session)
         except Exception as e:
+            logger.error("FileParseWorker error on %s: %s", self.file_path, e, exc_info=True)
             if not self.isInterruptionRequested():
                 self.error.emit(str(e))
 
@@ -58,10 +64,13 @@ class FilePreviewWorker(QThread):
 
     def run(self):
         try:
+            logger.debug("FilePreviewWorker inspecting: %s", os.path.basename(self.file_path))
             raw_columns, preview_df = get_file_columns_and_preview(self.file_path)
             if not self.isInterruptionRequested():
+                logger.debug("FilePreviewWorker finished with %d columns for: %s", len(raw_columns), os.path.basename(self.file_path))
                 self.success.emit(raw_columns, preview_df)
         except Exception as e:
+            logger.error("FilePreviewWorker error on %s: %s", self.file_path, e, exc_info=True)
             if not self.isInterruptionRequested():
                 self.error.emit(str(e))
 
@@ -76,6 +85,8 @@ class LoadingDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         self.setModal(True)
         self.worker = worker
+        if self.worker and self.worker.parent() is None:
+            self.worker.setParent(self)
         self.is_success = False
         self.result_data = None
         self.error_message = None
@@ -105,11 +116,17 @@ class LoadingDialog(QDialog):
                 self.result_data = args
             else:
                 self.result_data = None
+            # Stop indeterminate animation timer before accepting
+            self.progress.setRange(0, 1)
+            self.progress.setValue(1)
             self.accept()
 
         def _on_error(err_msg: str):
             self.is_success = False
             self.error_message = str(err_msg)
+            # Stop indeterminate animation timer before rejecting
+            self.progress.setRange(0, 1)
+            self.progress.setValue(0)
             self.reject()
 
         self.worker.success.connect(_on_success, Qt.QueuedConnection)
@@ -119,6 +136,7 @@ class LoadingDialog(QDialog):
         try:
             self.exec()
         finally:
+            self.progress.setRange(0, 1)
             try:
                 self.worker.success.disconnect(_on_success)
             except Exception:
@@ -138,18 +156,21 @@ class LoadingDialog(QDialog):
         return self.is_success
 
     def closeEvent(self, event):
+        self.progress.setRange(0, 1)
         if self.worker and self.worker.isRunning():
             self.worker.requestInterruption()
             self.worker.wait(1000)
         super().closeEvent(event)
 
     def reject(self):
+        self.progress.setRange(0, 1)
         if self.worker and self.worker.isRunning():
             self.worker.requestInterruption()
             self.worker.wait(1000)
         super().reject()
 
     def accept(self):
+        self.progress.setRange(0, 1)
         if self.worker and self.worker.isRunning():
             self.worker.wait(2000)
         super().accept()
@@ -249,6 +270,8 @@ class WorkspaceRestoreDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         self.setModal(True)
         self.worker = worker
+        if self.worker and self.worker.parent() is None:
+            self.worker.setParent(self)
         self.total_sessions = total_sessions
 
         layout = QVBoxLayout(self)

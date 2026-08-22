@@ -3,6 +3,7 @@ Main application window organizing the menu bar, left sidebar, and stacked graph
 Includes robust background worker lifecycle management and centralized session handling.
 """
 
+import logging
 import os
 import uuid
 from typing import Dict, List
@@ -24,6 +25,8 @@ from utils.constants import (
     APP_NAME, APP_VERSION,
     STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
+
+logger = logging.getLogger(__name__)
 
 
 def is_dark_theme() -> bool:
@@ -71,6 +74,18 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self._on_clear_workspace)
         file_menu.addAction(clear_action)
         self.addAction(clear_action)
+
+        file_menu.addSeparator()
+
+        import_config_action = QAction("&Import Configuration...", self)
+        import_config_action.triggered.connect(self._on_import_config)
+        file_menu.addAction(import_config_action)
+        self.addAction(import_config_action)
+
+        export_config_action = QAction("&Export Configuration...", self)
+        export_config_action.triggered.connect(self._on_export_config)
+        file_menu.addAction(export_config_action)
+        self.addAction(export_config_action)
 
         file_menu.addSeparator()
 
@@ -135,7 +150,64 @@ class MainWindow(QMainWindow):
 
     def _on_open_config_folder(self):
         config_dir = self.state_manager.config_dir
+        logger.debug("Opening configuration folder: %s", config_dir)
         QDesktopServices.openUrl(QUrl.fromLocalFile(config_dir))
+
+    def _on_export_config(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Configuration",
+            "szenergy_config.json",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            self.state_manager.export_config_to_file(file_path)
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Configuration exported successfully to:\n{file_path}"
+            )
+        except Exception as e:
+            logger.error("Failed to export configuration to %s: %s", file_path, e, exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Failed to export configuration:\n{str(e)}"
+            )
+
+    def _on_import_config(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Configuration",
+            "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            num_presets, num_channels = self.state_manager.import_config_from_file(file_path)
+            self._sync_x_axis_labels()
+            self.sidebar.update_available_channels()
+            self.graph_view.rebuild_plots()
+
+            QMessageBox.information(
+                self,
+                "Import Successful",
+                f"Configuration imported successfully from:\n{os.path.basename(file_path)}\n\n"
+                f"• Presets updated/added: {num_presets}\n"
+                f"• Channels updated/added: {num_channels}"
+            )
+        except Exception as e:
+            logger.error("Failed to import configuration from %s: %s", file_path, e, exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Failed to import configuration:\n{str(e)}"
+            )
 
     def _on_manage_presets(self):
         dialog = PresetManagerDialog(self.state_manager, parent=self)
@@ -159,6 +231,7 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
+            logger.info("Clearing %d workspace telemetry session(s)", len(self.sessions))
             self.sessions.clear()
             self.sidebar.clear_all_sessions()
             self.graph_view.custom_lap_labels.clear()
@@ -166,6 +239,8 @@ class MainWindow(QMainWindow):
 
     def _on_session_removed(self, session_id: str):
         if session_id in self.sessions:
+            removed_name = self.sessions[session_id].name
+            logger.info("Removing session '%s' (id: %s)", removed_name, session_id)
             del self.sessions[session_id]
         stale_keys = [k for k in self.graph_view.custom_lap_labels if k[0] == session_id]
         for k in stale_keys:
@@ -197,7 +272,7 @@ class MainWindow(QMainWindow):
                 return
 
         # 1. Background Header Reading
-        preview_worker = FilePreviewWorker(file_path)
+        preview_worker = FilePreviewWorker(file_path, parent=self)
         preview_dialog = LoadingDialog(
             f"Inspecting headers for '{filename}'...\nPlease wait.",
             worker=preview_worker,
@@ -303,6 +378,7 @@ class MainWindow(QMainWindow):
             lap_label=self.state_manager.get_lap_label(),
             time_label=self.state_manager.get_time_label(),
             dist_label=self.state_manager.get_distance_label(),
+            parent=self
         )
 
         parse_dialog = LoadingDialog(
@@ -481,15 +557,20 @@ class MainWindow(QMainWindow):
                 }
             }
             self.state_manager.save_ui_state(ui_state)
-        except Exception:
-            pass
+            logger.debug("UI state successfully saved (%d sessions, %d custom labels)",
+                         len(sessions_data), len(custom_labels_data))
+        except Exception as e:
+            logger.error("Failed to save UI state: %s", e, exc_info=True)
 
     def _restore_ui_state(self):
         """Restores window geometry, graph settings, sidebar selections, and workspace sessions."""
         try:
             ui_state = self.state_manager.load_ui_state()
             if not ui_state:
+                logger.debug("No saved UI state found on startup")
                 return
+
+            logger.info("Restoring saved UI state...")
 
             # 1. Restore Window State
             window_data = ui_state.get("window", {})
@@ -513,6 +594,7 @@ class MainWindow(QMainWindow):
             valid_sessions = [s for s in sessions_list if s.get("file_path") and os.path.exists(s["file_path"])]
 
             if valid_sessions:
+                logger.info("Restoring %d valid saved session(s) in background", len(valid_sessions))
                 restore_worker = WorkspaceRestoreWorker(
                     sessions_data=valid_sessions,
                     custom_labels_dict=custom_labels_dict,
@@ -579,10 +661,13 @@ class MainWindow(QMainWindow):
 
             if self.sessions and hasattr(self, "graph_view"):
                 self.graph_view.set_sessions(self.sessions)
-        except Exception:
-            pass
+
+            logger.info("UI state restoration complete")
+        except Exception as e:
+            logger.error("Failed to restore UI state: %s", e, exc_info=True)
 
     def closeEvent(self, event):
         """Saves UI state and cleanly terminates on exit."""
+        logger.info("Closing application...")
         self._save_ui_state()
         super().closeEvent(event)

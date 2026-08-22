@@ -5,6 +5,7 @@ metadata header preambles, and non-numeric value coercion.
 All internal keys use slugs (not display labels).
 """
 
+import logging
 import os
 import warnings
 from typing import Dict, List, Tuple, Optional
@@ -18,6 +19,8 @@ from utils.constants import (
     STD_CH_LAP_NUM, STD_CH_LAP_TIME, STD_CH_LAP_DIST,
     STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _read_csv_with_fallback(file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
@@ -158,6 +161,7 @@ def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFram
     Supports CSV, XLSX, and TDMS. Safely handles multi-rate channels of varying length.
     """
     ext = os.path.splitext(file_path)[1].lower()
+    logger.debug("Inspecting header preview for '%s' (format: %s)", os.path.basename(file_path), ext)
 
     if ext == ".csv":
         df_preview = _read_csv_with_fallback(file_path, nrows=5)
@@ -174,6 +178,7 @@ def get_file_columns_and_preview(file_path: str) -> Tuple[List[str], pd.DataFram
 def load_full_dataframe(file_path: str) -> pd.DataFrame:
     """Reads the full dataset from a file into a pandas DataFrame, aligning unequal channel lengths."""
     ext = os.path.splitext(file_path)[1].lower()
+    logger.debug("Loading full dataset from disk: '%s'", file_path)
 
     if ext == ".csv":
         return _read_csv_with_fallback(file_path)
@@ -200,6 +205,8 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
     Mapping values are slugs (e.g. {"Speed_kmh": "speed"}).
     DataFrame columns are renamed to slugs. All internal keys use slugs.
     """
+    logger.debug("Parsing session '%s' with %d mapped channels (raw rows: %d)",
+                 os.path.basename(file_path), len(mapping), len(raw_df))
     # Filter only columns present in mapping and rename to slug keys
     valid_mapping = {raw: slug for raw, slug in mapping.items() if raw in raw_df.columns}
     df = raw_df[list(valid_mapping.keys())].rename(columns=valid_mapping)

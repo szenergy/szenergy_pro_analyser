@@ -6,6 +6,7 @@ Displays tracking dots on each curve at the cursor crosshair position.
 Ensures equal viewbox heights across all stacked plots and full X-axis grid support on every plot.
 """
 
+import logging
 from typing import Dict, List, Set, Tuple, Optional
 import numpy as np
 import pyqtgraph as pg
@@ -21,6 +22,8 @@ from utils.constants import (
     STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG,
     CROSSHAIR_LINE_COLOR
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_icon_x_grid(is_dark: bool) -> QIcon:
@@ -673,6 +676,8 @@ class GraphViewWidget(QWidget):
     def rebuild_plots(self):
         self._is_rebuilding = True
         try:
+            logger.debug("Rebuilding plots (channels: %s, selected laps: %d, X-axis slug: '%s')",
+                         self.selected_channels, len(self.selected_laps_info), self.x_axis_slug)
             if self.has_manual_zoom_or_pan and self.plot_widgets:
                 self._record_current_view_ranges()
 

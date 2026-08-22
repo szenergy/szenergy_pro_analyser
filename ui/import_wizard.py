@@ -3,6 +3,7 @@ Dialog wizard for mapping raw log file channels to standard internal channel nam
 Unified interface for initial file import, preset matching, and session channel remapping.
 """
 
+import logging
 import os
 from typing import Dict, List, Optional
 import pandas as pd
@@ -16,6 +17,8 @@ from PySide6.QtGui import QColor
 
 from core.state_manager import StateManager, generate_slug
 from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
+
+logger = logging.getLogger(__name__)
 
 
 class ImportWizardDialog(QDialog):
@@ -56,6 +59,8 @@ class ImportWizardDialog(QDialog):
         self.result_preset_name: Optional[str] = None
 
         self.channel_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        logger.debug("ImportWizardDialog opened for '%s' (initial_preset: %s, is_remapping: %s, raw_cols: %d)",
+                     filename, initial_preset, is_remapping, len(self.raw_columns))
         self._init_ui(initial_preset, initial_mapping)
 
     def _init_ui(self, initial_preset: Optional[str], initial_mapping: Optional[Dict[str, str]]):
@@ -484,6 +489,8 @@ class ImportWizardDialog(QDialog):
             else:
                 self.state_manager.remove_file_preset(self.file_path)
 
+        logger.info("ImportWizardDialog submitted: %d channels mapped, preset '%s' (slug: '%s')",
+                    len(self.result_mapping), self.result_preset_name, self.result_preset_slug)
         self.accept()
 
 

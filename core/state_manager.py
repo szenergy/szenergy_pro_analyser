@@ -6,15 +6,18 @@ JSON files use a versioned envelope: {"schema_version": N, "data": ...}.
 """
 
 import json
+import logging
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Tuple
 from PySide6.QtCore import QStandardPaths, QSettings
 from utils.constants import (
     APP_NAME, ORGANIZATION_NAME, DEFAULT_CHANNEL_DEFS,
     STD_CH_LAP_NUM, STD_CH_LAP_TIME, STD_CH_LAP_DIST,
     STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
+
+logger = logging.getLogger(__name__)
 
 
 def generate_slug(label: str) -> str:
@@ -175,6 +178,7 @@ class StateManager:
             target_preset["name"] = preset_name
             target_preset["mapping"] = mapping
             saved_slug = target_preset["slug"]
+            logger.info("Updated preset '%s' (slug: '%s') with %d channels", preset_name, saved_slug, len(mapping))
         else:
             saved_slug = self.generate_unique_slug(slug or preset_name, existing_slugs)
             presets.append({
@@ -182,6 +186,7 @@ class StateManager:
                 "name": preset_name,
                 "mapping": mapping
             })
+            logger.info("Created new preset '%s' (slug: '%s') with %d channels", preset_name, saved_slug, len(mapping))
 
         write_versioned_json(self.presets_file, 2, presets)
         return saved_slug
@@ -192,6 +197,7 @@ class StateManager:
         filtered = [p for p in presets if p.get("slug") != slug_or_name and p.get("name") != slug_or_name]
         if len(filtered) != len(presets):
             write_versioned_json(self.presets_file, 2, filtered)
+            logger.info("Deleted preset '%s'", slug_or_name)
 
     def load_file_presets(self) -> Dict[str, str]:
         """Load mapping of file paths to their remembered preset slugs."""
@@ -227,6 +233,7 @@ class StateManager:
         presets = self.load_file_presets()
         presets[file_path] = preset_slug
         write_versioned_json(self.file_mappings_file, 2, presets)
+        logger.info("Saved file preset mapping: '%s' -> slug '%s'", os.path.basename(file_path), preset_slug)
 
     def remove_file_preset(self, file_path: str) -> None:
         """Removes remembered preset slug for a specific file path."""
@@ -234,6 +241,7 @@ class StateManager:
         if file_path in presets:
             del presets[file_path]
             write_versioned_json(self.file_mappings_file, 2, presets)
+            logger.info("Removed file preset mapping for '%s'", os.path.basename(file_path))
 
     def get_preset_match_stats(self, slug_or_name: str, raw_columns: List[str]) -> Dict[str, Any]:
         """
@@ -403,3 +411,154 @@ class StateManager:
 
     def get_distance_label(self) -> str:
         return self.get_label_by_slug(STD_CH_LAP_DIST_SLUG, STD_CH_LAP_DIST)
+
+    def save_presets(self, presets: List[Dict[str, Any]]) -> None:
+        """Persists the presets list to presets.json in version 2 envelope format."""
+        write_versioned_json(self.presets_file, 2, presets)
+
+    def export_config(self) -> Dict[str, Any]:
+        """
+        Exports non-machine-specific configuration (presets and standard channel definitions)
+        into a versioned dictionary. Excludes machine-specific file mappings and UI state.
+        """
+        return {
+            "schema_version": 1,
+            "type": "szenergypro_config_export",
+            "data": {
+                "presets": self.load_presets(),
+                "channels": self.get_channel_defs()
+            }
+        }
+
+    def export_config_to_file(self, file_path: str) -> None:
+        """Writes the exported configuration dictionary to a JSON file."""
+        config_data = self.export_config()
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4)
+        logger.info("Exported configuration to '%s' (%d presets, %d channels)",
+                    file_path, len(config_data["data"]["presets"]), len(config_data["data"]["channels"]))
+
+    def import_config_from_file(self, file_path: str) -> Tuple[int, int]:
+        """
+        Imports non-machine-specific configuration (presets and channels) from a JSON file.
+        Validates structure and updates StateManager.
+        Returns (num_presets_imported, num_channels_imported).
+        Raises FileNotFoundError or ValueError on invalid file format or corrupted content.
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Configuration file not found: {file_path}")
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as e:
+            raise ValueError(f"Could not parse JSON file: {str(e)}")
+
+        if not isinstance(raw, dict):
+            raise ValueError("Invalid configuration format: root must be a JSON object.")
+
+        # Extract data from envelope or flat dict
+        if "data" in raw and isinstance(raw["data"], dict):
+            payload = raw["data"]
+        else:
+            payload = raw
+
+        imported_presets = payload.get("presets")
+        imported_channels = payload.get("channels") or payload.get("custom_channels")
+
+        if imported_presets is None and imported_channels is None:
+            raise ValueError("Invalid configuration file: neither 'presets' nor 'channels' found.")
+
+        num_presets_imported = 0
+        if imported_presets is not None:
+            if not isinstance(imported_presets, (list, dict)):
+                raise ValueError("'presets' in configuration must be a list or dict.")
+
+            existing_presets = self.load_presets()
+            existing_presets_by_slug = {p["slug"]: p for p in existing_presets if "slug" in p}
+            existing_presets_by_name = {p["name"]: p for p in existing_presets if "name" in p}
+
+            preset_items = []
+            if isinstance(imported_presets, list):
+                for p in imported_presets:
+                    if isinstance(p, dict) and "name" in p and "mapping" in p and isinstance(p["mapping"], dict):
+                        slug = p.get("slug") or generate_slug(p["name"])
+                        preset_items.append({"slug": slug, "name": p["name"], "mapping": p["mapping"]})
+            elif isinstance(imported_presets, dict):
+                for name, mapping in imported_presets.items():
+                    if isinstance(mapping, dict):
+                        preset_items.append({"slug": generate_slug(name), "name": name, "mapping": mapping})
+
+            for p in preset_items:
+                slug = p["slug"]
+                name = p["name"]
+                mapping = p["mapping"]
+
+                if slug in existing_presets_by_slug:
+                    existing_presets_by_slug[slug]["name"] = name
+                    existing_presets_by_slug[slug]["mapping"] = mapping
+                elif name in existing_presets_by_name:
+                    existing_presets_by_name[name]["mapping"] = mapping
+                else:
+                    existing_presets_by_slug[slug] = p
+                num_presets_imported += 1
+
+            self.save_presets(list(existing_presets_by_slug.values()))
+
+        num_channels_imported = 0
+        if imported_channels is not None:
+            if not isinstance(imported_channels, list):
+                raise ValueError("'channels' in configuration must be a list of channel definitions.")
+
+            existing_channels = self.get_channel_defs()
+            existing_channels_by_slug = {ch["slug"]: ch for ch in existing_channels if "slug" in ch}
+            existing_slugs = list(existing_channels_by_slug.keys())
+
+            for ch in imported_channels:
+                if isinstance(ch, dict) and "label" in ch:
+                    label = str(ch["label"]).strip()
+                    slug = ch.get("slug")
+                    if slug:
+                        if slug in existing_channels_by_slug:
+                            existing_channels_by_slug[slug]["label"] = label
+                        else:
+                            new_ch = {"label": label, "slug": slug}
+                            existing_channels_by_slug[slug] = new_ch
+                            existing_slugs.append(slug)
+                        num_channels_imported += 1
+                    else:
+                        slug = self.generate_unique_slug(label, existing_slugs)
+                        new_ch = {"label": label, "slug": slug}
+                        existing_channels_by_slug[slug] = new_ch
+                        existing_slugs.append(slug)
+                        num_channels_imported += 1
+                elif isinstance(ch, str):
+                    label = ch.strip()
+                    if label:
+                        slug = self.generate_unique_slug(label, existing_slugs)
+                        new_ch = {"label": label, "slug": slug}
+                        existing_channels_by_slug[slug] = new_ch
+                        existing_slugs.append(slug)
+                        num_channels_imported += 1
+
+            # System-required channels are identified exclusively by their slugs:
+            # - STD_CH_LAP_NUM_SLUG ("lap_num")
+            # - STD_CH_LAP_TIME_SLUG ("lap_time")
+            # - STD_CH_LAP_DIST_SLUG ("lap_dist")
+            # Since these can be renamed to any custom display label, check purely if the slug is present.
+            # If the slug is already present, its current or imported custom label is untouched.
+            # Only if the slug is completely missing from the channel definitions, add a fallback entry.
+            for req_slug, req_default_label in [
+                (STD_CH_LAP_NUM_SLUG, STD_CH_LAP_NUM),
+                (STD_CH_LAP_TIME_SLUG, STD_CH_LAP_TIME),
+                (STD_CH_LAP_DIST_SLUG, STD_CH_LAP_DIST)
+            ]:
+                if req_slug not in existing_channels_by_slug:
+                    existing_channels_by_slug[req_slug] = {"label": req_default_label, "slug": req_slug}
+
+            self.save_channel_defs(list(existing_channels_by_slug.values()))
+
+        logger.info("Imported configuration from '%s' (%d presets, %d channels)",
+                    file_path, num_presets_imported, num_channels_imported)
+        return num_presets_imported, num_channels_imported
