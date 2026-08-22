@@ -27,6 +27,13 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def get_resource_path(relative_path: str) -> str:
+    """Gets absolute path to resource, supporting PyInstaller onefile bundles and development."""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(__file__), relative_path)
+
+
 def main():
     args = parse_args()
     logger = setup_logging(verbose=args.verbose)
@@ -37,7 +44,7 @@ def main():
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setStyle("Fusion")
 
-    logo_path = os.path.join(os.path.dirname(__file__), APP_LOGO_FILENAME)
+    logo_path = get_resource_path(APP_LOGO_FILENAME)
     if os.path.exists(logo_path):
         app.setWindowIcon(QIcon(logo_path))
 

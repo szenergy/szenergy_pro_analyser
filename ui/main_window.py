@@ -103,12 +103,12 @@ class MainWindow(QMainWindow):
         # 2. Edit Menu
         edit_menu = menu_bar.addMenu("&Edit")
 
-        manage_presets_action = QAction("Manage Saved &Presets...", self)
+        manage_presets_action = QAction("Manage &Presets...", self)
         manage_presets_action.triggered.connect(self._on_manage_presets)
         edit_menu.addAction(manage_presets_action)
         self.addAction(manage_presets_action)
 
-        manage_channels_action = QAction("Manage Standard &Channel List...", self)
+        manage_channels_action = QAction("Manage &Channels...", self)
         manage_channels_action.triggered.connect(self._on_manage_channels)
         edit_menu.addAction(manage_channels_action)
         self.addAction(manage_channels_action)
