@@ -4,25 +4,23 @@ Includes modern stylesheet with smooth, thin scrollbars, startup splash screen,
 and system OS theme adaptation.
 """
 
+# Attempt to hook into PyInstaller bootloader splash immediately upon interpreter startup
+try:
+    import pyi_splash
+    pyi_splash.update_text("Loading SZenergy Pro Analyser...")
+except ImportError:
+    pyi_splash = None
+
 import argparse
 import os
 import sys
 import logging
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QIcon
 
-from ui.main_window import MainWindow, is_dark_theme
-from ui.splash_screen import SplashScreen
-from utils.theme import get_theme_stylesheet
 from utils.constants import APP_NAME, ORGANIZATION_NAME, APP_LOGO_FILENAME, APP_VERSION
 from utils.logger import setup_logging
-
-# Attempt to import PyInstaller bootloader splash module (available in PyInstaller bundles built with --splash)
-try:
-    import pyi_splash
-except ImportError:
-    pyi_splash = None
+from utils.theme import is_system_dark_theme, get_theme_stylesheet
 
 
 def parse_args(argv=None):
@@ -58,16 +56,18 @@ def main():
         app.setWindowIcon(QIcon(logo_path))
 
     # Detect OS Theme (Light / Dark)
-    is_dark = is_dark_theme()
+    is_dark = is_system_dark_theme()
     logger.debug("Detected desktop theme mode: %s", "Dark" if is_dark else "Light")
     app.setStyleSheet(get_theme_stylesheet(is_dark))
 
-    # Initialize and show Qt Splash Screen
+    # Initialize and display Qt Splash Screen immediately
+    from ui.splash_screen import SplashScreen
     splash = SplashScreen(is_dark=is_dark)
     splash.show()
-    splash.set_progress(15, "Initializing application environment...")
+    splash.set_progress(10, "Initializing application environment...")
+    app.processEvents()
 
-    # Close PyInstaller bootloader splash to hand off smoothly to Qt splash screen
+    # Hand-off: Close PyInstaller bootloader splash only AFTER Qt splash is fully rendered
     if pyi_splash is not None:
         try:
             if hasattr(pyi_splash, "is_alive") and pyi_splash.is_alive():
@@ -76,6 +76,10 @@ def main():
                 pyi_splash.close()
         except Exception:
             pass
+
+    # Load main application modules while splash screen is displaying
+    splash.set_progress(25, "Loading application modules...")
+    from ui.main_window import MainWindow
 
     window = MainWindow(splash=splash)
 

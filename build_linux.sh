@@ -32,7 +32,7 @@ echo "[2/3] Building single executable for Linux..."
     --onefile \
     --windowed \
     --name "SZenergyProAnalyzer" \
-    --splash "szenergy_logo.png" \
+    --splash "splash.png" \
     --add-data "szenergy_logo.png:." \
     --hidden-import "PySide6" \
     --hidden-import "PySide6.QtCore" \
