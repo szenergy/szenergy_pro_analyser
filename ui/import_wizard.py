@@ -329,7 +329,7 @@ class ImportWizardDialog(QDialog):
         preset_slug = self.preset_combo.itemData(idx) if idx >= 0 else None
         preset_text = self.preset_combo.currentText().strip()
 
-        if idx == 0 or preset_text == "None" or not preset_text:
+        if preset_text == "None" or not preset_text:
             # Set all channels to skip
             for raw_col, combo in self.combos.items():
                 combo.blockSignals(True)
@@ -342,7 +342,12 @@ class ImportWizardDialog(QDialog):
             self._refresh_icons_and_stats()
             return
 
-        preset = self.state_manager.get_preset_by_slug(preset_slug) if preset_slug else (self.state_manager.get_preset_by_name(preset_text) if self.state_manager else None)
+        preset = None
+        if preset_slug:
+            preset = self.state_manager.get_preset_by_slug(preset_slug)
+        if not preset and self.state_manager:
+            preset = self.state_manager.get_preset_by_name(preset_text) or self.state_manager.get_preset_by_slug(preset_text)
+
         if not preset:
             QMessageBox.warning(self, "Warning", f"Preset '{preset_text}' was not found in saved presets.")
             return

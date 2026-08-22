@@ -700,6 +700,7 @@ class TestUIComponents(unittest.TestCase):
     def test_import_wizard_remapping_mode_and_initial_mapping(self):
         """Validates that ImportWizardDialog pre-populates combos and preset name when is_remapping=True."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_new_custom_channels(["Speed"])
         raw_cols = ["Raw_Lap", "Raw_Time", "Raw_Spd"]
         preview_df = pd.DataFrame({"Raw_Lap": [1], "Raw_Time": [0.0], "Raw_Spd": [25.0]})
         initial_map = {"Raw_Lap": "lap_num", "Raw_Time": "lap_time", "Raw_Spd": "speed"}
@@ -725,8 +726,10 @@ class TestUIComponents(unittest.TestCase):
         with patch.object(QMessageBox, "information"):
             wizard._on_save_preset()
         saved_presets = state_mgr.load_presets()
-        self.assertIn("MyCarPreset", saved_presets)
-        self.assertEqual(saved_presets["MyCarPreset"]["Raw_Spd"], "speed")
+        preset_names = [p["name"] for p in saved_presets]
+        self.assertIn("MyCarPreset", preset_names)
+        saved_preset = state_mgr.get_preset_by_name("MyCarPreset")
+        self.assertEqual(saved_preset["mapping"]["Raw_Spd"], "speed")
         self.assertEqual(wizard.result_preset_name, "MyCarPreset")
 
     def test_sidebar_update_session_preserves_selection_and_colors(self):
@@ -850,6 +853,7 @@ class TestUIComponents(unittest.TestCase):
     def test_import_wizard_manual_preset_loading_and_save(self):
         """Validates that ImportWizardDialog allows selecting and applying a preset manually, editing, and saving a new preset."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_new_custom_channels(["Speed", "RPM"])
         state_mgr.save_preset("CustomTelemetry", {
             "Raw_Lap": "lap_num",
             "Raw_Time": "lap_time",
@@ -890,8 +894,10 @@ class TestUIComponents(unittest.TestCase):
         with patch.object(QMessageBox, "information"):
             wizard._on_save_preset()
         saved = state_mgr.load_presets()
-        self.assertIn("BrandNewPreset", saved)
-        self.assertEqual(saved["BrandNewPreset"]["Raw_Extra"], "rpm")
+        preset_names = [p["name"] for p in saved]
+        self.assertIn("BrandNewPreset", preset_names)
+        p_obj = state_mgr.get_preset_by_name("BrandNewPreset")
+        self.assertEqual(p_obj["mapping"]["Raw_Extra"], "rpm")
 
     def test_x_zoom_viewbox_drag_selection_and_zoom(self):
         """Validates that left-click dragging horizontally across a graph shows the selection box on all plots and zooms on release."""
