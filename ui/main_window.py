@@ -87,8 +87,6 @@ class MainWindow(QMainWindow):
         file_menu.addAction(export_config_action)
         self.addAction(export_config_action)
 
-        file_menu.addSeparator()
-
         open_config_action = QAction("Open &Config Folder", self)
         open_config_action.triggered.connect(self._on_open_config_folder)
         file_menu.addAction(open_config_action)

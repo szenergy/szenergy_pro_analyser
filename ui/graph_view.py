@@ -593,12 +593,15 @@ class GraphViewWidget(QWidget):
         self.rebuild_plots()
 
     def set_selected_channels(self, channels: Set[str]):
-        self.selected_channels = sorted(list(channels))
-        self.rebuild_plots()
+        sorted_channels = sorted(list(channels))
+        if sorted_channels != self.selected_channels:
+            self.selected_channels = sorted_channels
+            self.rebuild_plots()
 
     def set_selected_laps(self, laps_info: List[Tuple[str, int, str]]):
-        self.selected_laps_info = laps_info
-        self.rebuild_plots()
+        if laps_info != self.selected_laps_info:
+            self.selected_laps_info = laps_info
+            self.rebuild_plots()
 
     def _on_x_axis_changed(self, idx: int):
         slug = self.x_axis_combo.itemData(idx)

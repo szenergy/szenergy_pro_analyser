@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
     QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame
 )
-from PySide6.QtCore import Signal, Qt, QPoint
+from PySide6.QtCore import Signal, Qt, QPoint, QTimer, QEvent
 from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
 
 from core.data_models import Session, Lap
@@ -60,6 +60,16 @@ class SidebarWidget(QWidget):
         # Dynamic color pool tracking
         self.available_colors: List[str] = list(LAP_COLORS)
         self.allocated_colors: Dict[Tuple[str, int], str] = {}
+
+        # Defer updates while user is interacting (mouse drag / rapid keyboard selection)
+        self._is_mouse_selecting: bool = False
+        self._pending_lap_selection: bool = False
+        self._pending_channel_selection: bool = False
+
+        self._selection_debounce_timer = QTimer(self)
+        self._selection_debounce_timer.setSingleShot(True)
+        self._selection_debounce_timer.setInterval(75)
+        self._selection_debounce_timer.timeout.connect(self._flush_pending_selections)
 
         self._init_ui()
 
@@ -124,6 +134,39 @@ class SidebarWidget(QWidget):
 
         layout.addWidget(content_widget, 1)
 
+        # Install event filters after all widgets are initialized
+        self.session_tree.viewport().installEventFilter(self)
+        self.channel_tree.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        session_vp = getattr(self, "session_tree", None)
+        channel_vp = getattr(self, "channel_tree", None)
+        session_vp = session_vp.viewport() if session_vp is not None else None
+        channel_vp = channel_vp.viewport() if channel_vp is not None else None
+
+        if watched is not None and watched in (session_vp, channel_vp):
+            if event.type() == QEvent.MouseButtonPress:
+                self._is_mouse_selecting = True
+            elif event.type() == QEvent.MouseButtonRelease:
+                self._is_mouse_selecting = False
+                self._flush_pending_selections()
+        return super().eventFilter(watched, event)
+
+    def _flush_pending_selections(self):
+        """Flushes any pending lap or channel selection signals to update graphs once user finished selecting."""
+        self._selection_debounce_timer.stop()
+        if self._pending_lap_selection:
+            self._pending_lap_selection = False
+            result = sorted([
+                (session_id, lap_num, color)
+                for (session_id, lap_num), color in self.allocated_colors.items()
+            ], key=lambda x: (x[0], x[1]))
+            self.laps_selection_changed.emit(result)
+
+        if self._pending_channel_selection:
+            self._pending_channel_selection = False
+            self.channels_selection_changed.emit(self.selected_channels)
+
     def apply_theme(self, is_dark: bool):
         bar_style = (
             "background-color: #24272C; border-bottom: 1px solid #2C3036;"
@@ -187,7 +230,7 @@ class SidebarWidget(QWidget):
                 break
             child.setSelected(select)
         self.session_tree.blockSignals(False)
-        self._on_lap_selection_changed()
+        self._on_lap_selection_changed(immediate=True)
 
     def add_session(self, session: Session):
         """Adds a session to the sidebar tree without selecting any laps by default."""
@@ -257,7 +300,7 @@ class SidebarWidget(QWidget):
 
         self.session_tree.blockSignals(False)
         self.update_available_channels()
-        self._on_lap_selection_changed()
+        self._on_lap_selection_changed(immediate=True)
 
     def remove_session(self, session_id: str):
         """Removes a session, frees its allocated colors, and notifies the application."""
@@ -277,7 +320,7 @@ class SidebarWidget(QWidget):
                 break
 
         self.update_available_channels()
-        self._on_lap_selection_changed()
+        self._on_lap_selection_changed(immediate=True)
         self.session_removed.emit(session_id)
 
     def clear_all_sessions(self):
@@ -287,7 +330,7 @@ class SidebarWidget(QWidget):
         self.available_colors = list(LAP_COLORS)
         self.session_tree.clear()
         self.update_available_channels()
-        self._on_lap_selection_changed()
+        self._on_lap_selection_changed(immediate=True)
 
     def update_available_channels(self):
         self.channel_tree.blockSignals(True)
@@ -323,7 +366,7 @@ class SidebarWidget(QWidget):
                 text = item.text(0).lower()
                 item.setHidden(query != "" and query not in text)
 
-    def _on_lap_selection_changed(self):
+    def _on_lap_selection_changed(self, immediate: bool = False):
         selected_items = self.session_tree.selectedItems()
         lap_items: List[QTreeWidgetItem] = []
         currently_selected_laps: Set[Tuple[str, int]] = set()
@@ -384,7 +427,7 @@ class SidebarWidget(QWidget):
                 color = "#%06x" % (hash(key) & 0xFFFFFF)
             self.allocated_colors[key] = color
 
-        # Update lap icon indicators
+        # Update lap icon indicators immediately so tree UI is responsive
         root_count = self.session_tree.topLevelItemCount()
         for r in range(root_count):
             session_item = self.session_tree.topLevelItem(r)
@@ -398,13 +441,17 @@ class SidebarWidget(QWidget):
                     else:
                         child.setIcon(0, create_empty_icon())
 
-        result = sorted([
-            (session_id, lap_num, color)
-            for (session_id, lap_num), color in self.allocated_colors.items()
-        ], key=lambda x: (x[0], x[1]))
-        self.laps_selection_changed.emit(result)
+        self._pending_lap_selection = True
+        if immediate:
+            self._flush_pending_selections()
+        elif self._is_mouse_selecting:
+            # User is actively dragging mouse; defer emission until mouse release (with fallback timer)
+            self._selection_debounce_timer.start(150)
+        else:
+            # User clicked or navigates with keys; debounce to avoid spamming graph rebuilds
+            self._selection_debounce_timer.start(50)
 
-    def _on_channel_selection_changed(self):
+    def _on_channel_selection_changed(self, immediate: bool = False):
         selected_items = self.channel_tree.selectedItems()
 
         # Limit maximum channels selectable
@@ -430,7 +477,14 @@ class SidebarWidget(QWidget):
             slug = item.data(0, Qt.UserRole)
             if slug:
                 self.selected_channels.add(slug)
-        self.channels_selection_changed.emit(self.selected_channels)
+
+        self._pending_channel_selection = True
+        if immediate:
+            self._flush_pending_selections()
+        elif self._is_mouse_selecting:
+            self._selection_debounce_timer.start(150)
+        else:
+            self._selection_debounce_timer.start(50)
 
     def get_selected_laps(self) -> Dict[str, List[int]]:
         """Returns a mapping of session_id to list of selected lap numbers."""
@@ -464,7 +518,7 @@ class SidebarWidget(QWidget):
                 else:
                     child.setSelected(False)
         self.session_tree.blockSignals(False)
-        self._on_lap_selection_changed()
+        self._on_lap_selection_changed(immediate=True)
 
     def restore_selected_laps(self, lap_entries: List[Tuple[str, int, Optional[str]]]):
         """
@@ -520,11 +574,8 @@ class SidebarWidget(QWidget):
 
         self.session_tree.blockSignals(False)
 
-        result = [
-            (s_id, l_num, col)
-            for (s_id, l_num), col in self.allocated_colors.items()
-        ]
-        self.laps_selection_changed.emit(result)
+        self._pending_lap_selection = True
+        self._flush_pending_selections()
 
     def get_selected_channels(self) -> List[str]:
         """Returns the list of currently selected channel slugs."""
@@ -548,4 +599,5 @@ class SidebarWidget(QWidget):
                     item.setSelected(False)
 
         self.channel_tree.blockSignals(False)
-        self.channels_selection_changed.emit(self.selected_channels)
+        self._pending_channel_selection = True
+        self._flush_pending_selections()

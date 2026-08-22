@@ -1712,6 +1712,51 @@ class TestUIComponents(unittest.TestCase):
 
         target_dir.cleanup()
 
+    def test_sidebar_selection_deferred_during_mouse_interaction(self):
+        """Validates that selection signals are deferred during mouse interaction and emitted on release."""
+        sidebar = SidebarWidget()
+        session = Session(
+            id="s1", name="TestSession", file_path="test.csv",
+            channels=["speed", "rpm"],
+            laps=[
+                Lap(session_id="s1", lap_number=1, duration=60.0, distance=1000.0, data={"speed": np.array([1, 2]), "rpm": np.array([100, 200])}),
+                Lap(session_id="s1", lap_number=2, duration=62.0, distance=1000.0, data={"speed": np.array([2, 3]), "rpm": np.array([200, 300])})
+            ]
+        )
+        sidebar.add_session(session)
+
+        emitted_laps = []
+        sidebar.laps_selection_changed.connect(lambda laps: emitted_laps.append(laps))
+
+        # 1. Simulate mouse press (dragging / selecting)
+        sidebar._is_mouse_selecting = True
+
+        # Select Lap 1
+        session_item = sidebar.session_tree.topLevelItem(0)
+        lap1_item = session_item.child(0)
+        lap1_item.setSelected(True)
+
+        # Signal should NOT have emitted yet because user is still mouse-selecting
+        self.assertEqual(len(emitted_laps), 0)
+        self.assertTrue(sidebar._pending_lap_selection)
+
+        # Select Lap 2 as well while still holding mouse
+        lap2_item = session_item.child(1)
+        lap2_item.setSelected(True)
+
+        self.assertEqual(len(emitted_laps), 0)
+
+        # 2. Simulate mouse release (user finished selecting)
+        sidebar._is_mouse_selecting = False
+        sidebar._flush_pending_selections()
+
+        # Signal should have fired exactly once with both laps
+        self.assertEqual(len(emitted_laps), 1)
+        self.assertEqual(len(emitted_laps[0]), 2)
+        self.assertEqual(emitted_laps[0][0][1], 1)
+        self.assertEqual(emitted_laps[0][1][1], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
