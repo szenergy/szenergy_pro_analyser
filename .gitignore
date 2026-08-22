@@ -3,3 +3,4 @@ sample_data/
 .venv/
 build/
 dist/
+SZenergyProAnalyzer.spec

@@ -31,7 +31,7 @@ echo "[2/3] Building single executable for Linux..."
     --clean \
     --onefile \
     --windowed \
-    --name "SZenergyProAnalyser" \
+    --name "SZenergyProAnalyzer" \
     --add-data "szenergy_logo.png:." \
     --hidden-import "PySide6" \
     --hidden-import "PySide6.QtCore" \
@@ -45,10 +45,10 @@ echo "[2/3] Building single executable for Linux..."
     main.py
 
 echo "[3/3] Setting executable permissions..."
-chmod +x dist/SZenergyProAnalyser
+chmod +x dist/SZenergyProAnalyzer
 
 echo ""
 echo "================================================="
 echo "Build complete! Linux single executable created:"
-echo "  $(pwd)/dist/SZenergyProAnalyser"
+echo "  $(pwd)/dist/SZenergyProAnalyzer"
 echo "================================================="

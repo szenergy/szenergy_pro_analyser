@@ -31,7 +31,7 @@ echo [2/2] Building single executable for Windows...
     --clean ^
     --onefile ^
     --windowed ^
-    --name "SZenergyProAnalyser" ^
+    --name "SZenergyProAnalyzer" ^
     --add-data "szenergy_logo.png;." ^
     --hidden-import "PySide6" ^
     --hidden-import "PySide6.QtCore" ^
@@ -54,6 +54,6 @@ if %errorlevel% neq 0 (
 echo.
 echo =================================================
 echo Build complete! Windows executable created:
-echo   %~dp0dist\SZenergyProAnalyser.exe
+echo   %~dp0dist\SZenergyProAnalyzer.exe
 echo =================================================
 pause
