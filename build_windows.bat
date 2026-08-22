@@ -32,6 +32,7 @@ echo [2/2] Building single executable for Windows...
     --onefile ^
     --windowed ^
     --name "SZenergyProAnalyzer" ^
+    --splash "szenergy_logo.png" ^
     --add-data "szenergy_logo.png;." ^
     --hidden-import "PySide6" ^
     --hidden-import "PySide6.QtCore" ^

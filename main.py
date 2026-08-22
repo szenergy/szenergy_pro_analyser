@@ -1,6 +1,7 @@
 """
 Entry point for SZenergy Pro Analyser desktop application.
-Includes modern stylesheet with smooth, thin scrollbars and system OS theme adaptation.
+Includes modern stylesheet with smooth, thin scrollbars, startup splash screen,
+and system OS theme adaptation.
 """
 
 import argparse
@@ -12,9 +13,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QIcon
 
 from ui.main_window import MainWindow, is_dark_theme
+from ui.splash_screen import SplashScreen
 from utils.theme import get_theme_stylesheet
 from utils.constants import APP_NAME, ORGANIZATION_NAME, APP_LOGO_FILENAME, APP_VERSION
 from utils.logger import setup_logging
+
+# Attempt to import PyInstaller bootloader splash module (available in PyInstaller bundles built with --splash)
+try:
+    import pyi_splash
+except ImportError:
+    pyi_splash = None
 
 
 def parse_args(argv=None):
@@ -54,8 +62,29 @@ def main():
     logger.debug("Detected desktop theme mode: %s", "Dark" if is_dark else "Light")
     app.setStyleSheet(get_theme_stylesheet(is_dark))
 
-    window = MainWindow()
-    window.show()
+    # Initialize and show Qt Splash Screen
+    splash = SplashScreen(is_dark=is_dark)
+    splash.show()
+    splash.set_progress(15, "Initializing application environment...")
+
+    # Close PyInstaller bootloader splash to hand off smoothly to Qt splash screen
+    if pyi_splash is not None:
+        try:
+            if hasattr(pyi_splash, "is_alive") and pyi_splash.is_alive():
+                pyi_splash.close()
+            elif hasattr(pyi_splash, "close"):
+                pyi_splash.close()
+        except Exception:
+            pass
+
+    window = MainWindow(splash=splash)
+
+    splash.set_progress(100, "Ready")
+    if getattr(window, "_restore_is_maximized", False):
+        window.showMaximized()
+    else:
+        window.show()
+    splash.finish(window)
 
     sys.exit(app.exec())
 

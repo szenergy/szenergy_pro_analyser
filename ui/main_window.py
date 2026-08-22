@@ -10,7 +10,7 @@ from typing import Dict, List
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox, QApplication
 )
-from PySide6.QtCore import Qt, QUrl, QThread, QByteArray
+from PySide6.QtCore import Qt, QUrl, QThread, QByteArray, QEventLoop
 from PySide6.QtGui import QGuiApplication, QAction, QActionGroup, QDesktopServices
 
 from core.state_manager import StateManager
@@ -20,7 +20,7 @@ from ui.sidebar import SidebarWidget
 from ui.graph_view import GraphViewWidget
 from ui.import_wizard import ImportWizardDialog, PresetPreviewDialog
 from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, FileMappingManagerDialog
-from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker, WorkspaceRestoreWorker, WorkspaceRestoreDialog
+from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker, WorkspaceRestoreWorker
 from utils.constants import (
     APP_NAME, APP_VERSION,
     STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
@@ -38,7 +38,7 @@ def is_dark_theme() -> bool:
 class MainWindow(QMainWindow):
     """Main window of the SZenergy Pro Analyser desktop application."""
 
-    def __init__(self, state_manager: Optional[StateManager] = None):
+    def __init__(self, state_manager: Optional[StateManager] = None, splash=None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 750)
@@ -46,16 +46,22 @@ class MainWindow(QMainWindow):
         self.theme_mode: str = "auto"  # "auto", "dark", or "light"
         self.state_manager = state_manager if state_manager is not None else StateManager()
         
+        if splash is not None:
+            splash.set_progress(25, "Running configuration checks...")
+
         from core.migrations import run_migrations
         run_migrations(self.state_manager)
         
         self.sessions: Dict[str, Session] = {}
 
+        if splash is not None:
+            splash.set_progress(45, "Initializing workspace & graph engine...")
+
         self._init_ui()
         self._init_menu()
         self.apply_theme()
         self._sync_x_axis_labels()
-        self._restore_ui_state()
+        self._restore_ui_state(splash=splash)
 
     def _init_menu(self):
         menu_bar = self.sidebar.menu_bar
@@ -711,7 +717,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error("Failed to save UI state: %s", e, exc_info=True)
 
-    def _restore_ui_state(self):
+    def _restore_ui_state(self, splash=None):
         """Restores window geometry, graph settings, sidebar selections, and workspace sessions."""
         try:
             ui_state = self.state_manager.load_ui_state()
@@ -730,8 +736,9 @@ class MainWindow(QMainWindow):
             geo = window_data.get("geometry")
             if geo:
                 self.restoreGeometry(QByteArray.fromHex(geo.encode("ascii")))
-            if window_data.get("is_maximized"):
-                self.showMaximized()
+            self._restore_is_maximized = bool(window_data.get("is_maximized", False))
+            if self._restore_is_maximized:
+                self.setWindowState(Qt.WindowMaximized)
             if window_data.get("main_splitter") and hasattr(self, "main_splitter"):
                 self.main_splitter.setSizes(window_data["main_splitter"])
 
@@ -739,7 +746,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "graph_view"):
                 self.graph_view.set_view_state(ui_state.get("graph", {}))
 
-            # 3. Restore Workspace Sessions with Progress Dialog if files exist
+            # 3. Restore Workspace Sessions directly (reporting to splash screen if active)
             workspace_data = ui_state.get("workspace", {})
             sessions_list = workspace_data.get("sessions", [])
             custom_labels_dict = workspace_data.get("custom_lap_labels", {})
@@ -760,14 +767,26 @@ class MainWindow(QMainWindow):
                 def _handle_loaded_session(session, selected_laps, session_custom_labels):
                     loaded_items.append((session, selected_laps, session_custom_labels))
 
-                restore_dialog = WorkspaceRestoreDialog(
-                    worker=restore_worker,
-                    total_sessions=len(valid_sessions),
-                    parent=self
-                )
-                restore_dialog.exec_restore(_handle_loaded_session)
+                def _on_restore_progress(current, total, filename):
+                    if splash is not None:
+                        pct = 50 + int(45 * current / total)
+                        splash.set_progress(pct, f"Restoring session {current} of {total}: {filename}")
 
-                # Process all loaded sessions cleanly AFTER dialog has closed and thread is joined
+                restore_worker.session_loaded.connect(_handle_loaded_session, Qt.QueuedConnection)
+                restore_worker.progress.connect(_on_restore_progress, Qt.QueuedConnection)
+
+                loop = QEventLoop()
+                restore_worker.finished_all.connect(loop.quit)
+                restore_worker.start()
+                loop.exec()
+                restore_worker.wait()
+
+                app = QApplication.instance()
+                if app:
+                    app.sendPostedEvents()
+                    app.processEvents()
+
+                # Process all loaded sessions cleanly AFTER thread is joined
                 for session, selected_laps, session_custom_labels in loaded_items:
                     self.sessions[session.id] = session
                     self.sidebar.add_session(session)

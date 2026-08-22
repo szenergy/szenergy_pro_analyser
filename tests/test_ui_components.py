@@ -1663,9 +1663,9 @@ class TestUIComponents(unittest.TestCase):
         self.assertFalse(os.path.exists(state_mgr.ui_state_file))
         self.assertEqual(state_mgr.load_ui_state(), {})
 
-    def test_workspace_restore_dialog_and_worker(self):
-        """Validates WorkspaceRestoreWorker and WorkspaceRestoreDialog execution and progress reporting."""
-        from ui.loading_dialog import WorkspaceRestoreWorker, WorkspaceRestoreDialog
+    def test_workspace_restore_worker(self):
+        """Validates WorkspaceRestoreWorker execution and progress reporting."""
+        from ui.loading_dialog import WorkspaceRestoreWorker
 
         csv_file1 = os.path.join(self.temp_dir.name, "worker_session1.csv")
         csv_file2 = os.path.join(self.temp_dir.name, "worker_session2.csv")
@@ -1691,8 +1691,14 @@ class TestUIComponents(unittest.TestCase):
         def _on_session_loaded(session, selected_laps, custom_labels):
             loaded_sessions.append((session, selected_laps, custom_labels))
 
-        dlg = WorkspaceRestoreDialog(worker, total_sessions=2)
-        dlg.exec_restore(_on_session_loaded)
+        worker.session_loaded.connect(_on_session_loaded, Qt.QueuedConnection)
+        worker.start()
+        while worker.isRunning():
+            app.processEvents()
+            worker.wait(20)
+        worker.wait()
+        app.sendPostedEvents()
+        app.processEvents()
 
         self.assertEqual(len(loaded_sessions), 2)
         self.assertEqual(loaded_sessions[0][1], [1])
