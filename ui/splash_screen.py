@@ -1,5 +1,5 @@
 """
-Startup Splash & Loading Screen for SZenergy Pro Analyser.
+Startup Splash & Loading Screen.
 Provides a native, professional loading screen with progress feedback
 matching the application's exact theme stylesheet.
 """

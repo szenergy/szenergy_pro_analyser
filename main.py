@@ -4,10 +4,12 @@ Includes modern stylesheet with smooth, thin scrollbars, startup splash screen,
 and system OS theme adaptation.
 """
 
+from utils.constants import APP_NAME
+
 # Attempt to hook into PyInstaller bootloader splash immediately upon interpreter startup
 try:
     import pyi_splash
-    pyi_splash.update_text("Loading SZenergy Pro Analyser...")
+    pyi_splash.update_text(f"Loading {APP_NAME}...")
 except ImportError:
     pyi_splash = None
 
@@ -18,7 +20,7 @@ import logging
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 
-from utils.constants import APP_NAME, ORGANIZATION_NAME, APP_LOGO_FILENAME, APP_VERSION
+from utils.constants import ORGANIZATION_NAME, APP_LOGO_FILENAME, APP_VERSION
 from utils.logger import setup_logging
 from utils.theme import is_system_dark_theme, get_theme_stylesheet
 

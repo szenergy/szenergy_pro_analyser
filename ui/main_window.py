@@ -36,7 +36,7 @@ def is_dark_theme() -> bool:
 
 
 class MainWindow(QMainWindow):
-    """Main window of the SZenergy Pro Analyser desktop application."""
+    """Main window of the application."""
 
     def __init__(self, state_manager: Optional[StateManager] = None, splash=None):
         super().__init__()
