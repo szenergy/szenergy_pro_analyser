@@ -92,6 +92,15 @@ class StateManager:
         """Saves persistent UI state in versioned envelope format."""
         write_versioned_json(self.ui_state_file, 1, state)
 
+    def clear_ui_state(self) -> None:
+        """Deletes the persistent ui_state.json file if it exists."""
+        if os.path.exists(self.ui_state_file):
+            try:
+                os.remove(self.ui_state_file)
+                logger.info("Removed persistent UI state file '%s'", self.ui_state_file)
+            except OSError as e:
+                logger.warning("Failed to remove UI state file '%s': %s", self.ui_state_file, e)
+
     def load_presets(self) -> List[Dict[str, Any]]:
         """Load saved presets from JSON file. Handles versioned envelope and returns list of preset dicts."""
         version, data = read_versioned_json(self.presets_file)

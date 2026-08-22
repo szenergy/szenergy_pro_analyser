@@ -7,6 +7,7 @@ Ensures equal viewbox heights across all stacked plots and full X-axis grid supp
 """
 
 import logging
+import weakref
 from typing import Dict, List, Set, Tuple, Optional
 import numpy as np
 import pyqtgraph as pg
@@ -149,6 +150,28 @@ def create_icon_autorange(is_dark: bool) -> QIcon:
     return QIcon(pixmap)
 
 
+def create_icon_export(is_dark: bool) -> QIcon:
+    """Draws a vector export/share icon (tray with upward arrow)."""
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    fg = QColor("#E0E0E0" if is_dark else "#2A2E33")
+    pen = QPen(fg, 1.6)
+    painter.setPen(pen)
+    # Bottom tray/box
+    painter.drawLine(4, 13, 4, 20)
+    painter.drawLine(4, 20, 20, 20)
+    painter.drawLine(20, 20, 20, 13)
+    # Upward arrow stem
+    painter.drawLine(12, 15, 12, 3)
+    # Upward arrow head
+    painter.drawLine(7, 8, 12, 3)
+    painter.drawLine(17, 8, 12, 3)
+    painter.end()
+    return QIcon(pixmap)
+
+
 def _get_nearest_channel_sample(
     raw_x: Optional[np.ndarray], raw_y: Optional[np.ndarray], x_val: float
 ) -> Optional[Tuple[float, float]]:
@@ -200,10 +223,26 @@ class XZoomViewBox(pg.ViewBox):
 
     def __init__(self, graph_widget: Optional['GraphViewWidget'] = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.graph_widget = graph_widget
+        self._graph_widget_ref = weakref.ref(graph_widget) if graph_widget is not None else None
+        self.setMenuEnabled(False)
+        self.menu = None
         self._is_dragging: bool = False
         self._drag_canceled: bool = False
         self._setup_scale_box()
+
+    @property
+    def graph_widget(self) -> Optional['GraphViewWidget']:
+        return self._graph_widget_ref() if self._graph_widget_ref is not None else None
+
+    @graph_widget.setter
+    def graph_widget(self, val: Optional['GraphViewWidget']):
+        self._graph_widget_ref = weakref.ref(val) if val is not None else None
+
+    def mouseClickEvent(self, ev):
+        if ev.button() == Qt.MouseButton.RightButton:
+            ev.accept()
+            return
+        super().mouseClickEvent(ev)
 
     def _setup_scale_box(self):
         is_dark = True
@@ -415,20 +454,30 @@ class GraphViewWidget(QWidget):
         self.btn_rename_legend.clicked.connect(self._on_rename_legend)
         c_layout.addWidget(self.btn_rename_legend)
 
+        # 7. Export Plot / Data Button
+        self.btn_export = QPushButton()
+        self.btn_export.setToolTip("Export Plot / Data...")
+        self.btn_export.setFixedSize(32, 28)
+        self.btn_export.setIconSize(QSize(18, 18))
+        self.btn_export.clicked.connect(self._on_export_plot)
+        c_layout.addWidget(self.btn_export)
+
         c_layout.addStretch()
 
-        # 7. X-Axis Selector (Using immutable Slugs as userData)
+        # 8. X-Axis Selector (Using immutable Slugs as userData)
         c_layout.addWidget(QLabel("<b>X-Axis:</b>"))
         self.x_axis_combo = QComboBox()
-        self.x_axis_combo.addItem(self.time_label, userData=STD_CH_LAP_TIME_SLUG)
         self.x_axis_combo.addItem(self.dist_label, userData=STD_CH_LAP_DIST_SLUG)
+        self.x_axis_combo.addItem(self.time_label, userData=STD_CH_LAP_TIME_SLUG)
         self.x_axis_combo.currentIndexChanged.connect(self._on_x_axis_changed)
         c_layout.addWidget(self.x_axis_combo)
 
         layout.addWidget(self.control_bar)
 
-        # PyQtGraph Layout Container
+        # PyQtGraph Layout Container (context menu disabled)
+        self.setContextMenuPolicy(Qt.NoContextMenu)
         self.glw = pg.GraphicsLayoutWidget()
+        self.glw.setContextMenuPolicy(Qt.NoContextMenu)
         layout.addWidget(self.glw)
 
         # Install event filters to capture Escape key during drag operations
@@ -503,6 +552,7 @@ class GraphViewWidget(QWidget):
         self.btn_legend.setIcon(create_icon_legend(is_dark))
         self.btn_rename_legend.setIcon(create_icon_rename_legend(is_dark))
         self.btn_autorange.setIcon(create_icon_autorange(is_dark))
+        self.btn_export.setIcon(create_icon_export(is_dark))
 
         for plot in self.plot_widgets.values():
             if hasattr(plot, "vb") and hasattr(plot.vb, "update_theme"):
@@ -676,6 +726,15 @@ class GraphViewWidget(QWidget):
             self.custom_lap_labels.update(dialog.renamed_labels)
             self.rebuild_plots()
 
+    def _on_export_plot(self):
+        """Opens PyQtGraph's default built-in export dialog for exporting plots and data."""
+        from pyqtgraph.GraphicsScene.exportDialog import ExportDialog
+        if not hasattr(self, "_export_dialog") or self._export_dialog is None:
+            self._export_dialog = ExportDialog(self.glw.scene())
+
+        target_item = self.glw.ci if hasattr(self.glw, "ci") else (list(self.plot_widgets.values())[0] if self.plot_widgets else None)
+        self._export_dialog.show(target_item)
+
     def rebuild_plots(self):
         self._is_rebuilding = True
         try:
@@ -707,6 +766,8 @@ class GraphViewWidget(QWidget):
                 vb.update_theme(self.is_dark)
                 vb.sigRangeChangedManually.connect(self._on_manual_range_change)
                 plot = self.glw.addPlot(row=row, col=0, viewBox=vb)
+                plot.setMenuEnabled(False)
+                plot.ctrlMenu = None
 
                 display_label = channel_name
                 if self.state_manager:

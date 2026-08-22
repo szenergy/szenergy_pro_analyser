@@ -8,10 +8,10 @@ import os
 import uuid
 from typing import Dict, List
 from PySide6.QtWidgets import (
-    QMainWindow, QSplitter, QFileDialog, QMessageBox
+    QMainWindow, QSplitter, QFileDialog, QMessageBox, QApplication
 )
 from PySide6.QtCore import Qt, QUrl, QThread, QByteArray
-from PySide6.QtGui import QGuiApplication, QAction, QDesktopServices
+from PySide6.QtGui import QGuiApplication, QAction, QActionGroup, QDesktopServices
 
 from core.state_manager import StateManager
 from core.file_parser import get_file_columns_and_preview, parse_session, parse_session_from_dataframe
@@ -25,27 +25,26 @@ from utils.constants import (
     APP_NAME, APP_VERSION,
     STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 )
+from utils.theme import is_system_dark_theme, get_theme_stylesheet
 
 logger = logging.getLogger(__name__)
 
 
 def is_dark_theme() -> bool:
     """Detects whether the system environment is currently in Dark Mode."""
-    hints = QGuiApplication.styleHints()
-    if hasattr(hints, "colorScheme"):
-        return hints.colorScheme() == Qt.ColorScheme.Dark
-    return True
+    return is_system_dark_theme()
 
 
 class MainWindow(QMainWindow):
     """Main window of the SZenergy Pro Analyser desktop application."""
 
-    def __init__(self):
+    def __init__(self, state_manager: Optional[StateManager] = None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 750)
 
-        self.state_manager = StateManager()
+        self.theme_mode: str = "auto"  # "auto", "dark", or "light"
+        self.state_manager = state_manager if state_manager is not None else StateManager()
         
         from core.migrations import run_migrations
         run_migrations(self.state_manager)
@@ -54,7 +53,7 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self._init_menu()
-        self.update_system_theme()
+        self.apply_theme()
         self._sync_x_axis_labels()
         self._restore_ui_state()
 
@@ -87,7 +86,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(export_config_action)
         self.addAction(export_config_action)
 
-        open_config_action = QAction("Open &Config Folder", self)
+        open_config_action = QAction("Open Config Folder", self)
         open_config_action.triggered.connect(self._on_open_config_folder)
         file_menu.addAction(open_config_action)
         self.addAction(open_config_action)
@@ -113,10 +112,158 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(manage_channels_action)
         self.addAction(manage_channels_action)
 
-        manage_file_mappings_action = QAction("Manage &File Mappings...", self)
+        manage_file_mappings_action = QAction("Manage File &Mappings...", self)
         manage_file_mappings_action.triggered.connect(self._on_manage_file_mappings)
         edit_menu.addAction(manage_file_mappings_action)
         self.addAction(manage_file_mappings_action)
+
+        # 3. View Menu
+        view_menu = menu_bar.addMenu("&View")
+
+        # Auto Range
+        autorange_action = QAction("&Auto Range All Graphs", self)
+        autorange_action.triggered.connect(self.graph_view._on_autorange)
+        view_menu.addAction(autorange_action)
+        self.addAction(autorange_action)
+
+        # X-Axis Grid
+        self.x_grid_action = QAction("&X-Axis Grid Lines", self, checkable=True)
+        self.x_grid_action.setChecked(self.graph_view.show_x_grid)
+        self.x_grid_action.toggled.connect(self.graph_view.btn_x_grid.setChecked)
+        self.graph_view.btn_x_grid.toggled.connect(self.x_grid_action.setChecked)
+        view_menu.addAction(self.x_grid_action)
+        self.addAction(self.x_grid_action)
+
+        # Y-Axis Grid
+        self.y_grid_action = QAction("&Y-Axis Grid Lines", self, checkable=True)
+        self.y_grid_action.setChecked(self.graph_view.show_y_grid)
+        self.y_grid_action.toggled.connect(self.graph_view.btn_y_grid.setChecked)
+        self.graph_view.btn_y_grid.toggled.connect(self.y_grid_action.setChecked)
+        view_menu.addAction(self.y_grid_action)
+        self.addAction(self.y_grid_action)
+
+        # Cursor Values
+        self.cursor_action = QAction("Show &Cursor and Values", self, checkable=True)
+        self.cursor_action.setChecked(self.graph_view.show_cursor_values)
+        self.cursor_action.toggled.connect(self.graph_view.btn_cursor.setChecked)
+        self.graph_view.btn_cursor.toggled.connect(self.cursor_action.setChecked)
+        view_menu.addAction(self.cursor_action)
+        self.addAction(self.cursor_action)
+
+        # X-Axis Selector Submenu
+        x_axis_menu = view_menu.addMenu("X-Axis")
+        self.x_axis_group = QActionGroup(self)
+        self.x_axis_group.setExclusive(True)
+
+        self.x_axis_dist_action = QAction(self.state_manager.get_distance_label(), self, checkable=True)
+        self.x_axis_group.addAction(self.x_axis_dist_action)
+        x_axis_menu.addAction(self.x_axis_dist_action)
+        self.x_axis_dist_action.triggered.connect(lambda: self._set_x_axis_by_slug(STD_CH_LAP_DIST_SLUG))
+
+        self.x_axis_time_action = QAction(self.state_manager.get_time_label(), self, checkable=True)
+        self.x_axis_group.addAction(self.x_axis_time_action)
+        x_axis_menu.addAction(self.x_axis_time_action)
+        self.x_axis_time_action.triggered.connect(lambda: self._set_x_axis_by_slug(STD_CH_LAP_TIME_SLUG))
+
+        self.graph_view.x_axis_combo.currentIndexChanged.connect(self._sync_x_axis_menu_checks)
+        self._sync_x_axis_menu_checks()
+
+        view_menu.addSeparator()
+
+        # Curve Legend
+        self.legend_action = QAction("Show &Legend", self, checkable=True)
+        self.legend_action.setChecked(self.graph_view.show_legend)
+        self.legend_action.toggled.connect(self.graph_view.btn_legend.setChecked)
+        self.graph_view.btn_legend.toggled.connect(self.legend_action.setChecked)
+        view_menu.addAction(self.legend_action)
+        self.addAction(self.legend_action)
+
+        # Rename Legend Labels
+        rename_legend_action = QAction("&Rename Legend Labels...", self)
+        rename_legend_action.triggered.connect(self.graph_view._on_rename_legend)
+        view_menu.addAction(rename_legend_action)
+        self.addAction(rename_legend_action)
+
+        # Export Plot / Data
+        export_plot_action = QAction("&Export Plots...", self)
+        export_plot_action.triggered.connect(self.graph_view._on_export_plot)
+        view_menu.addAction(export_plot_action)
+        self.addAction(export_plot_action)
+
+        view_menu.addSeparator()
+
+        # Theme Submenu
+        theme_menu = view_menu.addMenu("Theme")
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+
+        self.theme_auto_action = QAction("Auto (System)", self, checkable=True)
+        self.theme_group.addAction(self.theme_auto_action)
+        theme_menu.addAction(self.theme_auto_action)
+        self.theme_auto_action.triggered.connect(lambda: self.set_theme_mode("auto"))
+
+        self.theme_dark_action = QAction("Dark", self, checkable=True)
+        self.theme_group.addAction(self.theme_dark_action)
+        theme_menu.addAction(self.theme_dark_action)
+        self.theme_dark_action.triggered.connect(lambda: self.set_theme_mode("dark"))
+
+        self.theme_light_action = QAction("Light", self, checkable=True)
+        self.theme_group.addAction(self.theme_light_action)
+        theme_menu.addAction(self.theme_light_action)
+        self.theme_light_action.triggered.connect(lambda: self.set_theme_mode("light"))
+
+        self._sync_theme_menu_checks()
+
+    def _set_x_axis_by_slug(self, slug: str):
+        idx = self.graph_view.x_axis_combo.findData(slug)
+        if idx >= 0:
+            self.graph_view.x_axis_combo.setCurrentIndex(idx)
+
+    def _sync_x_axis_menu_checks(self):
+        current_slug = self.graph_view.x_axis_slug
+        if hasattr(self, "x_axis_dist_action"):
+            self.x_axis_dist_action.setChecked(current_slug == STD_CH_LAP_DIST_SLUG)
+        if hasattr(self, "x_axis_time_action"):
+            self.x_axis_time_action.setChecked(current_slug == STD_CH_LAP_TIME_SLUG)
+
+    def set_theme_mode(self, mode: str):
+        """Sets active theme mode ('auto', 'dark', 'light') and applies stylesheets and widget themes."""
+        if mode not in ("auto", "dark", "light"):
+            mode = "auto"
+        self.theme_mode = mode
+        self.apply_theme()
+        self._sync_theme_menu_checks()
+
+    def is_currently_dark(self) -> bool:
+        """Determines if the active view is dark mode based on theme_mode setting."""
+        if self.theme_mode == "dark":
+            return True
+        elif self.theme_mode == "light":
+            return False
+        return is_system_dark_theme()
+
+    def apply_theme(self):
+        """Applies current theme stylesheet to QApplication, sidebar, and graph view."""
+        is_dark = self.is_currently_dark()
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(get_theme_stylesheet(is_dark))
+        if hasattr(self, "sidebar"):
+            self.sidebar.apply_theme(is_dark)
+        if hasattr(self, "graph_view"):
+            self.graph_view.apply_theme(is_dark)
+
+    def update_system_theme(self):
+        """Compatibility alias for apply_theme."""
+        self.apply_theme()
+
+    def _sync_theme_menu_checks(self):
+        if hasattr(self, "theme_auto_action"):
+            self.theme_auto_action.setChecked(self.theme_mode == "auto")
+        if hasattr(self, "theme_dark_action"):
+            self.theme_dark_action.setChecked(self.theme_mode == "dark")
+        if hasattr(self, "theme_light_action"):
+            self.theme_light_action.setChecked(self.theme_mode == "light")
 
     def _init_ui(self):
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -140,11 +287,10 @@ class MainWindow(QMainWindow):
         time_label = self.state_manager.get_time_label()
         dist_label = self.state_manager.get_distance_label()
         self.graph_view.set_x_axis_labels(time_label, dist_label)
-
-    def update_system_theme(self):
-        is_dark = is_dark_theme()
-        self.sidebar.apply_theme(is_dark)
-        self.graph_view.apply_theme(is_dark)
+        if hasattr(self, "x_axis_dist_action"):
+            self.x_axis_dist_action.setText(dist_label)
+        if hasattr(self, "x_axis_time_action"):
+            self.x_axis_time_action.setText(time_label)
 
     def _on_open_config_folder(self):
         config_dir = self.state_manager.config_dir
@@ -234,6 +380,7 @@ class MainWindow(QMainWindow):
             self.sidebar.clear_all_sessions()
             self.graph_view.custom_lap_labels.clear()
             self.graph_view.set_sessions(self.sessions)
+            self.state_manager.clear_ui_state()
 
     def _on_session_removed(self, session_id: str):
         if session_id in self.sessions:
@@ -270,7 +417,7 @@ class MainWindow(QMainWindow):
                 return
 
         # 1. Background Header Reading
-        preview_worker = FilePreviewWorker(file_path, parent=self)
+        preview_worker = FilePreviewWorker(file_path)
         preview_dialog = LoadingDialog(
             f"Inspecting headers for '{filename}'...\nPlease wait.",
             worker=preview_worker,
@@ -375,8 +522,7 @@ class MainWindow(QMainWindow):
             session_id=session_id,
             lap_label=self.state_manager.get_lap_label(),
             time_label=self.state_manager.get_time_label(),
-            dist_label=self.state_manager.get_distance_label(),
-            parent=self
+            dist_label=self.state_manager.get_distance_label()
         )
 
         parse_dialog = LoadingDialog(
@@ -488,6 +634,10 @@ class MainWindow(QMainWindow):
     def _save_ui_state(self):
         """Saves current window geometry, graph settings, sidebar selections, and workspace sessions."""
         try:
+            if not self.sessions:
+                self.state_manager.clear_ui_state()
+                return
+
             # 1. Window State
             geometry_hex = self.saveGeometry().toHex().data().decode("ascii")
             window_state = {
@@ -545,6 +695,7 @@ class MainWindow(QMainWindow):
                         custom_labels_data[f"{norm_path}::{lap_num}"] = str(label)
 
             ui_state = {
+                "theme_mode": self.theme_mode,
                 "window": window_state,
                 "graph": graph_state,
                 "sidebar": sidebar_state,
@@ -569,6 +720,10 @@ class MainWindow(QMainWindow):
                 return
 
             logger.info("Restoring saved UI state...")
+
+            # 0. Restore Theme Mode if saved
+            if "theme_mode" in ui_state:
+                self.set_theme_mode(ui_state.get("theme_mode", "auto"))
 
             # 1. Restore Window State
             window_data = ui_state.get("window", {})
@@ -598,16 +753,12 @@ class MainWindow(QMainWindow):
                     custom_labels_dict=custom_labels_dict,
                     lap_label=self.state_manager.get_lap_label(),
                     time_label=self.state_manager.get_time_label(),
-                    dist_label=self.state_manager.get_distance_label(),
-                    parent=self
+                    dist_label=self.state_manager.get_distance_label()
                 )
 
+                loaded_items = []
                 def _handle_loaded_session(session, selected_laps, session_custom_labels):
-                    self.sessions[session.id] = session
-                    self.sidebar.add_session(session)
-                    if session_custom_labels and hasattr(self, "graph_view"):
-                        for lap_num, custom_name in session_custom_labels.items():
-                            self.graph_view.custom_lap_labels[(session.id, int(lap_num))] = str(custom_name)
+                    loaded_items.append((session, selected_laps, session_custom_labels))
 
                 restore_dialog = WorkspaceRestoreDialog(
                     worker=restore_worker,
@@ -615,6 +766,14 @@ class MainWindow(QMainWindow):
                     parent=self
                 )
                 restore_dialog.exec_restore(_handle_loaded_session)
+
+                # Process all loaded sessions cleanly AFTER dialog has closed and thread is joined
+                for session, selected_laps, session_custom_labels in loaded_items:
+                    self.sessions[session.id] = session
+                    self.sidebar.add_session(session)
+                    if session_custom_labels and hasattr(self, "graph_view"):
+                        for lap_num, custom_name in session_custom_labels.items():
+                            self.graph_view.custom_lap_labels[(session.id, int(lap_num))] = str(custom_name)
 
             # 4. Restore exact lap selections and color allocations across all sessions
             lap_entries_to_restore = []

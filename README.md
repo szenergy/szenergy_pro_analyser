@@ -78,10 +78,11 @@ On the top of each graph, the exact numerical value at the current cursor positi
 Click the **Grid** toggle buttons to show or hide vertical and horizontal grid lines.
 
 
-## 4. Customizing the Legend
+## 4. Customizing the Legend and Exporting
 
 If you click the **Legend** button in the toolbar the legend overlay will appear. You can freely drag this around the all the graphs.
 - Click the **Rename Legend** button to assign custom names to specific laps.
+- Click the **Export** button in the toolbar to open the export dialog, allowing you to export graph views or raw plot data to image files (PNG/SVG), CSV, and other formats.
 
 ## 5. Managing Configuration
 
@@ -97,6 +98,17 @@ Access from the **Edit** menu:
 - **Manage Presets...**: Rename or delete them or edit channel mappings.
 - **Manage Channels...**: Add new telemetry channels or rename existing ones.
 - **Manage File Mappings...**: View and delete remembered file-to-preset associations.
+
+### View Menu
+Access all graph and display controls directly from the **View** menu:
+- **Auto Range All Graphs**: Reset all graphs to fit all selected data.
+- **X-Axis / Y-Axis Grid Lines**: Toggle visibility of background grid lines.
+- **Cursor Values & Crosshair**: Toggle live hover cursor readouts.
+- **Curve Legend**: Show/hide the curve legend overlay.
+- **Rename Legend Labels...**: Rename individual lap curve names.
+- **Export Plots / Data...**: Open the export dialog.
+- **X-Axis**: Switch between Lap Distance and Lap Time.
+- **Theme**: Select between **Auto (System)**, **Dark**, and **Light** themes.
 
 ### Exporting and Importing Configurations
 Easily share standard channel definitions and presets across machines:

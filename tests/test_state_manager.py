@@ -199,7 +199,7 @@ class TestStateManager(unittest.TestCase):
         self.assertIsNone(self.state_manager.get_file_preset(file_path))
 
     def test_ui_state_persistence(self):
-        """Validates saving and loading UI state in StateManager."""
+        """Validates saving, loading, and clearing UI state in StateManager."""
         self.assertEqual(self.state_manager.load_ui_state(), {})
 
         sample_state = {
@@ -208,6 +208,15 @@ class TestStateManager(unittest.TestCase):
             "sidebar": {"selected_channels": ["speed", "throttle"]}
         }
         self.state_manager.save_ui_state(sample_state)
+        self.assertTrue(os.path.exists(self.state_manager.ui_state_file))
+        loaded = self.state_manager.load_ui_state()
+        self.assertEqual(loaded["window"]["is_maximized"], True)
+        self.assertEqual(loaded["sidebar"]["selected_channels"], ["speed", "throttle"])
+
+        # Test clear_ui_state removes the file
+        self.state_manager.clear_ui_state()
+        self.assertFalse(os.path.exists(self.state_manager.ui_state_file))
+        self.assertEqual(self.state_manager.load_ui_state(), {})
 
     def test_export_and_import_config(self):
         """Validates export and import of non-machine-specific configuration (presets & channels)."""

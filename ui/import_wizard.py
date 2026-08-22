@@ -343,10 +343,10 @@ class ImportWizardDialog(QDialog):
             return
 
         preset = None
-        if preset_slug:
-            preset = self.state_manager.get_preset_by_slug(preset_slug)
-        if not preset and self.state_manager:
+        if self.state_manager:
             preset = self.state_manager.get_preset_by_name(preset_text) or self.state_manager.get_preset_by_slug(preset_text)
+        if not preset and preset_slug and self.state_manager:
+            preset = self.state_manager.get_preset_by_slug(preset_slug)
 
         if not preset:
             QMessageBox.warning(self, "Warning", f"Preset '{preset_text}' was not found in saved presets.")
