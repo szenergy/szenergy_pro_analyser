@@ -4,14 +4,15 @@ Clean layout without header labels, maximizing space for splitters and tables.
 Fixes orphaned QComboBox cell widget accumulation in QTableWidget.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QTableWidget, QTableWidgetItem, QComboBox, QPushButton, QLabel, QLineEdit,
-    QMessageBox, QHeaderView, QSplitter, QAbstractItemView, QWidget, QInputDialog
+    QMessageBox, QHeaderView, QSplitter, QAbstractItemView, QWidget, QInputDialog,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QApplication
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPixmap, QIcon
+from PySide6.QtGui import QColor, QPixmap, QIcon, QPalette
 
 from core.data_models import Session
 from core.state_manager import StateManager, generate_slug
@@ -32,6 +33,7 @@ class PresetManagerDialog(QDialog):
         self.setMinimumSize(720, 480)
         self.state_manager = state_manager
 
+        self.current_preset_slug: Optional[str] = None
         self.current_preset_name: str = ""
 
         self._init_ui()
@@ -53,7 +55,7 @@ class PresetManagerDialog(QDialog):
         left_layout.addWidget(QLabel("<b>Saved Presets:</b>"))
         self.preset_list = QListWidget()
         self.preset_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.preset_list.currentTextChanged.connect(self._on_preset_selected)
+        self.preset_list.currentItemChanged.connect(lambda cur, prev: self._on_preset_selected())
         left_layout.addWidget(self.preset_list)
 
         self.delete_btn = QPushButton("Delete Selected Preset")
@@ -125,31 +127,42 @@ class PresetManagerDialog(QDialog):
         self.preset_list.blockSignals(True)
         self.preset_list.clear()
         presets = self.state_manager.load_presets()
-        for name in sorted(presets.keys()):
-            self.preset_list.addItem(name)
+        for preset in presets:
+            item = QListWidgetItem(preset.get("name", ""))
+            item.setData(Qt.UserRole, preset.get("slug", ""))
+            self.preset_list.addItem(item)
         self.preset_list.blockSignals(False)
 
         if self.preset_list.count() > 0:
             self.preset_list.setCurrentRow(0)
-            self._on_preset_selected(self.preset_list.currentItem().text())
+            self._on_preset_selected()
         else:
+            self.current_preset_slug = None
             self.current_preset_name = ""
             self.preset_name_input.clear()
             self._clear_table()
 
-    def _on_preset_selected(self, preset_name: str):
+    def _on_preset_selected(self):
         self._clear_table()
-
-        if not preset_name:
+        current_item = self.preset_list.currentItem()
+        if not current_item:
+            self.current_preset_slug = None
             self.current_preset_name = ""
             self.preset_name_input.clear()
             return
 
-        self.current_preset_name = preset_name
-        self.preset_name_input.setText(preset_name)
+        slug = current_item.data(Qt.UserRole)
+        preset = self.state_manager.get_preset_by_slug(slug)
+        if not preset:
+            preset = self.state_manager.get_preset_by_name(current_item.text())
 
-        presets = self.state_manager.load_presets()
-        mapping = presets.get(preset_name, {})
+        if not preset:
+            return
+
+        self.current_preset_slug = preset["slug"]
+        self.current_preset_name = preset["name"]
+        self.preset_name_input.setText(preset["name"])
+        mapping = preset.get("mapping", {})
 
         target_options = ["-- Skip --"] + self.state_manager.get_channel_labels()
         self.table.setRowCount(len(mapping))
@@ -240,31 +253,34 @@ class PresetManagerDialog(QDialog):
             )
             return
 
-        if self.current_preset_name and self.current_preset_name != new_preset_name:
-            self.state_manager.delete_preset(self.current_preset_name)
-
-        self.state_manager.save_preset(new_preset_name, mapping)
+        saved_slug = self.state_manager.save_preset(
+            new_preset_name, mapping, slug=self.current_preset_slug
+        )
+        self.current_preset_slug = saved_slug
+        self.current_preset_name = new_preset_name
         QMessageBox.information(self, "Saved", f"Preset '{new_preset_name}' saved successfully!")
 
         self.load_preset_list()
-        items = self.preset_list.findItems(new_preset_name, Qt.MatchExactly)
-        if items:
-            self.preset_list.setCurrentItem(items[0])
+        for i in range(self.preset_list.count()):
+            item = self.preset_list.item(i)
+            if item.data(Qt.UserRole) == saved_slug:
+                self.preset_list.setCurrentItem(item)
+                break
 
     def _on_delete_preset(self):
         current_item = self.preset_list.currentItem()
         if not current_item:
             return
 
+        preset_slug = current_item.data(Qt.UserRole)
         preset_name = current_item.text()
         reply = QMessageBox.question(
             self, "Confirm Delete",
             f"Are you sure you want to delete preset '{preset_name}'?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
-
         if reply == QMessageBox.Yes:
-            self.state_manager.delete_preset(preset_name)
+            self.state_manager.delete_preset(preset_slug or preset_name)
             self.load_preset_list()
 
 
@@ -436,6 +452,138 @@ class ChannelManagerDialog(QDialog):
         self.state_manager.save_channel_defs(self.channels)
         QMessageBox.information(self, "Saved", "Standard channel list saved successfully.")
         self.accept()
+
+
+class PathElideLeftDelegate(QStyledItemDelegate):
+    """Item delegate that explicitly elides text on the left (e.g. '.../folder/filename.csv') so file names stay visible."""
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+
+        style = opt.widget.style() if opt.widget else QApplication.style()
+
+        # 1. Draw item background / hover / selection highlights using current widget style
+        style.drawPrimitive(QStyle.PE_PanelItemViewItem, opt, painter, opt.widget)
+
+        # 2. Draw explicitly left-elided text aligned to the right
+        full_text = index.data(Qt.DisplayRole) or ""
+        if full_text:
+            text_rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, opt.widget)
+            text_rect.adjust(4, 0, -4, 0)
+
+            fm = opt.fontMetrics
+            elided = fm.elidedText(full_text, Qt.ElideLeft, text_rect.width())
+
+            painter.save()
+            painter.setFont(opt.font)
+
+            if opt.state & QStyle.State_Selected:
+                text_color = opt.palette.color(QPalette.HighlightedText)
+            elif not (opt.state & QStyle.State_Enabled):
+                text_color = opt.palette.color(QPalette.Disabled, QPalette.Text)
+            else:
+                text_color = opt.palette.color(QPalette.Text)
+
+            painter.setPen(text_color)
+            painter.drawText(text_rect, Qt.AlignRight | Qt.AlignVCenter, elided)
+            painter.restore()
+
+
+class FileMappingManagerDialog(QDialog):
+    """Dialog for managing remembered file-to-preset mappings with multi-selection removal."""
+
+    def __init__(self, state_manager: StateManager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage File Mappings")
+        self.setMinimumSize(680, 420)
+        self.state_manager = state_manager
+
+        self._init_ui()
+        self.load_file_mappings()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        # Table Widget: 2 columns (File Path, Mapped Preset)
+        self.table = QTableWidget(0, 2)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalHeaderLabels(["File Path", "Mapped Preset"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setTextElideMode(Qt.ElideLeft)
+        self.table.setItemDelegateForColumn(0, PathElideLeftDelegate(self.table))
+        layout.addWidget(self.table, 1)
+
+        # Action Buttons Row
+        btn_layout = QHBoxLayout()
+
+        self.remove_btn = QPushButton("Remove Selected")
+        self.remove_btn.setToolTip("Remove selected file mappings so the import wizard will prompt on next open")
+        self.remove_btn.clicked.connect(self._on_remove_selected)
+        btn_layout.addWidget(self.remove_btn)
+
+        btn_layout.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+
+        layout.addLayout(btn_layout)
+
+    def load_file_mappings(self):
+        """Loads remembered file presets and populates the table."""
+        file_mappings = self.state_manager.load_file_presets()
+        self.table.setRowCount(len(file_mappings))
+
+        for row, (file_path, preset_slug) in enumerate(sorted(file_mappings.items())):
+            # Column 0: File Path (Right-aligned so file name is visible when path is long)
+            path_item = QTableWidgetItem(file_path)
+            path_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            path_item.setData(Qt.UserRole, file_path)
+            path_item.setToolTip(file_path)
+            path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(row, 0, path_item)
+
+            # Column 1: Mapped Preset (Display Name, fallback to slug)
+            preset_name = self.state_manager.get_preset_name_by_slug(preset_slug) or preset_slug
+            preset_item = QTableWidgetItem(preset_name)
+            preset_item.setToolTip(f"Preset Slug: {preset_slug}")
+            preset_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(row, 1, preset_item)
+
+    def _on_remove_selected(self):
+        """Removes selected file mappings."""
+        selected_indexes = self.table.selectionModel().selectedRows()
+        if not selected_indexes:
+            QMessageBox.information(self, "No Selection", "Please select one or more file mappings to remove.")
+            return
+
+        count = len(selected_indexes)
+        reply = QMessageBox.question(
+            self, "Confirm Remove",
+            f"Are you sure you want to remove the {count} selected file mapping(s)?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        paths_to_remove = []
+        for index in selected_indexes:
+            row = index.row()
+            path_item = self.table.item(row, 0)
+            if path_item:
+                file_path = path_item.data(Qt.UserRole) or path_item.text()
+                paths_to_remove.append(file_path)
+
+        for file_path in paths_to_remove:
+            self.state_manager.remove_file_preset(file_path)
+
+        self.load_file_mappings()
 
 
 class RenameLegendLabelsDialog(QDialog):

@@ -13,7 +13,7 @@ from core.state_manager import StateManager, generate_slug, read_versioned_json,
 logger = logging.getLogger(__name__)
 
 # Current target versions
-CURRENT_PRESETS_VERSION = 1
+CURRENT_PRESETS_VERSION = 2
 CURRENT_CHANNELS_VERSION = 1
 
 
@@ -43,8 +43,6 @@ def _migrate_presets_v0_to_v1(data: Any, state_manager: StateManager) -> Dict[st
                 migrated_mapping[raw_col] = label_to_slug[target]
             else:
                 # Already a slug, or a custom value -> use generate_slug as fallback
-                migrated_mapping[raw_col] = generate_slug(target) if target != target.lower().replace(' ', '_') else target
-                # If it looks like it could already be a valid slug, keep it
                 if generate_slug(target) == target:
                     migrated_mapping[raw_col] = target
                 else:
@@ -54,8 +52,59 @@ def _migrate_presets_v0_to_v1(data: Any, state_manager: StateManager) -> Dict[st
     return migrated_presets
 
 
+def _migrate_presets_v1_to_v2(data: Any, state_manager: StateManager) -> List[Dict[str, Any]]:
+    """
+    v1 -> v2: Add unique slug to each preset and structure presets as a list of dicts.
+    v1 format: {"preset_name": {"raw_col": "slug", ...}, ...}
+    v2 format: [{"slug": "preset_slug", "name": "preset_name", "mapping": {"raw_col": "slug", ...}}, ...]
+    """
+    if isinstance(data, list):
+        converted: List[Dict[str, Any]] = []
+        existing_slugs: List[str] = []
+        for item in data:
+            if isinstance(item, dict) and "name" in item and "mapping" in item:
+                slug = item.get("slug") or generate_slug(item["name"])
+                base_slug = slug
+                counter = 1
+                while slug in existing_slugs:
+                    slug = f"{base_slug}_{counter}"
+                    counter += 1
+                existing_slugs.append(slug)
+                converted.append({
+                    "slug": slug,
+                    "name": item["name"],
+                    "mapping": item["mapping"]
+                })
+        return converted
+
+    if not isinstance(data, dict):
+        return []
+
+    migrated_presets: List[Dict[str, Any]] = []
+    existing_slugs: List[str] = []
+
+    for preset_name, mapping in data.items():
+        if not isinstance(mapping, dict):
+            continue
+        slug = generate_slug(preset_name)
+        base_slug = slug
+        counter = 1
+        while slug in existing_slugs:
+            slug = f"{base_slug}_{counter}"
+            counter += 1
+        existing_slugs.append(slug)
+        migrated_presets.append({
+            "slug": slug,
+            "name": preset_name,
+            "mapping": mapping
+        })
+
+    return migrated_presets
+
+
 PRESET_MIGRATIONS: List[Tuple[int, int, Callable]] = [
     (0, 1, _migrate_presets_v0_to_v1),
+    (1, 2, _migrate_presets_v1_to_v2),
 ]
 
 
@@ -85,6 +134,44 @@ def _migrate_channels_v0_to_v1(data: Any, state_manager: StateManager) -> List[D
 
 CHANNEL_MIGRATIONS: List[Tuple[int, int, Callable]] = [
     (0, 1, _migrate_channels_v0_to_v1),
+]
+
+
+# ---------------------------------------------------------------------------
+# File Mappings Migrations
+# ---------------------------------------------------------------------------
+
+CURRENT_FILE_MAPPINGS_VERSION = 2
+
+
+def _migrate_file_mappings_to_slugs(data: Any, state_manager: StateManager) -> Dict[str, str]:
+    """
+    Converts remembered file presets from legacy display names or nested dicts to persistent preset slugs.
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    migrated: Dict[str, str] = {}
+    for file_path, entry in data.items():
+        preset_ident = None
+        if isinstance(entry, dict):
+            preset_ident = entry.get("preset_slug") or entry.get("preset_name")
+        elif isinstance(entry, str):
+            preset_ident = entry
+
+        if preset_ident:
+            slug = state_manager.get_preset_slug_by_name(preset_ident)
+            if not slug:
+                p = state_manager.get_preset_by_slug(preset_ident)
+                slug = p["slug"] if p else generate_slug(preset_ident)
+            migrated[file_path] = slug
+
+    return migrated
+
+
+FILE_MAPPINGS_MIGRATIONS: List[Tuple[int, int, Callable]] = [
+    (0, 1, _migrate_file_mappings_to_slugs),
+    (1, 2, _migrate_file_mappings_to_slugs),
 ]
 
 
@@ -151,4 +238,14 @@ def run_migrations(state_manager: StateManager) -> None:
         migrations=PRESET_MIGRATIONS,
         state_manager=state_manager,
         file_label="presets.json"
+    )
+
+    # Migrate file mappings (after presets migration so preset slugs exist)
+    _apply_migrations(
+        file_path=state_manager.file_mappings_file,
+        current_version=0,
+        target_version=CURRENT_FILE_MAPPINGS_VERSION,
+        migrations=FILE_MAPPINGS_MIGRATIONS,
+        state_manager=state_manager,
+        file_label="file_mappings.json"
     )

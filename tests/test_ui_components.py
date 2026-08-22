@@ -3,6 +3,10 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+# Ensure Qt runs in headless offscreen mode during unit tests without displaying UI windows
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import numpy as np
 import pandas as pd
 from PySide6.QtWidgets import (
@@ -15,8 +19,7 @@ from core.data_models import Session, Lap
 from core.state_manager import StateManager
 from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
 from ui.sidebar import SidebarWidget
-from ui.import_wizard import ImportWizardDialog
-from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog
+from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog, FileMappingManagerDialog
 
 app = QApplication.instance()
 if app is None:
@@ -180,81 +183,127 @@ class TestUIComponents(unittest.TestCase):
         widget.btn_cursor.setChecked(False)
         self.assertFalse(speed_dot.isVisible())
 
-    def test_auto_guess_mapping_comprehensive(self):
-        """Validates auto-guess matching across automotive telemetry patterns and confirms non-matches."""
+    def test_import_wizard_defaults_to_skip_without_preset(self):
+        """Validates that without an explicit preset or mapping, all channels default to '-- Skip --' and preset combo defaults to 'None'."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         wizard = ImportWizardDialog(
             file_path="test.csv",
-            raw_columns=["Time", "Speed"],
+            raw_columns=["Time", "Speed", "RPM", "Unknown_Sensor"],
             preview_df=pd.DataFrame(),
             state_manager=state_mgr
         )
 
-        expected_matches = {
-            # Lap
-            "lap": "Lap Number", "lap_no": "Lap Number", "kor": "Lap Number", "round": "Lap Number", "korszam": "Lap Number", "kor_szam": "Lap Number",
-            # Time
-            "time": "Lap Time", "timestamp": "Lap Time", "ido": "Lap Time", "sec": "Lap Time", "t": "Lap Time",
-            # Distance
-            "distance": "Lap Distance", "dist": "Lap Distance", "tavolsag": "Lap Distance", "pos": "Lap Distance", "position": "Lap Distance", "odo": "Lap Distance", "d": "Lap Distance", "dist_m": "Lap Distance",
-            # Speed
-            "speed": "Speed", "spd": "Speed", "velocity": "Speed", "vel": "Speed", "sebesseg": "Speed", "kmh": "Speed", "kph": "Speed", "mph": "Speed",
-            # RPM
-            "rpm": "RPM", "engine_rpm": "RPM", "motor_rpm": "RPM", "fordulat": "RPM",
-            # Voltage
-            "voltage": "Voltage", "volt": "Voltage", "batt_volt": "Voltage", "v_bat": "Voltage", "v": "Voltage",
-            # Current
-            "current": "Current", "curr": "Current", "amp": "Current", "batt_curr": "Current", "i_bat": "Current", "a": "Current", "i": "Current",
-            # Throttle
-            "throttle": "Throttle", "tps": "Throttle", "pedal": "Throttle", "accel_pedal": "Throttle", "gaz": "Throttle",
-            # Temperature
-            "temperature": "Temperature", "temp": "Temperature", "homerseklet": "Temperature", "degc": "Temperature",
-            # SteeringAngle
-            "steering": "SteeringAngle", "steer": "SteeringAngle", "kormanyszog": "SteeringAngle",
-            # Power & Energy
-            "power": "Power", "watt": "Power", "kw": "Power",
-            "energy": "Energy", "wh": "Energy", "kwh": "Energy", "joule": "Energy",
-            # GPS
-            "latitude": "GPS_Lat", "gps_lat": "GPS_Lat", "lat": "GPS_Lat",
-            "longitude": "GPS_Lon", "gps_lon": "GPS_Lon", "lon": "GPS_Lon", "long": "GPS_Lon",
-        }
+        self.assertEqual(wizard.preset_combo.currentText(), "None")
 
-        for raw_col, expected_target in expected_matches.items():
-            guessed = wizard._auto_guess_mapping(raw_col, set())
-            self.assertEqual(guessed, expected_target, f"Failed matching for '{raw_col}'")
+        for raw_col in ["Time", "Speed", "RPM", "Unknown_Sensor"]:
+            self.assertEqual(wizard.combos[raw_col].currentText(), "-- Skip --")
+            self.assertEqual(wizard.status_items[raw_col].text(), "⊘")
 
-        # Non-matching channels MUST NOT be mapped to Current, Voltage, or any other channel
-        non_matching = ["Brake", "Brake_Pressure", "Status", "Gear", "Drive_Mode", "Notes", "Flag"]
-        for raw_col in non_matching:
-            guessed = wizard._auto_guess_mapping(raw_col, set())
-            self.assertIsNone(guessed, f"Non-matching channel '{raw_col}' was unexpectedly mapped to '{guessed}'")
+        self.assertEqual(wizard.stat_matched.text(), "✓ 0 Matched")
+        self.assertEqual(wizard.stat_skipped.text(), "⊘ 4 Skipped")
+        self.assertEqual(wizard.stat_missing.text(), "⚠ 0 In Preset (Not in File)")
 
-    def test_auto_guess_dynamic_custom_labels(self):
-        """Validates that auto-guess resolves candidate labels dynamically from custom state_manager channels."""
+        # Manually map channels
+        wizard.combos["Time"].setCurrentText("Lap Time")
+        wizard.combos["Speed"].setCurrentText("Speed")
+        self.assertEqual(wizard.stat_matched.text(), "✓ 2 Matched")
+
+        # Now select 'None' and hit Load Preset -> resets all channels to skip
+        wizard.preset_combo.setCurrentText("None")
+        wizard._on_load_preset()
+
+        for raw_col in ["Time", "Speed", "RPM", "Unknown_Sensor"]:
+            self.assertEqual(wizard.combos[raw_col].currentText(), "-- Skip --")
+            self.assertEqual(wizard.status_items[raw_col].text(), "⊘")
+
+        self.assertIsNone(wizard.loaded_preset_name)
+        self.assertIsNone(wizard.result_preset_name)
+        self.assertEqual(wizard.stat_matched.text(), "✓ 0 Matched")
+        self.assertEqual(wizard.stat_skipped.text(), "⊘ 4 Skipped")
+
+    def test_import_wizard_remember_for_this_file_checkbox(self):
+        """Validates that remember_checkbox persists preset name if unmodified, and ignores if modified."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
-        custom_defs = [
-            {"label": "Kör", "slug": "lap_num"},
-            {"label": "Idő", "slug": "lap_time"},
-            {"label": "Távolság", "slug": "lap_dist"},
-            {"label": "Sebesség", "slug": "speed"},
-            {"label": "Áram", "slug": "current"},
-            {"label": "Feszültség", "slug": "voltage"},
-        ]
-        state_mgr.save_channel_defs(custom_defs)
+        test_file = "/tmp/remember_test.csv"
+
+        state_mgr.save_preset("StandardLapPreset", {
+            "Lap": "lap_num",
+            "Time": "lap_time"
+        })
 
         wizard = ImportWizardDialog(
-            file_path="test.csv",
-            raw_columns=["lap_no", "time"],
+            file_path=test_file,
+            raw_columns=["Lap", "Time"],
             preview_df=pd.DataFrame(),
-            state_manager=state_mgr
+            state_manager=state_mgr,
+            initial_preset="StandardLapPreset"
         )
+        self.assertFalse(wizard.remember_checkbox.isChecked())
 
-        self.assertEqual(wizard._auto_guess_mapping("lap_no", set()), "Kör")
-        self.assertEqual(wizard._auto_guess_mapping("timestamp", set()), "Idő")
-        self.assertEqual(wizard._auto_guess_mapping("dist", set()), "Távolság")
-        self.assertEqual(wizard._auto_guess_mapping("velocity", set()), "Sebesség")
-        self.assertEqual(wizard._auto_guess_mapping("i_bat", set()), "Áram")
-        self.assertEqual(wizard._auto_guess_mapping("v_bat", set()), "Feszültség")
+        # Load StandardLapPreset without modifying it
+        wizard._on_load_preset()
+        wizard.remember_checkbox.setChecked(True)
+        wizard._on_submit()
+
+        # Check preset slug is remembered in StateManager
+        remembered_preset = state_mgr.get_file_preset(test_file)
+        self.assertEqual(remembered_preset, "standardlappreset")
+
+        # Opening wizard again for the same file should initialize remember_checkbox to True
+        wizard2 = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset=remembered_preset
+        )
+        self.assertTrue(wizard2.remember_checkbox.isChecked())
+
+        # Uncheck and submit -> removes saved file preset
+        wizard2.remember_checkbox.setChecked(False)
+        wizard2._on_submit()
+        self.assertIsNone(state_mgr.get_file_preset(test_file))
+
+    def test_file_mapping_manager_dialog(self):
+        """Validates that FileMappingManagerDialog displays right-aligned paths and supports multi-select removal."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        preset_slug = state_mgr.save_preset("MoTeC Dashboard", {"Lap": "lap_num", "Time": "lap_time"})
+
+        file1 = "/long/path/to/telemetry_file_alpha.csv"
+        file2 = "/another/nested/directory/log_file_beta.csv"
+        file3 = "/data/logs/race_gamma.csv"
+
+        state_mgr.save_file_preset(file1, preset_slug)
+        state_mgr.save_file_preset(file2, preset_slug)
+        state_mgr.save_file_preset(file3, preset_slug)
+
+        dlg = FileMappingManagerDialog(state_mgr)
+        self.assertEqual(dlg.table.rowCount(), 3)
+
+        # Verify right alignment of file paths (Column 0) and left elision
+        self.assertEqual(dlg.table.textElideMode(), Qt.ElideLeft)
+        item0 = dlg.table.item(0, 0)
+        self.assertTrue(bool(item0.textAlignment() & Qt.AlignRight))
+
+        # Verify preset name in Column 1
+        item1 = dlg.table.item(0, 1)
+        self.assertEqual(item1.text(), "MoTeC Dashboard")
+
+        # Test multi-selection removal of row 0 and row 2
+        from PySide6.QtCore import QItemSelectionModel
+        dlg.table.selectionModel().select(dlg.table.model().index(0, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        dlg.table.selectionModel().select(dlg.table.model().index(2, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            dlg._on_remove_selected()
+
+        # Dialog table and StateManager should now have only 1 file mapping left (file3)
+        self.assertEqual(dlg.table.rowCount(), 1)
+        remaining_file = dlg.table.item(0, 0).data(Qt.UserRole)
+        self.assertEqual(remaining_file, file3)
+        self.assertIsNone(state_mgr.get_file_preset(file1))
+        self.assertIsNone(state_mgr.get_file_preset(file2))
+        self.assertIsNotNone(state_mgr.get_file_preset(file3))
 
     def test_preset_manager_saves_new_custom_channels(self):
         """Validates that PresetManagerDialog persists new custom channel names and has no dead state."""
@@ -1417,6 +1466,201 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(wizard.result_mapping["file_time"], "lap_time")
         self.assertEqual(wizard.result_mapping["file_spd"], "speed")
         self.assertNotIn("file_unused", wizard.result_mapping)
+
+    def test_main_window_remembered_file_preset_flow(self):
+        """Validates that opening a file with a valid remembered preset skips the wizard, and warns if missing."""
+        from ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.state_manager = StateManager(config_dir=self.temp_dir.name)
+
+        csv_file = os.path.join(self.temp_dir.name, "remembered_log.csv")
+        df = pd.DataFrame({
+            "lap_raw": [1, 1, 2, 2],
+            "time_raw": [0.0, 1.0, 2.0, 3.0],
+            "spd_raw": [10.0, 20.0, 30.0, 40.0]
+        })
+        df.to_csv(csv_file, index=False)
+
+        # 1. Save a valid preset and associate with file
+        preset_slug = win.state_manager.save_preset("RememberedPreset", {
+            "lap_raw": "lap_num",
+            "time_raw": "lap_time",
+            "spd_raw": "speed"
+        })
+        win.state_manager.save_file_preset(csv_file, preset_slug)
+
+        # Opening the file should skip ImportWizardDialog entirely and load session
+        with patch("ui.main_window.ImportWizardDialog") as mock_wizard:
+            win._on_open_file(csv_file)
+            mock_wizard.assert_not_called()
+            self.assertEqual(len(win.sessions), 1)
+            session = list(win.sessions.values())[0]
+            self.assertEqual(session.preset_slug, preset_slug)
+            self.assertEqual(session.preset_name, "RememberedPreset")
+
+        # 2. Rename preset (slug remains identical) -> opening file still skips wizard with new name
+        win.state_manager.save_preset("RenamedPreset", {
+            "lap_raw": "lap_num",
+            "time_raw": "lap_time",
+            "spd_raw": "speed"
+        }, slug=preset_slug)
+        win.sessions.clear()
+
+        with patch("ui.main_window.ImportWizardDialog") as mock_wizard:
+            win._on_open_file(csv_file)
+            mock_wizard.assert_not_called()
+            self.assertEqual(len(win.sessions), 1)
+            session = list(win.sessions.values())[0]
+            self.assertEqual(session.preset_slug, preset_slug)
+            self.assertEqual(session.preset_name, "RenamedPreset")
+
+        # 3. Delete the preset from StateManager (introducing the error state: remembered preset missing)
+        win.state_manager.delete_preset(preset_slug)
+        win.sessions.clear()
+
+        with patch.object(QMessageBox, "warning") as mock_warn, \
+             patch("ui.main_window.ImportWizardDialog.exec", return_value=QDialog.Rejected) as mock_wiz_exec:
+            win._on_open_file(csv_file)
+            # Warning dialog saying preset not found MUST be displayed
+            mock_warn.assert_called_once()
+            self.assertIn("Preset Not Found", mock_warn.call_args[0][1])
+            mock_wiz_exec.assert_called_once()
+
+    def test_main_window_save_and_restore_ui_state(self):
+        """Validates saving and restoring window geometry, graph toggles, x-axis, channels, and sessions."""
+        from ui.main_window import MainWindow
+
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+
+        csv_file = os.path.join(self.temp_dir.name, "ui_state_session.csv")
+        df = pd.DataFrame({
+            "lap_raw": [1, 1, 2, 2],
+            "time_raw": [0.0, 1.0, 2.0, 3.0],
+            "dist_raw": [0.0, 10.0, 20.0, 30.0],
+            "spd_raw": [10.0, 20.0, 30.0, 40.0],
+            "rpm_raw": [1000, 2000, 3000, 4000]
+        })
+        df.to_csv(csv_file, index=False)
+
+        preset_slug = state_mgr.save_preset("FullLogPreset", {
+            "lap_raw": "lap_num",
+            "time_raw": "lap_time",
+            "dist_raw": "lap_dist",
+            "spd_raw": "speed",
+            "rpm_raw": "rpm"
+        })
+        state_mgr.save_file_preset(csv_file, preset_slug)
+
+        # 1. Initialize MainWindow 1 and configure custom UI state
+        win1 = MainWindow()
+        win1.state_manager = state_mgr
+
+        # Open file without wizard (remembered preset)
+        win1._on_open_file(csv_file)
+        self.assertEqual(len(win1.sessions), 1)
+        session_id1 = list(win1.sessions.keys())[0]
+
+        # Customize UI State
+        win1.main_splitter.setSizes([350, 850])
+        win1.graph_view.btn_x_grid.setChecked(True)
+        win1.graph_view.btn_y_grid.setChecked(False)
+        win1.graph_view.btn_cursor.setChecked(False)
+        win1.graph_view.btn_legend.setChecked(True)
+
+        # Set X-Axis to Time
+        from utils.constants import STD_CH_LAP_TIME_SLUG
+        idx = win1.graph_view.x_axis_combo.findData(STD_CH_LAP_TIME_SLUG)
+        win1.graph_view.x_axis_combo.setCurrentIndex(idx)
+
+        # Select Laps and Channels
+        win1.sidebar.select_laps_for_session(session_id1, [1, 2])
+        win1.sidebar.set_selected_channels(["speed", "rpm"])
+
+        # Set custom lap label
+        win1.graph_view.custom_lap_labels[(session_id1, 1)] = "Fastest Lap Alpha"
+
+        # Manually zoom X and Y ranges
+        win1.graph_view.zoom_x_range(0.5, 2.5)
+        win1.graph_view.saved_y_ranges["speed"] = [15.0, 35.0]
+
+        # Save UI state
+        win1._save_ui_state()
+
+        # 2. Initialize MainWindow 2 with same state_mgr
+        win2 = MainWindow()
+        win2.state_manager = state_mgr
+        win2._restore_ui_state()
+
+        # Verify Splitter
+        self.assertEqual(win2.main_splitter.sizes(), [350, 850])
+
+        # Verify Graph Toggles
+        self.assertTrue(win2.graph_view.show_x_grid)
+        self.assertFalse(win2.graph_view.show_y_grid)
+        self.assertFalse(win2.graph_view.show_cursor_values)
+        self.assertTrue(win2.graph_view.show_legend)
+        self.assertEqual(win2.graph_view.x_axis_slug, STD_CH_LAP_TIME_SLUG)
+
+        # Verify Restored Zoom Ranges
+        self.assertTrue(win2.graph_view.has_manual_zoom_or_pan)
+        self.assertAlmostEqual(win2.graph_view.saved_x_range[0], 0.5)
+        self.assertAlmostEqual(win2.graph_view.saved_x_range[1], 2.5)
+        self.assertAlmostEqual(win2.graph_view.saved_y_ranges["speed"][0], 15.0)
+        self.assertAlmostEqual(win2.graph_view.saved_y_ranges["speed"][1], 35.0)
+
+        # Verify Restored Session & Laps and Color Allocations
+        self.assertEqual(len(win2.sessions), 1)
+        session2 = list(win2.sessions.values())[0]
+        self.assertEqual(session2.file_path, csv_file)
+        self.assertEqual(session2.preset_slug, preset_slug)
+        self.assertEqual(win2.sidebar.allocated_colors.get((session2.id, 1)), win1.sidebar.allocated_colors.get((session_id1, 1)))
+        self.assertEqual(win2.sidebar.allocated_colors.get((session2.id, 2)), win1.sidebar.allocated_colors.get((session_id1, 2)))
+
+        # Verify Selected Channels
+        self.assertEqual(sorted(list(win2.sidebar.selected_channels)), ["rpm", "speed"])
+
+        # Verify Custom Lap Label
+        self.assertEqual(win2.graph_view.custom_lap_labels.get((session2.id, 1)), "Fastest Lap Alpha")
+        self.assertIsNotNone(win2.graph_view.legend)
+        legend_texts = [label.text for item, label in win2.graph_view.legend.items]
+        self.assertIn("Fastest Lap Alpha", legend_texts)
+
+    def test_workspace_restore_dialog_and_worker(self):
+        """Validates WorkspaceRestoreWorker and WorkspaceRestoreDialog execution and progress reporting."""
+        from ui.loading_dialog import WorkspaceRestoreWorker, WorkspaceRestoreDialog
+
+        csv_file1 = os.path.join(self.temp_dir.name, "worker_session1.csv")
+        csv_file2 = os.path.join(self.temp_dir.name, "worker_session2.csv")
+
+        df = pd.DataFrame({"lap": [1, 2], "time": [1.0, 2.0], "dist": [10.0, 20.0]})
+        df.to_csv(csv_file1, index=False)
+        df.to_csv(csv_file2, index=False)
+
+        sessions_data = [
+            {"file_path": csv_file1, "mapping": {"lap": "lap_num", "time": "lap_time", "dist": "lap_dist"}, "selected_laps": [1]},
+            {"file_path": csv_file2, "mapping": {"lap": "lap_num", "time": "lap_time", "dist": "lap_dist"}, "selected_laps": [2]}
+        ]
+
+        worker = WorkspaceRestoreWorker(
+            sessions_data=sessions_data,
+            custom_labels_dict={f"{csv_file1}::1": "P1"},
+            lap_label="Lap",
+            time_label="Time",
+            dist_label="Dist"
+        )
+
+        loaded_sessions = []
+        def _on_session_loaded(session, selected_laps, custom_labels):
+            loaded_sessions.append((session, selected_laps, custom_labels))
+
+        dlg = WorkspaceRestoreDialog(worker, total_sessions=2)
+        dlg.exec_restore(_on_session_loaded)
+
+        self.assertEqual(len(loaded_sessions), 2)
+        self.assertEqual(loaded_sessions[0][1], [1])
+        self.assertEqual(loaded_sessions[0][2], {1: "P1"})
+        self.assertEqual(loaded_sessions[1][1], [2])
 
 
 if __name__ == "__main__":

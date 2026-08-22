@@ -1,9 +1,5 @@
-"""
-Background file loader worker threads and loading progress dialog for smooth GUI responsiveness.
-Ensures proper thread lifetime, cancellation handling, and garbage collection safety.
-"""
-
 import os
+import uuid
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
 
@@ -53,7 +49,7 @@ class FileParseWorker(QThread):
 
 class FilePreviewWorker(QThread):
     """Background worker thread for inspecting log file headers and generating previews."""
-    success = Signal(list, object)  # (raw_columns, preview_df)
+    success = Signal(object, object)  # (raw_columns, preview_df)
     error = Signal(str)
 
     def __init__(self, file_path: str, parent=None):
@@ -157,3 +153,155 @@ class LoadingDialog(QDialog):
         if self.worker and self.worker.isRunning():
             self.worker.wait(2000)
         super().accept()
+
+
+class WorkspaceRestoreWorker(QThread):
+    """Background worker thread for restoring previously opened workspace sessions on startup."""
+    progress = Signal(int, int, str)  # (current_index, total_count, filename)
+    session_loaded = Signal(object, object, object)  # (session, selected_laps, session_custom_labels)
+    finished_all = Signal()
+    error = Signal(str)
+
+    def __init__(
+        self,
+        sessions_data: list,
+        custom_labels_dict: dict,
+        lap_label: str,
+        time_label: str,
+        dist_label: str,
+        lap_slug: str = STD_CH_LAP_NUM_SLUG,
+        time_slug: str = STD_CH_LAP_TIME_SLUG,
+        dist_slug: str = STD_CH_LAP_DIST_SLUG,
+        parent=None
+    ):
+        super().__init__(parent)
+        self.sessions_data = sessions_data
+        self.custom_labels_dict = custom_labels_dict
+        self.lap_label = lap_label
+        self.time_label = time_label
+        self.dist_label = dist_label
+        self.lap_slug = lap_slug
+        self.time_slug = time_slug
+        self.dist_slug = dist_slug
+
+    def run(self):
+        valid_items = [s for s in self.sessions_data if s.get("file_path") and os.path.exists(s["file_path"])]
+        total = len(valid_items)
+
+        for i, s_info in enumerate(valid_items, start=1):
+            if self.isInterruptionRequested():
+                break
+
+            file_path = s_info.get("file_path")
+            mapping = s_info.get("mapping", {})
+            preset_slug = s_info.get("preset_slug")
+            preset_name = s_info.get("preset_name")
+            selected_laps = s_info.get("selected_laps", [])
+
+            filename = os.path.basename(file_path)
+            self.progress.emit(i, total, filename)
+
+            try:
+                session_id = str(uuid.uuid4())
+                session = parse_session(
+                    file_path=file_path,
+                    mapping=mapping,
+                    session_id=session_id,
+                    lap_label=self.lap_label,
+                    time_label=self.time_label,
+                    dist_label=self.dist_label,
+                    lap_slug=self.lap_slug,
+                    time_slug=self.time_slug,
+                    dist_slug=self.dist_slug,
+                    preset_slug=preset_slug,
+                    preset_name=preset_name
+                )
+                session.preset_slug = preset_slug
+                session.preset_name = preset_name
+
+                # Custom labels for this session
+                session_custom_labels = {}
+                norm_path = os.path.abspath(file_path)
+                for lap in session.laps:
+                    key1 = f"{norm_path}::{lap.lap_number}"
+                    key2 = f"{file_path}::{lap.lap_number}"
+                    if key1 in self.custom_labels_dict:
+                        session_custom_labels[lap.lap_number] = self.custom_labels_dict[key1]
+                    elif key2 in self.custom_labels_dict:
+                        session_custom_labels[lap.lap_number] = self.custom_labels_dict[key2]
+
+                if not self.isInterruptionRequested():
+                    self.session_loaded.emit(session, selected_laps, session_custom_labels)
+            except Exception:
+                pass
+
+        if not self.isInterruptionRequested():
+            self.finished_all.emit()
+
+
+class WorkspaceRestoreDialog(QDialog):
+    """Modal progress dialog shown while restoring workspace sessions on application startup."""
+
+    def __init__(self, worker: WorkspaceRestoreWorker, total_sessions: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Restoring Workspace")
+        self.setFixedSize(450, 130)
+        self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+        self.setModal(True)
+        self.worker = worker
+        self.total_sessions = total_sessions
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+
+        self.status_label = QLabel(f"Restoring saved workspace sessions (0/{total_sessions})...\nPlease wait.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, total_sessions)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        layout.addWidget(self.progress_bar)
+
+    def exec_restore(self, on_session_loaded_callback) -> None:
+        """Starts the worker thread, updates UI with progress, and collects loaded sessions."""
+        def _on_progress(current: int, total: int, filename: str):
+            self.progress_bar.setValue(current)
+            self.status_label.setText(
+                f"<b>Restoring session {current} of {total}:</b><br>{filename}"
+            )
+
+        def _on_session_loaded(session, selected_laps, custom_labels):
+            on_session_loaded_callback(session, selected_laps, custom_labels)
+
+        def _on_finished():
+            self.accept()
+
+        self.worker.progress.connect(_on_progress, Qt.QueuedConnection)
+        self.worker.session_loaded.connect(_on_session_loaded, Qt.QueuedConnection)
+        self.worker.finished_all.connect(_on_finished, Qt.QueuedConnection)
+
+        self.worker.start()
+        try:
+            self.exec()
+        finally:
+            try:
+                self.worker.progress.disconnect(_on_progress)
+            except Exception:
+                pass
+            try:
+                self.worker.session_loaded.disconnect(_on_session_loaded)
+            except Exception:
+                pass
+            try:
+                self.worker.finished_all.disconnect(_on_finished)
+            except Exception:
+                pass
+
+            if self.worker.isRunning():
+                self.worker.requestInterruption()
+                self.worker.wait(3000)
+            else:
+                self.worker.wait()

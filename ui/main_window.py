@@ -9,7 +9,7 @@ from typing import Dict, List
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt, QUrl, QThread
+from PySide6.QtCore import Qt, QUrl, QThread, QByteArray
 from PySide6.QtGui import QGuiApplication, QAction, QDesktopServices
 
 from core.state_manager import StateManager
@@ -18,9 +18,12 @@ from core.data_models import Session
 from ui.sidebar import SidebarWidget
 from ui.graph_view import GraphViewWidget
 from ui.import_wizard import ImportWizardDialog, PresetPreviewDialog
-from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog
-from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker
-from utils.constants import APP_NAME, APP_VERSION
+from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, FileMappingManagerDialog
+from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker, WorkspaceRestoreWorker, WorkspaceRestoreDialog
+from utils.constants import (
+    APP_NAME, APP_VERSION,
+    STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
+)
 
 
 def is_dark_theme() -> bool:
@@ -50,6 +53,7 @@ class MainWindow(QMainWindow):
         self._init_menu()
         self.update_system_theme()
         self._sync_x_axis_labels()
+        self._restore_ui_state()
 
     def _init_menu(self):
         menu_bar = self.sidebar.menu_bar
@@ -96,8 +100,13 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(manage_channels_action)
         self.addAction(manage_channels_action)
 
+        manage_file_mappings_action = QAction("Manage &File Mappings...", self)
+        manage_file_mappings_action.triggered.connect(self._on_manage_file_mappings)
+        edit_menu.addAction(manage_file_mappings_action)
+        self.addAction(manage_file_mappings_action)
+
     def _init_ui(self):
-        main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter = QSplitter(Qt.Horizontal)
 
         # Left Sidebar
         self.sidebar = SidebarWidget(state_manager=self.state_manager)
@@ -105,14 +114,14 @@ class MainWindow(QMainWindow):
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
         self.sidebar.session_removed.connect(self._on_session_removed)
         self.sidebar.session_edit_mapping_requested.connect(self._on_edit_session_mapping)
-        main_splitter.addWidget(self.sidebar)
+        self.main_splitter.addWidget(self.sidebar)
 
         # Right Graph View
         self.graph_view = GraphViewWidget(state_manager=self.state_manager)
-        main_splitter.addWidget(self.graph_view)
+        self.main_splitter.addWidget(self.graph_view)
 
-        main_splitter.setSizes([300, 900])
-        self.setCentralWidget(main_splitter)
+        self.main_splitter.setSizes([300, 900])
+        self.setCentralWidget(self.main_splitter)
 
     def _sync_x_axis_labels(self):
         time_label = self.state_manager.get_time_label()
@@ -136,6 +145,10 @@ class MainWindow(QMainWindow):
         dialog = ChannelManagerDialog(self.state_manager, parent=self)
         if dialog.exec():
             self._sync_x_axis_labels()
+
+    def _on_manage_file_mappings(self):
+        dialog = FileMappingManagerDialog(self.state_manager, parent=self)
+        dialog.exec()
 
     def _on_clear_workspace(self):
         if not self.sessions:
@@ -201,21 +214,82 @@ class MainWindow(QMainWindow):
 
         raw_columns, preview_df = preview_dialog.result_data
 
-        matching_preset = self.state_manager.find_matching_preset(raw_columns)
+        remembered_slug = self.state_manager.get_file_preset(file_path)
+        chosen_mapping = None
+        applied_preset_slug = None
+        applied_preset_name = None
 
-        wizard = ImportWizardDialog(
-            file_path=file_path,
-            raw_columns=raw_columns,
-            preview_df=preview_df,
-            state_manager=self.state_manager,
-            initial_preset=matching_preset,
-            parent=self
-        )
-        if wizard.exec() != ImportWizardDialog.Accepted:
-            return
+        if remembered_slug:
+            preset = self.state_manager.get_preset_by_slug(remembered_slug)
+            if not preset:
+                preset = self.state_manager.get_preset_by_name(remembered_slug)
 
-        chosen_mapping = wizard.result_mapping
-        applied_preset_name = wizard.result_preset_name
+            if not preset:
+                QMessageBox.warning(
+                    self, "Preset Not Found",
+                    f"The remembered preset '{remembered_slug}' for this file was not found.\n"
+                    "Please configure the channel mapping in the wizard."
+                )
+                matching_slug = self.state_manager.find_matching_preset(raw_columns)
+                wizard = ImportWizardDialog(
+                    file_path=file_path,
+                    raw_columns=raw_columns,
+                    preview_df=preview_df,
+                    state_manager=self.state_manager,
+                    initial_preset=matching_slug,
+                    parent=self
+                )
+                if wizard.exec() != ImportWizardDialog.Accepted:
+                    return
+                chosen_mapping = wizard.result_mapping
+                applied_preset_slug = wizard.result_preset_slug
+                applied_preset_name = wizard.result_preset_name
+            else:
+                preset_mapping = preset.get("mapping", {})
+                file_cols_set = set(raw_columns)
+                mapped_channels = {col: slug for col, slug in preset_mapping.items() if col in file_cols_set}
+                mapped_slugs = set(mapped_channels.values())
+
+                if (STD_CH_LAP_NUM_SLUG not in mapped_slugs or
+                        (STD_CH_LAP_TIME_SLUG not in mapped_slugs and STD_CH_LAP_DIST_SLUG not in mapped_slugs)):
+                    QMessageBox.warning(
+                        self, "Mapping Error",
+                        f"The remembered preset '{preset.get('name')}' is missing required channels for this file.\n"
+                        "Please configure the channel mapping in the wizard."
+                    )
+                    wizard = ImportWizardDialog(
+                        file_path=file_path,
+                        raw_columns=raw_columns,
+                        preview_df=preview_df,
+                        state_manager=self.state_manager,
+                        initial_preset=preset.get("slug"),
+                        parent=self
+                    )
+                    if wizard.exec() != ImportWizardDialog.Accepted:
+                        return
+                    chosen_mapping = wizard.result_mapping
+                    applied_preset_slug = wizard.result_preset_slug
+                    applied_preset_name = wizard.result_preset_name
+                else:
+                    # Valid remembered preset - skip the wizard!
+                    chosen_mapping = mapped_channels
+                    applied_preset_slug = preset.get("slug")
+                    applied_preset_name = preset.get("name")
+        else:
+            matching_slug = self.state_manager.find_matching_preset(raw_columns)
+            wizard = ImportWizardDialog(
+                file_path=file_path,
+                raw_columns=raw_columns,
+                preview_df=preview_df,
+                state_manager=self.state_manager,
+                initial_preset=matching_slug,
+                parent=self
+            )
+            if wizard.exec() != ImportWizardDialog.Accepted:
+                return
+            chosen_mapping = wizard.result_mapping
+            applied_preset_slug = wizard.result_preset_slug
+            applied_preset_name = wizard.result_preset_name
 
         if not chosen_mapping:
             return
@@ -246,6 +320,7 @@ class MainWindow(QMainWindow):
         if not session:
             return
 
+        session.preset_slug = applied_preset_slug
         session.preset_name = applied_preset_name
         self.sessions[session_id] = session
         self.sidebar.add_session(session)
@@ -267,8 +342,8 @@ class MainWindow(QMainWindow):
                 return
             raw_columns, preview_df = get_file_columns_and_preview(session.file_path)
 
-        # Pre-fill preset name from session.preset_name or find best matching preset
-        initial_preset = session.preset_name or self.state_manager.find_matching_preset(raw_columns)
+        # Pre-fill preset name from session.preset_slug / session.preset_name or find best matching preset
+        initial_preset = session.preset_slug or session.preset_name or self.state_manager.find_matching_preset(raw_columns)
 
         # 2. Open Wizard instantly
         wizard = ImportWizardDialog(
@@ -289,7 +364,8 @@ class MainWindow(QMainWindow):
         if not new_mapping:
             return
 
-        new_preset_name = wizard.result_preset_name or initial_preset
+        new_preset_slug = wizard.result_preset_slug
+        new_preset_name = wizard.result_preset_name or (self.state_manager.get_preset_name_by_slug(new_preset_slug) if new_preset_slug else None)
 
         # 3. Re-parse session in memory (instantaneous, NO loading bar)
         if session.raw_df is not None and not session.raw_df.empty:
@@ -301,6 +377,7 @@ class MainWindow(QMainWindow):
                 lap_label=self.state_manager.get_lap_label(),
                 time_label=self.state_manager.get_time_label(),
                 dist_label=self.state_manager.get_distance_label(),
+                preset_slug=new_preset_slug,
                 preset_name=new_preset_name
             )
         else:
@@ -311,9 +388,11 @@ class MainWindow(QMainWindow):
                 lap_label=self.state_manager.get_lap_label(),
                 time_label=self.state_manager.get_time_label(),
                 dist_label=self.state_manager.get_distance_label(),
+                preset_slug=new_preset_slug,
                 preset_name=new_preset_name
             )
 
+        new_session.preset_slug = new_preset_slug
         new_session.preset_name = new_preset_name
         self.sessions[session_id] = new_session
         self.sidebar.update_session(new_session)
@@ -332,6 +411,178 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(event)
 
+    def _save_ui_state(self):
+        """Saves current window geometry, graph settings, sidebar selections, and workspace sessions."""
+        try:
+            # 1. Window State
+            geometry_hex = self.saveGeometry().toHex().data().decode("ascii")
+            window_state = {
+                "geometry": geometry_hex,
+                "is_maximized": self.isMaximized(),
+                "main_splitter": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [300, 900]
+            }
+
+            # 2. Graph State
+            graph_state = self.graph_view.get_view_state() if hasattr(self, "graph_view") else {}
+
+            # 3. Sidebar State
+            sidebar_state = {
+                "selected_channels": self.sidebar.get_selected_channels() if hasattr(self, "sidebar") else []
+            }
+
+            # 4. Workspace Sessions & Custom Lap Labels
+            selected_laps_dict = self.sidebar.get_selected_laps() if hasattr(self, "sidebar") else {}
+            sessions_data = []
+            for session in self.sessions.values():
+                session_laps = []
+                for lap in session.laps:
+                    key = (session.id, lap.lap_number)
+                    if key in self.sidebar.allocated_colors:
+                        session_laps.append({
+                            "lap_number": lap.lap_number,
+                            "color": self.sidebar.allocated_colors[key]
+                        })
+
+                sessions_data.append({
+                    "file_path": session.file_path,
+                    "mapping": session.mapping,
+                    "preset_slug": session.preset_slug,
+                    "preset_name": session.preset_name,
+                    "selected_laps": session_laps
+                })
+
+            selected_laps_order = []
+            if hasattr(self, "sidebar") and self.sidebar.allocated_colors:
+                for (s_id, lap_num), color in self.sidebar.allocated_colors.items():
+                    if s_id in self.sessions and self.sessions[s_id].file_path:
+                        norm_path = os.path.abspath(self.sessions[s_id].file_path)
+                        selected_laps_order.append({
+                            "file_path": norm_path,
+                            "lap_number": lap_num,
+                            "color": color
+                        })
+
+            custom_labels_data = {}
+            if hasattr(self, "graph_view") and self.graph_view.custom_lap_labels:
+                for (session_id, lap_num), label in self.graph_view.custom_lap_labels.items():
+                    session = self.sessions.get(session_id)
+                    if session and session.file_path:
+                        norm_path = os.path.abspath(session.file_path)
+                        custom_labels_data[f"{norm_path}::{lap_num}"] = str(label)
+
+            ui_state = {
+                "window": window_state,
+                "graph": graph_state,
+                "sidebar": sidebar_state,
+                "workspace": {
+                    "sessions": sessions_data,
+                    "selected_laps_order": selected_laps_order,
+                    "custom_lap_labels": custom_labels_data
+                }
+            }
+            self.state_manager.save_ui_state(ui_state)
+        except Exception:
+            pass
+
+    def _restore_ui_state(self):
+        """Restores window geometry, graph settings, sidebar selections, and workspace sessions."""
+        try:
+            ui_state = self.state_manager.load_ui_state()
+            if not ui_state:
+                return
+
+            # 1. Restore Window State
+            window_data = ui_state.get("window", {})
+            geo = window_data.get("geometry")
+            if geo:
+                self.restoreGeometry(QByteArray.fromHex(geo.encode("ascii")))
+            if window_data.get("is_maximized"):
+                self.showMaximized()
+            if window_data.get("main_splitter") and hasattr(self, "main_splitter"):
+                self.main_splitter.setSizes(window_data["main_splitter"])
+
+            # 2. Restore Graph View Toggles & X-Axis
+            if hasattr(self, "graph_view"):
+                self.graph_view.set_view_state(ui_state.get("graph", {}))
+
+            # 3. Restore Workspace Sessions with Progress Dialog if files exist
+            workspace_data = ui_state.get("workspace", {})
+            sessions_list = workspace_data.get("sessions", [])
+            custom_labels_dict = workspace_data.get("custom_lap_labels", {})
+
+            valid_sessions = [s for s in sessions_list if s.get("file_path") and os.path.exists(s["file_path"])]
+
+            if valid_sessions:
+                restore_worker = WorkspaceRestoreWorker(
+                    sessions_data=valid_sessions,
+                    custom_labels_dict=custom_labels_dict,
+                    lap_label=self.state_manager.get_lap_label(),
+                    time_label=self.state_manager.get_time_label(),
+                    dist_label=self.state_manager.get_distance_label(),
+                    parent=self
+                )
+
+                def _handle_loaded_session(session, selected_laps, session_custom_labels):
+                    self.sessions[session.id] = session
+                    self.sidebar.add_session(session)
+                    if session_custom_labels and hasattr(self, "graph_view"):
+                        for lap_num, custom_name in session_custom_labels.items():
+                            self.graph_view.custom_lap_labels[(session.id, int(lap_num))] = str(custom_name)
+
+                restore_dialog = WorkspaceRestoreDialog(
+                    worker=restore_worker,
+                    total_sessions=len(valid_sessions),
+                    parent=self
+                )
+                restore_dialog.exec_restore(_handle_loaded_session)
+
+            # 4. Restore exact lap selections and color allocations across all sessions
+            lap_entries_to_restore = []
+            selected_laps_order = workspace_data.get("selected_laps_order")
+            if selected_laps_order and isinstance(selected_laps_order, list):
+                path_to_session_id = {}
+                for s_id, sess in self.sessions.items():
+                    if sess.file_path:
+                        path_to_session_id[os.path.abspath(sess.file_path)] = s_id
+                        path_to_session_id[sess.file_path] = s_id
+
+                for entry in selected_laps_order:
+                    if isinstance(entry, dict):
+                        f_path = entry.get("file_path")
+                        l_num = entry.get("lap_number")
+                        col = entry.get("color")
+                        s_id = path_to_session_id.get(f_path) or (path_to_session_id.get(os.path.abspath(f_path)) if f_path else None)
+                        if s_id and l_num is not None:
+                            lap_entries_to_restore.append((s_id, int(l_num), col))
+            else:
+                for s_info in sessions_list:
+                    f_path = s_info.get("file_path")
+                    matched_id = None
+                    for s_id, sess in self.sessions.items():
+                        if sess.file_path == f_path or (f_path and os.path.abspath(sess.file_path) == os.path.abspath(f_path)):
+                            matched_id = s_id
+                            break
+                    if matched_id:
+                        for lap_entry in s_info.get("selected_laps", []):
+                            if isinstance(lap_entry, dict):
+                                lap_entries_to_restore.append((matched_id, int(lap_entry["lap_number"]), lap_entry.get("color")))
+                            else:
+                                lap_entries_to_restore.append((matched_id, int(lap_entry), None))
+
+            if lap_entries_to_restore and hasattr(self, "sidebar"):
+                self.sidebar.restore_selected_laps(lap_entries_to_restore)
+
+            # 5. Restore Sidebar Selected Channels
+            selected_channels = ui_state.get("sidebar", {}).get("selected_channels", [])
+            if selected_channels and hasattr(self, "sidebar"):
+                self.sidebar.set_selected_channels(selected_channels)
+
+            if self.sessions and hasattr(self, "graph_view"):
+                self.graph_view.set_sessions(self.sessions)
+        except Exception:
+            pass
+
     def closeEvent(self, event):
-        """Cleanly terminate any background worker threads on application exit."""
+        """Saves UI state and cleanly terminates on exit."""
+        self._save_ui_state()
         super().closeEvent(event)

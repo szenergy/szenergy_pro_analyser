@@ -10,8 +10,11 @@ import unittest
 from core.migrations import (
     CURRENT_CHANNELS_VERSION,
     CURRENT_PRESETS_VERSION,
+    CURRENT_FILE_MAPPINGS_VERSION,
     _migrate_channels_v0_to_v1,
     _migrate_presets_v0_to_v1,
+    _migrate_presets_v1_to_v2,
+    _migrate_file_mappings_to_slugs,
     run_migrations,
 )
 from core.state_manager import StateManager, read_versioned_json, write_versioned_json
@@ -47,6 +50,21 @@ class TestMigrations(unittest.TestCase):
         self.assertEqual(mapping["V_Bat"], "voltage")
         self.assertEqual(mapping["Custom_Temp"], "custom_temp")
 
+    def test_migrate_presets_v1_to_v2_conversion(self):
+        """Validates that v1 dict format presets are converted to list of dicts with unique slugs in v2."""
+        from core.migrations import _migrate_presets_v1_to_v2
+        v1_presets = {
+            "MoTeC C125": {"Time": "lap_time", "Lap": "lap_num"},
+            "MoTeC C125 Pro": {"Time": "lap_time", "Dist": "lap_dist"}
+        }
+        migrated = _migrate_presets_v1_to_v2(v1_presets, self.state_mgr)
+        self.assertEqual(len(migrated), 2)
+        slugs = [p["slug"] for p in migrated]
+        names = [p["name"] for p in migrated]
+        self.assertIn("motec_c125", slugs)
+        self.assertIn("motec_c125_pro", slugs)
+        self.assertIn("MoTeC C125", names)
+
     def test_migrate_channels_v0_to_v1_conversion(self):
         """Validates that v0 string-only channel definitions are converted to list of dicts."""
         legacy_channels = ["Lap", "Time", "Distance", "Custom Pressure"]
@@ -56,6 +74,19 @@ class TestMigrations(unittest.TestCase):
         self.assertEqual(migrated[1], {"label": "Time", "slug": "time"})
         self.assertEqual(migrated[2], {"label": "Distance", "slug": "distance"})
         self.assertEqual(migrated[3], {"label": "Custom Pressure", "slug": "custom_pressure"})
+
+    def test_migrate_file_mappings_to_slugs(self):
+        """Validates that file_mappings with display names or dicts are converted to preset slugs."""
+        self.state_mgr.save_preset("MoTeC C125", {"Time": "lap_time", "Lap": "lap_num"})
+        legacy_file_mappings = {
+            "/path/to/log1.csv": {"preset_name": "MoTeC C125", "mapping": {}},
+            "/path/to/log2.csv": "MoTeC C125",
+            "/path/to/log3.csv": "Custom Unknown Preset"
+        }
+        migrated = _migrate_file_mappings_to_slugs(legacy_file_mappings, self.state_mgr)
+        self.assertEqual(migrated["/path/to/log1.csv"], "motec_c125")
+        self.assertEqual(migrated["/path/to/log2.csv"], "motec_c125")
+        self.assertEqual(migrated["/path/to/log3.csv"], "custom_unknown_preset")
 
     def test_run_migrations_end_to_end_on_startup(self):
         """Validates that run_migrations upgrades legacy unversioned files on disk to versioned envelope."""
@@ -74,16 +105,25 @@ class TestMigrations(unittest.TestCase):
         with open(self.state_mgr.channels_file, "w", encoding="utf-8") as f:
             json.dump(legacy_channels, f)
 
+        legacy_file_mappings = {
+            "/tmp/race_log.csv": {"preset_name": "OldPreset", "mapping": {}}
+        }
+        with open(self.state_mgr.file_mappings_file, "w", encoding="utf-8") as f:
+            json.dump(legacy_file_mappings, f)
+
         # 2. Run migrations
         run_migrations(self.state_mgr)
 
         # 3. Check version and content in presets.json
         preset_ver, preset_data = read_versioned_json(self.state_mgr.presets_file)
         self.assertEqual(preset_ver, CURRENT_PRESETS_VERSION)
-        self.assertIn("OldPreset", preset_data)
-        self.assertEqual(preset_data["OldPreset"]["lap_raw"], "lap")
-        self.assertEqual(preset_data["OldPreset"]["time_raw"], "time")
-        self.assertEqual(preset_data["OldPreset"]["speed_raw"], "speed")
+        self.assertTrue(isinstance(preset_data, list))
+        preset_entry = preset_data[0]
+        self.assertEqual(preset_entry["name"], "OldPreset")
+        self.assertEqual(preset_entry["slug"], "oldpreset")
+        self.assertEqual(preset_entry["mapping"]["lap_raw"], "lap")
+        self.assertEqual(preset_entry["mapping"]["time_raw"], "time")
+        self.assertEqual(preset_entry["mapping"]["speed_raw"], "speed")
 
         # 4. Check version and content in custom_channels.json
         chan_ver, chan_data = read_versioned_json(self.state_mgr.channels_file)
@@ -91,12 +131,17 @@ class TestMigrations(unittest.TestCase):
         labels = [c["label"] for c in chan_data]
         self.assertIn("Coolant Temp", labels)
 
+        # 5. Check version and content in file_mappings.json
+        fm_ver, fm_data = read_versioned_json(self.state_mgr.file_mappings_file)
+        self.assertEqual(fm_ver, CURRENT_FILE_MAPPINGS_VERSION)
+        self.assertEqual(fm_data["/tmp/race_log.csv"], "oldpreset")
+
     def test_run_migrations_idempotent_on_up_to_date_files(self):
         """Validates that run_migrations does nothing if files are already at latest version."""
         write_versioned_json(
             self.state_mgr.presets_file,
             CURRENT_PRESETS_VERSION,
-            {"V1Preset": {"raw": "slug"}}
+            [{"slug": "v2_preset", "name": "V2 Preset", "mapping": {"raw": "slug"}}]
         )
         write_versioned_json(
             self.state_mgr.channels_file,
@@ -109,7 +154,7 @@ class TestMigrations(unittest.TestCase):
 
         preset_ver, preset_data = read_versioned_json(self.state_mgr.presets_file)
         self.assertEqual(preset_ver, CURRENT_PRESETS_VERSION)
-        self.assertEqual(preset_data, {"V1Preset": {"raw": "slug"}})
+        self.assertEqual(preset_data, [{"slug": "v2_preset", "name": "V2 Preset", "mapping": {"raw": "slug"}}])
 
     def test_run_migrations_handles_non_existent_files(self):
         """Validates that run_migrations does not crash if config files do not exist yet."""

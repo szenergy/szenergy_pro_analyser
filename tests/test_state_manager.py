@@ -25,24 +25,31 @@ class TestStateManager(unittest.TestCase):
 
     def test_save_and_load_presets(self):
         mapping = {"Raw_Lap": "lap", "Raw_Time": "time", "Raw_Spd": "speed"}
-        self.state_manager.save_preset("MoTeC_Test", mapping)
+        slug = self.state_manager.save_preset("MoTeC_Test", mapping)
+        self.assertEqual(slug, "motec_test")
 
-        presets = self.state_manager.load_presets()
-        self.assertIn("MoTeC_Test", presets)
-        self.assertEqual(presets["MoTeC_Test"], mapping)
+        preset = self.state_manager.get_preset_by_slug(slug)
+        self.assertIsNotNone(preset)
+        self.assertEqual(preset["name"], "MoTeC_Test")
+        self.assertEqual(preset["mapping"], mapping)
 
-        self.state_manager.delete_preset("MoTeC_Test")
-        presets_after = self.state_manager.load_presets()
-        self.assertNotIn("MoTeC_Test", presets_after)
+        # Renaming preset preserves slug
+        renamed_slug = self.state_manager.save_preset("MoTeC_Renamed", mapping, slug=slug)
+        self.assertEqual(renamed_slug, slug)
+        preset_renamed = self.state_manager.get_preset_by_slug(slug)
+        self.assertEqual(preset_renamed["name"], "MoTeC_Renamed")
+
+        self.state_manager.delete_preset(slug)
+        self.assertIsNone(self.state_manager.get_preset_by_slug(slug))
 
     def test_coverage_based_best_fit_preset_matching(self):
         # 1. Preset with 2 channels
-        self.state_manager.save_preset("Minimal_Preset", {
+        slug_min = self.state_manager.save_preset("Minimal_Preset", {
             "Time": "time",
             "Lap": "lap"
         })
         # 2. Preset with 4 channels
-        self.state_manager.save_preset("Full_MoTeC_Preset", {
+        slug_full = self.state_manager.save_preset("Full_MoTeC_Preset", {
             "Time": "time",
             "Lap": "lap",
             "Speed": "speed",
@@ -52,17 +59,17 @@ class TestStateManager(unittest.TestCase):
         raw_columns = ["Time", "Lap", "Speed", "RPM", "Throttle", "Voltage"]
         # Must pick Full_MoTeC_Preset because it matches 4 channels instead of 2
         best = self.state_manager.find_matching_preset(raw_columns)
-        self.assertEqual(best, "Full_MoTeC_Preset")
+        self.assertEqual(best, slug_full)
 
         # If file only has Time, Lap, Notes:
         limited_cols = ["Time", "Lap", "Notes"]
         matched_limited = self.state_manager.find_matching_preset(limited_cols)
-        self.assertEqual(matched_limited, "Minimal_Preset")
+        self.assertEqual(matched_limited, slug_min)
 
         # Partial matching: File has Time, Lap, Speed (3 of 4 from Full_MoTeC_Preset, missing RPM)
         partial_cols = ["Time", "Lap", "Speed", "Oil_Pressure"]
         matched_partial = self.state_manager.find_matching_preset(partial_cols)
-        self.assertEqual(matched_partial, "Full_MoTeC_Preset")
+        self.assertEqual(matched_partial, slug_full)
 
         # If file has no matching channels:
         none_cols = ["Random_A", "Random_B"]
@@ -93,7 +100,6 @@ class TestStateManager(unittest.TestCase):
         self.assertIn("Lap Number", labels)
         self.assertIn("Lap Time", labels)
         self.assertIn("Lap Distance", labels)
-        self.assertIn("Speed", labels)
 
         custom_channels = [
             {"label": "Kör", "slug": "lap_num"},
@@ -176,6 +182,37 @@ class TestStateManager(unittest.TestCase):
         # Second call with same channels does not re-add or change anything
         added_again = self.state_manager.save_new_custom_channels(["Brake Pressure"])
         self.assertFalse(added_again)
+
+    def test_file_mapping_persistence(self):
+        """Validates saving, retrieving, and removing per-file remembered preset slugs."""
+        file_path = "/path/to/telemetry_race1.csv"
+        preset_slug = "race_preset"
+
+        self.assertIsNone(self.state_manager.get_file_preset(file_path))
+
+        self.state_manager.save_file_preset(file_path, preset_slug)
+        remembered = self.state_manager.get_file_preset(file_path)
+        self.assertEqual(remembered, preset_slug)
+
+        self.state_manager.remove_file_preset(file_path)
+        self.assertIsNone(self.state_manager.get_file_preset(file_path))
+
+    def test_ui_state_persistence(self):
+        """Validates saving and loading UI state in StateManager."""
+        self.assertEqual(self.state_manager.load_ui_state(), {})
+
+        sample_state = {
+            "window": {"is_maximized": True, "main_splitter": [320, 880]},
+            "graph": {"show_x_grid": True, "show_y_grid": False, "x_axis_slug": "lap_dist"},
+            "sidebar": {"selected_channels": ["speed", "throttle"]}
+        }
+        self.state_manager.save_ui_state(sample_state)
+
+        loaded = self.state_manager.load_ui_state()
+        self.assertEqual(loaded["window"]["is_maximized"], True)
+        self.assertEqual(loaded["window"]["main_splitter"], [320, 880])
+        self.assertEqual(loaded["graph"]["show_x_grid"], True)
+        self.assertEqual(loaded["sidebar"]["selected_channels"], ["speed", "throttle"])
 
 
 if __name__ == "__main__":

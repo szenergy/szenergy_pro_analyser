@@ -878,3 +878,72 @@ class GraphViewWidget(QWidget):
                 plot.setTitle(full_title, justify='left')
             except Exception:
                 pass
+
+    def get_view_state(self) -> Dict[str, Any]:
+        """Returns current graph view state dictionary for persistence, including zoom/pan states."""
+        if self.has_manual_zoom_or_pan and self.plot_widgets:
+            self._record_current_view_ranges()
+
+        return {
+            "show_x_grid": self.show_x_grid,
+            "show_y_grid": self.show_y_grid,
+            "show_cursor_values": self.show_cursor_values,
+            "show_legend": self.show_legend,
+            "x_axis_slug": self.x_axis_slug,
+            "has_manual_zoom_or_pan": self.has_manual_zoom_or_pan,
+            "saved_x_range": self.saved_x_range,
+            "saved_y_ranges": self.saved_y_ranges,
+        }
+
+    def set_view_state(self, state: Dict[str, Any]):
+        """Restores graph view settings and zoom states from persistent state."""
+        if not state:
+            return
+
+        if "show_x_grid" in state:
+            self.show_x_grid = bool(state["show_x_grid"])
+            self.btn_x_grid.setChecked(self.show_x_grid)
+
+        if "show_y_grid" in state:
+            self.show_y_grid = bool(state["show_y_grid"])
+            self.btn_y_grid.setChecked(self.show_y_grid)
+
+        if "show_cursor_values" in state:
+            self.show_cursor_values = bool(state["show_cursor_values"])
+            self.btn_cursor.setChecked(self.show_cursor_values)
+
+        if "show_legend" in state:
+            self.show_legend = bool(state["show_legend"])
+            self.btn_legend.setChecked(self.show_legend)
+
+        if "x_axis_slug" in state:
+            slug = state["x_axis_slug"]
+            if slug in (STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG):
+                self.x_axis_slug = slug
+                for idx in range(self.x_axis_combo.count()):
+                    if self.x_axis_combo.itemData(idx) == slug:
+                        self.x_axis_combo.setCurrentIndex(idx)
+                        break
+
+        if "has_manual_zoom_or_pan" in state:
+            self.has_manual_zoom_or_pan = bool(state["has_manual_zoom_or_pan"])
+
+        if "saved_x_range" in state and isinstance(state["saved_x_range"], list):
+            self.saved_x_range = [float(x) for x in state["saved_x_range"]]
+
+        if "saved_y_ranges" in state and isinstance(state["saved_y_ranges"], dict):
+            self.saved_y_ranges = {
+                k: [float(v[0]), float(v[1])]
+                for k, v in state["saved_y_ranges"].items()
+                if isinstance(v, list) and len(v) >= 2
+            }
+
+        # Apply zoom ranges directly if plot widgets are already populated
+        if self.has_manual_zoom_or_pan and self.plot_widgets:
+            first_plot = list(self.plot_widgets.values())[0]
+            if self.saved_x_range is not None and first_plot is not None:
+                first_plot.setXRange(self.saved_x_range[0], self.saved_x_range[1], padding=0)
+            for ch, plot in self.plot_widgets.items():
+                if ch in self.saved_y_ranges:
+                    y_range = self.saved_y_ranges[ch]
+                    plot.setYRange(y_range[0], y_range[1], padding=0)

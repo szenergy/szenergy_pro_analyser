@@ -193,6 +193,7 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
                                 lap_slug: str = STD_CH_LAP_NUM_SLUG,
                                 time_slug: str = STD_CH_LAP_TIME_SLUG,
                                 dist_slug: str = STD_CH_LAP_DIST_SLUG,
+                                preset_slug: Optional[str] = None,
                                 preset_name: Optional[str] = None) -> Session:
     """
     Parses a Session in memory from an existing raw DataFrame and mapping dictionary.
@@ -220,6 +221,7 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
         file_path=file_path,
         channels=[str(col) for col in df.columns if col != resolved_lap],
         mapping=valid_mapping,
+        preset_slug=preset_slug,
         preset_name=preset_name,
         raw_df=raw_df
     )
@@ -325,6 +327,7 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
                   lap_slug: str = STD_CH_LAP_NUM_SLUG,
                   time_slug: str = STD_CH_LAP_TIME_SLUG,
                   dist_slug: str = STD_CH_LAP_DIST_SLUG,
+                  preset_slug: Optional[str] = None,
                   preset_name: Optional[str] = None) -> Session:
     """
     Parses a log file from disk into a Session object and retains raw_df in memory.
@@ -342,5 +345,6 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         lap_slug=lap_slug,
         time_slug=time_slug,
         dist_slug=dist_slug,
+        preset_slug=preset_slug,
         preset_name=preset_name
     )

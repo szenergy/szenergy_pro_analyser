@@ -4,14 +4,12 @@ Unified interface for initial file import, preset matching, and session channel 
 """
 
 import os
-import re
-import unicodedata
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 import pandas as pd
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QMessageBox, QHeaderView,
-    QAbstractItemView
+    QAbstractItemView, QCheckBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -52,7 +50,12 @@ class ImportWizardDialog(QDialog):
             self.setWindowTitle(f"Import Log Wizard - {filename}")
         self.setMinimumSize(660, 560)
 
-        self.suggested_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        self.loaded_preset_slug: Optional[str] = None
+        self.loaded_preset_name: Optional[str] = None
+        self.result_preset_slug: Optional[str] = None
+        self.result_preset_name: Optional[str] = None
+
+        self.channel_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
         self._init_ui(initial_preset, initial_mapping)
 
     def _init_ui(self, initial_preset: Optional[str], initial_mapping: Optional[Dict[str, str]]):
@@ -74,22 +77,31 @@ class ImportWizardDialog(QDialog):
 
         self.preset_combo = QComboBox()
         self.preset_combo.setEditable(True)
-        presets = self.state_manager.load_presets()
-        preset_names = sorted(list(presets.keys()))
+        presets = self.state_manager.load_presets() if self.state_manager else []
 
-        # If an initial preset was passed but isn't in preset_names, add it
-        if initial_preset and initial_preset not in preset_names:
-            preset_names.insert(0, initial_preset)
+        self.preset_combo.addItem("None", None)
+        for p in presets:
+            self.preset_combo.addItem(p.get("name", ""), p.get("slug", ""))
 
-        self.preset_combo.addItems([""] + preset_names)
-
-        if initial_preset:
-            idx = self.preset_combo.findText(initial_preset)
-            if idx >= 0:
-                self.preset_combo.setCurrentIndex(idx)
+        target_slug = None
+        if initial_preset and initial_preset != "None" and self.state_manager:
+            p = self.state_manager.get_preset_by_slug(initial_preset) or self.state_manager.get_preset_by_name(initial_preset)
+            if p:
+                target_slug = p["slug"]
             else:
-                self.preset_combo.setEditText(initial_preset)
-        else:
+                self.preset_combo.addItem(initial_preset, None)
+                idx = self.preset_combo.findText(initial_preset)
+                if idx >= 0:
+                    self.preset_combo.setCurrentIndex(idx)
+
+        if target_slug:
+            for i in range(self.preset_combo.count()):
+                if self.preset_combo.itemData(i) == target_slug:
+                    self.preset_combo.setCurrentIndex(i)
+                    break
+            self.loaded_preset_slug = target_slug
+            self.loaded_preset_name = self.state_manager.get_preset_name_by_slug(target_slug)
+        elif not initial_preset or initial_preset == "None":
             self.preset_combo.setCurrentIndex(0)
 
         preset_layout.addWidget(self.preset_combo, stretch=1)
@@ -130,10 +142,9 @@ class ImportWizardDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
 
-        preset_map = presets.get(initial_preset, {}) if initial_preset else {}
+        initial_p = self.state_manager.get_preset_by_slug(target_slug) if (self.state_manager and target_slug) else None
+        preset_map = initial_p.get("mapping", {}) if initial_p else {}
         mapping_source = initial_mapping if initial_mapping is not None else preset_map
-
-        suggested_used: Set[str] = set()
 
         for row, raw_col in enumerate(self.raw_columns):
             # Col 0: Status Icon
@@ -154,18 +165,11 @@ class ImportWizardDialog(QDialog):
             # Col 2: Mapped Channel Combobox
             combo = QComboBox()
             combo.setEditable(True)
-            combo.addItems(self.suggested_targets)
+            combo.addItems(self.channel_targets)
 
             mapped_val = mapping_source.get(raw_col)
             if mapped_val:
                 mapped_val = self.state_manager.get_label_by_slug(mapped_val, mapped_val)
-
-            # Auto-guess if no preset or mapping source provided
-            if not mapped_val and not initial_preset and not initial_mapping:
-                mapped_val = self._auto_guess_mapping(raw_col, suggested_used)
-
-            if mapped_val:
-                suggested_used.add(mapped_val)
                 idx = combo.findText(mapped_val)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
@@ -181,8 +185,16 @@ class ImportWizardDialog(QDialog):
         layout.addWidget(self.table)
         self._refresh_icons_and_stats()
 
-        # 5. Bottom Action Buttons (Cancel and Submit)
+        # 5. Bottom Action Buttons (Remember Checkbox, Cancel and Submit)
         btn_layout = QHBoxLayout()
+
+        self.remember_checkbox = QCheckBox("Remember for this file")
+        is_remembered = False
+        if self.state_manager:
+            is_remembered = self.state_manager.get_file_preset(self.file_path) is not None
+        self.remember_checkbox.setChecked(is_remembered)
+        btn_layout.addWidget(self.remember_checkbox)
+
         btn_layout.addStretch()
 
         self.cancel_btn = QPushButton("Cancel")
@@ -222,11 +234,10 @@ class ImportWizardDialog(QDialog):
                     status_item.setText("⊘")
                     status_item.setForeground(QColor("#808080"))
 
-        current_preset = self.loaded_preset_name
-        presets = self.state_manager.load_presets() if self.state_manager else {}
+        current_preset = self.state_manager.get_preset_by_slug(self.loaded_preset_slug) if (self.state_manager and self.loaded_preset_slug) else None
         missing_in_file_cols = []
-        if current_preset and current_preset in presets:
-            preset_cols = presets[current_preset].keys()
+        if current_preset:
+            preset_cols = list(current_preset.get("mapping", {}).keys())
             raw_set = set(self.raw_columns)
             missing_in_file_cols = [c for c in preset_cols if c not in raw_set]
 
@@ -234,7 +245,7 @@ class ImportWizardDialog(QDialog):
         total_rows = len(self.raw_columns) + len(missing_in_file_cols)
         self.table.setRowCount(total_rows)
 
-        preset_map = presets.get(current_preset, {})
+        preset_map = current_preset.get("mapping", {}) if current_preset else {}
         for i, missing_col in enumerate(missing_in_file_cols):
             row = len(self.raw_columns) + i
 
@@ -308,41 +319,55 @@ class ImportWizardDialog(QDialog):
             )
 
     def _on_load_preset(self):
-        """Loads and applies the currently selected preset to the table."""
-        preset_name = self.preset_combo.currentText().strip()
-        if not preset_name:
-            QMessageBox.warning(self, "Warning", "Please select or type a preset name to load.")
+        """Loads and applies the currently selected preset to the table. If 'None' or empty, resets all channels to skip."""
+        idx = self.preset_combo.currentIndex()
+        preset_slug = self.preset_combo.itemData(idx) if idx >= 0 else None
+        preset_text = self.preset_combo.currentText().strip()
+
+        if idx == 0 or preset_text == "None" or not preset_text:
+            # Set all channels to skip
+            for raw_col, combo in self.combos.items():
+                combo.blockSignals(True)
+                combo.setCurrentIndex(0)  # -- Skip --
+                combo.blockSignals(False)
+            self.loaded_preset_slug = None
+            self.loaded_preset_name = None
+            self.result_preset_slug = None
+            self.result_preset_name = None
+            self._refresh_icons_and_stats()
             return
 
-        presets = self.state_manager.load_presets() if self.state_manager else {}
-        preset_map = presets.get(preset_name)
-        if not preset_map:
-            QMessageBox.warning(self, "Warning", f"Preset '{preset_name}' was not found in saved presets.")
+        preset = self.state_manager.get_preset_by_slug(preset_slug) if preset_slug else (self.state_manager.get_preset_by_name(preset_text) if self.state_manager else None)
+        if not preset:
+            QMessageBox.warning(self, "Warning", f"Preset '{preset_text}' was not found in saved presets.")
             return
 
+        preset_map = preset.get("mapping", {})
         for raw_col, combo in self.combos.items():
             combo.blockSignals(True)
             if raw_col in preset_map:
                 slug_val = preset_map[raw_col]
                 display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
-                idx = combo.findText(display_label)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
+                c_idx = combo.findText(display_label)
+                if c_idx >= 0:
+                    combo.setCurrentIndex(c_idx)
                 else:
                     combo.setEditText(display_label)
             else:
                 combo.setCurrentIndex(0)  # -- Skip --
             combo.blockSignals(False)
 
-        self.loaded_preset_name = preset_name
-        self.result_preset_name = preset_name
+        self.loaded_preset_slug = preset.get("slug")
+        self.loaded_preset_name = preset.get("name")
+        self.result_preset_slug = preset.get("slug")
+        self.result_preset_name = preset.get("name")
         self._refresh_icons_and_stats()
 
     def _on_save_preset(self):
         """Saves the table's current configuration to the preset name specified in the combobox."""
         preset_name = self.preset_combo.currentText().strip()
-        if not preset_name:
-            QMessageBox.warning(self, "Warning", "Please enter a preset name to save.")
+        if not preset_name or preset_name == "None":
+            QMessageBox.warning(self, "Warning", "Please enter a valid preset name to save.")
             return
 
         label_mapping = self._get_current_label_mapping()
@@ -355,102 +380,28 @@ class ImportWizardDialog(QDialog):
 
         self._save_new_custom_channels(label_mapping)
         mapping = self._get_current_mapping()
-        self.state_manager.save_preset(preset_name, mapping)
+        selected_slug = self.preset_combo.itemData(self.preset_combo.currentIndex()) if self.preset_combo.currentIndex() > 0 else None
+        saved_slug = self.state_manager.save_preset(preset_name, mapping, slug=selected_slug)
+        self.loaded_preset_slug = saved_slug
         self.loaded_preset_name = preset_name
+        self.result_preset_slug = saved_slug
         self.result_preset_name = preset_name
 
-        # Ensure preset is in the combobox items
-        if self.preset_combo.findText(preset_name) < 0:
-            self.preset_combo.addItem(preset_name)
+        # Refresh preset_combo items
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem("None", None)
+        presets = self.state_manager.load_presets()
+        target_idx = 0
+        for i, p in enumerate(presets, start=1):
+            self.preset_combo.addItem(p["name"], p["slug"])
+            if p["slug"] == saved_slug:
+                target_idx = i
+        self.preset_combo.setCurrentIndex(target_idx)
+        self.preset_combo.blockSignals(False)
 
         self._refresh_icons_and_stats()
         QMessageBox.information(self, "Preset Saved", f"Preset '{preset_name}' saved successfully!")
-
-    def _auto_guess_mapping(self, raw_col: str, already_used: Set[str]) -> Optional[str]:
-        # Normalize accents and convert to lowercase
-        nfkd = unicodedata.normalize('NFKD', raw_col.strip())
-        norm = "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
-        tokens = set(re.split(r'[^a-z0-9]+', norm))
-        clean = re.sub(r'[^a-z0-9]', '', norm)
-
-        # Dynamic label lookups from state_manager by slug
-        lap_label = self.state_manager.get_lap_label()
-        time_label = self.state_manager.get_time_label()
-        dist_label = self.state_manager.get_distance_label()
-        speed_label = self.state_manager.get_label_by_slug("speed", "Speed")
-        rpm_label = self.state_manager.get_label_by_slug("rpm", "RPM")
-        volt_label = self.state_manager.get_label_by_slug("voltage", "Voltage")
-        curr_label = self.state_manager.get_label_by_slug("current", "Current")
-        throttle_label = self.state_manager.get_label_by_slug("throttle", "Throttle")
-        temp_label = self.state_manager.get_label_by_slug("temperature", "Temperature")
-        steer_label = self.state_manager.get_label_by_slug("steering_angle", "SteeringAngle")
-        power_label = self.state_manager.get_label_by_slug("power", "Power")
-        energy_label = self.state_manager.get_label_by_slug("energy", "Energy")
-        lat_label = self.state_manager.get_label_by_slug("gps_lat", "GPS_Lat")
-        lon_label = self.state_manager.get_label_by_slug("gps_lon", "GPS_Lon")
-
-        candidates = []
-
-        # 1. Lap: "lap", "lap_no", "kor", "round"
-        if bool(tokens & {"lap", "lapno", "round", "kor", "korszam"}) or "lap" in clean or "round" in clean or clean in ("kor", "korszam", "lapno"):
-            candidates.append(lap_label)
-
-        # 2. Time: "time", "timestamp", "ido", "sec", exact "t"
-        if clean == "t" or bool(tokens & {"time", "timestamp", "ido", "sec", "seconds"}) or "timestamp" in clean or "time" in clean:
-            candidates.append(time_label)
-
-        # 3. Distance: "distance", "dist", "tavolsag", "pos", "position", "odo", exact "d"
-        if clean == "d" or bool(tokens & {"distance", "dist", "tavolsag", "pos", "position", "odo"}) or "distance" in clean or "dist" in clean or "tavolsag" in clean or "position" in clean or "odo" in clean:
-            candidates.append(dist_label)
-
-        # 4. Speed: "speed", "spd", "velocity", "vel", "sebesseg", "kmh", "kph", "mph"
-        if bool(tokens & {"speed", "spd", "velocity", "vel", "sebesseg", "kmh", "kph", "mph"}) or "speed" in clean or "velocity" in clean or "sebesseg" in clean or "kmh" in clean or "kph" in clean or "mph" in clean:
-            candidates.append(speed_label)
-
-        # 5. RPM: "rpm", "engine_rpm", "motor_rpm", "fordulat"
-        if bool(tokens & {"rpm", "enginerpm", "motorrpm", "fordulat"}) or "rpm" in clean or "fordulat" in clean:
-            candidates.append(rpm_label)
-
-        # 6. Voltage: "voltage", "volt", "batt_volt", "v_bat", exact "v"
-        if clean == "v" or bool(tokens & {"voltage", "volt", "battvolt", "vbat"}) or "voltage" in clean or "volt" in clean or "vbat" in clean or "battvolt" in clean or bool(re.search(r'\bv[_\s]?bat\b', norm)):
-            candidates.append(volt_label)
-
-        # 7. Current: "current", "curr", "amp", "batt_curr", "i_bat", exact "a", exact "i"
-        if clean in ("a", "i") or bool(tokens & {"current", "curr", "amp", "amps", "battcurr", "ibat"}) or "current" in clean or "curr" in clean or "ibat" in clean or "battcurr" in clean or bool(re.search(r'\bi[_\s]?bat\b', norm)):
-            candidates.append(curr_label)
-
-        # 8. Throttle: "throttle", "tps", "pedal", "accel_pedal", "gaz"
-        if bool(tokens & {"throttle", "tps", "pedal", "accelpedal", "gaz"}) or "throttle" in clean or "tps" in clean or "pedal" in clean or "gaz" in clean:
-            candidates.append(throttle_label)
-
-        # 9. Temperature: "temperature", "temp", "homerséklet", "degc"
-        if bool(tokens & {"temperature", "temp", "homerseklet", "degc"}) or "temperature" in clean or "temp" in clean or "homerseklet" in clean or "degc" in clean:
-            candidates.append(temp_label)
-
-        # 10. SteeringAngle: "steering", "steer", "kormanyszog"
-        if bool(tokens & {"steering", "steer", "kormanyszog"}) or "steering" in clean or "steer" in clean or "kormanyszog" in clean:
-            candidates.append(steer_label)
-
-        # 11. Power: "power", "watt", "kw"
-        if bool(tokens & {"power", "watt", "kw"}) or "power" in clean or "watt" in clean or "kw" in tokens:
-            candidates.append(power_label)
-
-        # 12. Energy: "energy", "wh", "kwh", "joule"
-        if bool(tokens & {"energy", "wh", "kwh", "joule"}) or "energy" in clean or "joule" in clean or "kwh" in tokens or "wh" in tokens:
-            candidates.append(energy_label)
-
-        # 13. GPS_Lat: "latitude", "gps_lat", "lat"
-        if bool(tokens & {"latitude", "gpslat", "lat"}) or "latitude" in clean or "gpslat" in clean or "lat" in tokens:
-            candidates.append(lat_label)
-
-        # 14. GPS_Lon: "longitude", "gps_lon", "lon", "long"
-        if bool(tokens & {"longitude", "gpslon", "lon", "long"}) or "longitude" in clean or "gpslon" in clean or "lon" in tokens:
-            candidates.append(lon_label)
-
-        for cand in candidates:
-            if cand not in already_used and cand in self.suggested_targets:
-                return cand
-        return None
 
     def _get_current_mapping(self) -> Dict[str, str]:
         mapping = {}
@@ -511,8 +462,28 @@ class ImportWizardDialog(QDialog):
             return
 
         self.result_mapping = mapping
+        idx = self.preset_combo.currentIndex()
+        preset_slug = self.preset_combo.itemData(idx) if idx >= 0 else None
         entered_preset = self.preset_combo.currentText().strip()
-        self.result_preset_name = entered_preset if entered_preset else None
+
+        if entered_preset and entered_preset != "None":
+            self.result_preset_name = entered_preset
+            self.result_preset_slug = preset_slug or (self.state_manager.get_preset_slug_by_name(entered_preset) if self.state_manager else None)
+        else:
+            self.result_preset_name = None
+            self.result_preset_slug = None
+
+        if self.state_manager:
+            if self.remember_checkbox.isChecked() and self.loaded_preset_slug:
+                preset = self.state_manager.get_preset_by_slug(self.loaded_preset_slug)
+                # Only save the preset if it was not modified
+                if preset and preset.get("mapping") == mapping:
+                    self.state_manager.save_file_preset(self.file_path, self.loaded_preset_slug)
+                else:
+                    self.state_manager.remove_file_preset(self.file_path)
+            else:
+                self.state_manager.remove_file_preset(self.file_path)
+
         self.accept()
 
 

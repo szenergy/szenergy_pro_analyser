@@ -46,6 +46,7 @@ class Session:
     laps: List[Lap] = field(default_factory=list)
     channels: List[str] = field(default_factory=list)  # List of channel slugs (excluding lap)
     mapping: Dict[str, str] = field(default_factory=dict)  # {raw_column: slug}
+    preset_slug: Optional[str] = None
     preset_name: Optional[str] = None
     
     # Reference to original parsed dataframe if needed

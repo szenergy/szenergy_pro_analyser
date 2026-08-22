@@ -431,3 +431,121 @@ class SidebarWidget(QWidget):
             if slug:
                 self.selected_channels.add(slug)
         self.channels_selection_changed.emit(self.selected_channels)
+
+    def get_selected_laps(self) -> Dict[str, List[int]]:
+        """Returns a mapping of session_id to list of selected lap numbers."""
+        result: Dict[str, List[int]] = {}
+        for (session_id, lap_num) in self.allocated_colors.keys():
+            if session_id not in result:
+                result[session_id] = []
+            result[session_id].append(lap_num)
+        return result
+
+    def select_laps_for_session(self, session_id: str, lap_numbers: List[int]):
+        """Programmatically selects specific lap numbers for a given session."""
+        target_session_item = None
+        for i in range(self.session_tree.topLevelItemCount()):
+            item = self.session_tree.topLevelItem(i)
+            if item and item.data(0, Qt.UserRole) == ("session", session_id):
+                target_session_item = item
+                break
+
+        if not target_session_item:
+            return
+
+        self.session_tree.blockSignals(True)
+        for i in range(target_session_item.childCount()):
+            child = target_session_item.child(i)
+            data = child.data(0, Qt.UserRole)
+            if data and len(data) >= 3:
+                lap_num = data[2]
+                if lap_num in lap_numbers:
+                    child.setSelected(True)
+                else:
+                    child.setSelected(False)
+        self.session_tree.blockSignals(False)
+        self._on_lap_selection_changed()
+
+    def restore_selected_laps(self, lap_entries: List[Tuple[str, int, Optional[str]]]):
+        """
+        Restores exact lap selections and their allocated colors across all sessions in exact order.
+        lap_entries: List of (session_id, lap_number, color_hex)
+        """
+        self.session_tree.blockSignals(True)
+
+        # Clear existing allocations and reset available colors
+        self.allocated_colors.clear()
+        self.available_colors = list(LAP_COLORS)
+
+        # Deselect all items in session tree
+        root_count = self.session_tree.topLevelItemCount()
+        for r in range(root_count):
+            session_item = self.session_tree.topLevelItem(r)
+            for c in range(session_item.childCount()):
+                child = session_item.child(c)
+                child.setSelected(False)
+                child.setIcon(0, create_empty_icon())
+
+        # Map (session_id, lap_num) -> tree item
+        item_map = {}
+        for r in range(root_count):
+            session_item = self.session_tree.topLevelItem(r)
+            s_data = session_item.data(0, Qt.UserRole)
+            if s_data and s_data[0] == "session":
+                s_id = s_data[1]
+                for c in range(session_item.childCount()):
+                    child = session_item.child(c)
+                    c_data = child.data(0, Qt.UserRole)
+                    if c_data and c_data[0] == "lap":
+                        item_map[(s_id, c_data[2])] = child
+
+        # Apply selections in the exact order with their exact colors
+        for session_id, lap_num, color in lap_entries:
+            key = (session_id, lap_num)
+            if key in item_map:
+                assigned_color = color
+                if not assigned_color:
+                    if self.available_colors:
+                        assigned_color = self.available_colors.pop(0)
+                    else:
+                        assigned_color = "#%06x" % (hash(key) & 0xFFFFFF)
+                else:
+                    if assigned_color in self.available_colors:
+                        self.available_colors.remove(assigned_color)
+
+                self.allocated_colors[key] = assigned_color
+                child_item = item_map[key]
+                child_item.setSelected(True)
+                child_item.setIcon(0, create_color_icon(assigned_color))
+
+        self.session_tree.blockSignals(False)
+
+        result = [
+            (s_id, l_num, col)
+            for (s_id, l_num), col in self.allocated_colors.items()
+        ]
+        self.laps_selection_changed.emit(result)
+
+    def get_selected_channels(self) -> List[str]:
+        """Returns the list of currently selected channel slugs."""
+        return sorted(list(self.selected_channels))
+
+    def set_selected_channels(self, channel_slugs: List[str]):
+        """Sets the selected channels in the channel tree and triggers selection change."""
+        self.channel_tree.blockSignals(True)
+        target_slugs = set(channel_slugs)
+        self.selected_channels = set()
+
+        root_count = self.channel_tree.topLevelItemCount()
+        for i in range(root_count):
+            item = self.channel_tree.topLevelItem(i)
+            if item:
+                slug = item.data(0, Qt.UserRole)
+                if slug in target_slugs:
+                    item.setSelected(True)
+                    self.selected_channels.add(slug)
+                else:
+                    item.setSelected(False)
+
+        self.channel_tree.blockSignals(False)
+        self.channels_selection_changed.emit(self.selected_channels)

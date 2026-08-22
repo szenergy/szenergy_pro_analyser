@@ -75,35 +75,172 @@ class StateManager:
 
         self.presets_file = os.path.join(self.config_dir, "presets.json")
         self.channels_file = os.path.join(self.config_dir, "custom_channels.json")
+        self.file_mappings_file = os.path.join(self.config_dir, "file_mappings.json")
+        self.ui_state_file = os.path.join(self.config_dir, "ui_state.json")
 
-    def load_presets(self) -> Dict[str, Dict[str, str]]:
-        """Load saved presets from JSON file. Handles both versioned and legacy formats."""
-        version, data = _read_versioned_json(self.presets_file)
-        if data is None:
-            return {}
+    def load_ui_state(self) -> Dict[str, Any]:
+        """Loads persistent UI state (window geometry, graph toggles, sidebar selections, workspace)."""
+        version, data = read_versioned_json(self.ui_state_file)
         if isinstance(data, dict):
             return data
         return {}
 
-    def save_preset(self, preset_name: str, mapping: Dict[str, str]) -> None:
-        """Save or update a preset mapping (values should be slugs)."""
-        presets = self.load_presets()
-        presets[preset_name] = mapping
-        _write_versioned_json(self.presets_file, 1, presets)
+    def save_ui_state(self, state: Dict[str, Any]) -> None:
+        """Saves persistent UI state in versioned envelope format."""
+        write_versioned_json(self.ui_state_file, 1, state)
 
-    def delete_preset(self, preset_name: str) -> None:
-        """Delete a preset by name."""
-        presets = self.load_presets()
-        if preset_name in presets:
-            del presets[preset_name]
-            _write_versioned_json(self.presets_file, 1, presets)
+    def load_presets(self) -> List[Dict[str, Any]]:
+        """Load saved presets from JSON file. Handles versioned envelope and returns list of preset dicts."""
+        version, data = read_versioned_json(self.presets_file)
+        if data is None:
+            return []
 
-    def get_preset_match_stats(self, preset_name: str, raw_columns: List[str]) -> Dict[str, Any]:
+        if isinstance(data, list):
+            presets: List[Dict[str, Any]] = []
+            for item in data:
+                if isinstance(item, dict) and "name" in item and "mapping" in item:
+                    slug = item.get("slug") or generate_slug(item["name"])
+                    presets.append({
+                        "slug": slug,
+                        "name": item["name"],
+                        "mapping": item["mapping"]
+                    })
+            return presets
+
+        if isinstance(data, dict):
+            # Legacy v0/v1 dict format {"Preset Name": {"raw_col": "slug"}}
+            migrated = []
+            for name, mapping in data.items():
+                if isinstance(mapping, dict):
+                    migrated.append({
+                        "slug": generate_slug(name),
+                        "name": name,
+                        "mapping": mapping
+                    })
+            return migrated
+
+        return []
+
+    def get_preset_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Returns preset dict with matching slug, or None."""
+        for preset in self.load_presets():
+            if preset.get("slug") == slug:
+                return preset
+        return None
+
+    def get_preset_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Returns preset dict with matching display name, or None."""
+        for preset in self.load_presets():
+            if preset.get("name") == name:
+                return preset
+        return None
+
+    def get_preset_name_by_slug(self, slug: str, fallback: Optional[str] = None) -> str:
+        """Returns display name for a preset slug, or fallback/slug."""
+        preset = self.get_preset_by_slug(slug)
+        if preset and "name" in preset:
+            return preset["name"]
+        return fallback if fallback is not None else slug
+
+    def get_preset_slug_by_name(self, name: str) -> Optional[str]:
+        """Returns slug for a preset display name, or None."""
+        preset = self.get_preset_by_name(name)
+        if preset and "slug" in preset:
+            return preset["slug"]
+        return None
+
+    def save_preset(self, preset_name: str, mapping: Dict[str, str], slug: Optional[str] = None) -> str:
         """
-        Computes detailed matching statistics for a preset against a list of file columns.
+        Save or update a preset mapping. If slug is provided and exists, updates name and mapping.
+        If slug is None, checks for matching name; if new, generates unique slug.
+        Returns the preset slug.
         """
         presets = self.load_presets()
-        mapping = presets.get(preset_name, {})
+        existing_slugs = [p["slug"] for p in presets if "slug" in p]
+
+        target_preset = None
+        if slug:
+            for p in presets:
+                if p.get("slug") == slug:
+                    target_preset = p
+                    break
+
+        if not target_preset:
+            for p in presets:
+                if p.get("name") == preset_name:
+                    target_preset = p
+                    break
+
+        if target_preset:
+            target_preset["name"] = preset_name
+            target_preset["mapping"] = mapping
+            saved_slug = target_preset["slug"]
+        else:
+            saved_slug = self.generate_unique_slug(slug or preset_name, existing_slugs)
+            presets.append({
+                "slug": saved_slug,
+                "name": preset_name,
+                "mapping": mapping
+            })
+
+        write_versioned_json(self.presets_file, 2, presets)
+        return saved_slug
+
+    def delete_preset(self, slug_or_name: str) -> None:
+        """Delete a preset by slug (or name fallback)."""
+        presets = self.load_presets()
+        filtered = [p for p in presets if p.get("slug") != slug_or_name and p.get("name") != slug_or_name]
+        if len(filtered) != len(presets):
+            write_versioned_json(self.presets_file, 2, filtered)
+
+    def load_file_presets(self) -> Dict[str, str]:
+        """Load mapping of file paths to their remembered preset slugs."""
+        version, data = read_versioned_json(self.file_mappings_file)
+        if isinstance(data, dict):
+            result = {}
+            for path, val in data.items():
+                preset_ident = None
+                if isinstance(val, str):
+                    preset_ident = val
+                elif isinstance(val, dict) and "preset_slug" in val and val["preset_slug"]:
+                    preset_ident = val["preset_slug"]
+                elif isinstance(val, dict) and "preset_name" in val and val["preset_name"]:
+                    preset_ident = val["preset_name"]
+
+                if preset_ident:
+                    # Resolve display name to slug if known, else check existing preset or generate slug
+                    slug = self.get_preset_slug_by_name(preset_ident)
+                    if not slug:
+                        p = self.get_preset_by_slug(preset_ident)
+                        slug = p["slug"] if p else generate_slug(preset_ident)
+                    result[path] = slug
+            return result
+        return {}
+
+    def get_file_preset(self, file_path: str) -> Optional[str]:
+        """Returns remembered preset slug for a file path, or None."""
+        presets = self.load_file_presets()
+        return presets.get(file_path)
+
+    def save_file_preset(self, file_path: str, preset_slug: str) -> None:
+        """Remembers a preset slug for a specific file path."""
+        presets = self.load_file_presets()
+        presets[file_path] = preset_slug
+        write_versioned_json(self.file_mappings_file, 2, presets)
+
+    def remove_file_preset(self, file_path: str) -> None:
+        """Removes remembered preset slug for a specific file path."""
+        presets = self.load_file_presets()
+        if file_path in presets:
+            del presets[file_path]
+            write_versioned_json(self.file_mappings_file, 2, presets)
+
+    def get_preset_match_stats(self, slug_or_name: str, raw_columns: List[str]) -> Dict[str, Any]:
+        """
+        Computes detailed matching statistics for a preset (by slug or name) against raw file columns.
+        """
+        preset = self.get_preset_by_slug(slug_or_name) or self.get_preset_by_name(slug_or_name)
+        mapping = preset.get("mapping", {}) if preset else {}
         raw_set = set(raw_columns)
         preset_cols = list(mapping.keys())
 
@@ -128,18 +265,16 @@ class StateManager:
 
     def find_matching_preset(self, raw_columns: List[str]) -> Optional[str]:
         """
-        Finds the best matching saved preset for raw columns based on highest overlap score.
-        Works even if some channels in the preset are missing in the file.
-        Threshold: At least 2 matched channels (or matched == total for small 1-2 channel presets),
-        and at least 40% of the preset's channels must match.
+        Finds the best matching saved preset slug for raw columns based on highest overlap score.
         Ranked by (matched_count, match_ratio, preset_total).
         """
         presets = self.load_presets()
         raw_set = set(raw_columns)
-        best_preset = None
+        best_preset_slug = None
         best_rank = (-1, -1.0, -1)
 
-        for preset_name, mapping in presets.items():
+        for preset in presets:
+            mapping = preset.get("mapping", {})
             if not mapping:
                 continue
             preset_cols = set(mapping.keys())
@@ -158,9 +293,9 @@ class StateManager:
                 rank = (matched_count, match_ratio, preset_total)
                 if rank > best_rank:
                     best_rank = rank
-                    best_preset = preset_name
+                    best_preset_slug = preset.get("slug")
 
-        return best_preset
+        return best_preset_slug
 
     def get_channel_defs(self) -> List[Dict[str, str]]:
         """Returns the list of channel dicts [{'label': ..., 'slug': ...}]."""
