@@ -100,14 +100,8 @@ Access from the **Edit** menu:
 - **Manage File Mappings...**: View and delete remembered file-to-preset associations.
 
 ### View Menu
-Access all graph and display controls directly from the **View** menu:
-- **Auto Range All Graphs**: Reset all graphs to fit all selected data.
-- **X-Axis / Y-Axis Grid Lines**: Toggle visibility of background grid lines.
-- **Cursor Values & Crosshair**: Toggle live hover cursor readouts.
-- **Curve Legend**: Show/hide the curve legend overlay.
-- **Rename Legend Labels...**: Rename individual lap curve names.
-- **Export Plots / Data...**: Open the export dialog.
-- **X-Axis**: Switch between Lap Distance and Lap Time.
+Access all graph and display controls directly from the **View** menu.
+The options are the same as on the toolbar above the graphs except for:
 - **Theme**: Select between **Auto (System)**, **Dark**, and **Light** themes.
 
 ### Exporting and Importing Configurations
