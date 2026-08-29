@@ -6,6 +6,7 @@ These rules and guidelines must be followed by AI coding agents working on the S
 
 ### 1. Test Verification & Visual Validation
 * There are and should be tests to verify your code before concluding work. Run the test suite to ensure there are no regressions.
+* Always use `.venv/bin/python` to run tests and python scripts.
 * The final verification of visual appearance, layout, and UX flows will always be done by the user (this is a visual GUI application and agents cannot see).
 
 ### 2. Keep It Simple (Scope Discipline)

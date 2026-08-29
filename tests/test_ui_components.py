@@ -20,7 +20,7 @@ from core.state_manager import StateManager
 from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
 from ui.sidebar import SidebarWidget
 from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog, FileMappingManagerDialog
-from ui.import_wizard import ImportWizardDialog
+from ui.import_wizard import ImportWizardDialog, SavePresetChoiceDialog
 from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
 
 app = QApplication.instance()
@@ -1852,6 +1852,144 @@ class TestUIComponents(unittest.TestCase):
         win.theme_auto_action.trigger()
         self.assertEqual(win.theme_mode, "auto")
         self.assertTrue(win.theme_auto_action.isChecked())
+
+    def test_save_preset_choice_dialog_display_and_actions(self):
+        """Validates that SavePresetChoiceDialog displays old name, new name, and channels changed correctly."""
+        dialog = SavePresetChoiceDialog(
+            old_name="OldPreset",
+            new_name="NewPreset",
+            channels_changed=3
+        )
+        self.assertEqual(dialog.old_name, "OldPreset")
+        self.assertEqual(dialog.new_name, "NewPreset")
+        self.assertEqual(dialog.channels_changed, 3)
+
+        # Test Update Action
+        dialog._on_update()
+        self.assertEqual(dialog.selected_action, SavePresetChoiceDialog.ACTION_UPDATE)
+
+        # Test Create New Action
+        dialog._on_create_new()
+        self.assertEqual(dialog.selected_action, SavePresetChoiceDialog.ACTION_CREATE_NEW)
+
+        # Test Cancel Action
+        dialog._on_cancel()
+        self.assertEqual(dialog.selected_action, SavePresetChoiceDialog.ACTION_CANCEL)
+
+    def test_import_wizard_save_preset_with_name_change_create_new(self):
+        """Validates that when saving a loaded preset with a new name and selecting 'Create New', a new preset is created and original preset is preserved."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_preset("MoTeC V1", {
+            "Lap": "lap_num",
+            "Time": "lap_time",
+            "Speed": "speed"
+        })
+
+        wizard = ImportWizardDialog(
+            file_path="/tmp/test.csv",
+            raw_columns=["Lap", "Time", "Speed", "RPM"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset="MoTeC V1"
+        )
+        self.assertEqual(wizard.loaded_preset_name, "MoTeC V1")
+        self.assertEqual(wizard.loaded_preset_slug, "motec_v1")
+
+        # User maps RPM and types a new preset name "MoTeC V2"
+        wizard.combos["RPM"].setCurrentText("RPM")
+        wizard.preset_combo.setCurrentText("MoTeC V2")
+
+        def _mock_exec(dlg):
+            dlg.selected_action = SavePresetChoiceDialog.ACTION_CREATE_NEW
+            return QDialog.Accepted
+
+        with patch.object(SavePresetChoiceDialog, "exec", _mock_exec), \
+             patch.object(QMessageBox, "information"):
+            wizard._on_save_preset()
+
+        # Both presets must exist in StateManager
+        presets = state_mgr.load_presets()
+        preset_names = [p["name"] for p in presets]
+        self.assertIn("MoTeC V1", preset_names, "Original preset must be preserved")
+        self.assertIn("MoTeC V2", preset_names, "New preset must be created")
+
+        # Verify original preset mapping is untouched
+        p1 = state_mgr.get_preset_by_name("MoTeC V1")
+        self.assertEqual(p1["mapping"], {"Lap": "lap_num", "Time": "lap_time", "Speed": "speed"})
+
+        # Verify new preset mapping has the updated channels
+        p2 = state_mgr.get_preset_by_name("MoTeC V2")
+        self.assertEqual(p2["mapping"], {"Lap": "lap_num", "Time": "lap_time", "Speed": "speed", "RPM": "rpm"})
+
+        self.assertEqual(wizard.loaded_preset_name, "MoTeC V2")
+
+    def test_import_wizard_save_preset_with_name_change_update_existing(self):
+        """Validates that when saving a loaded preset with a new name and selecting 'Update Existing', original preset is renamed and updated."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        orig_slug = state_mgr.save_preset("MoTeC Original", {
+            "Lap": "lap_num",
+            "Time": "lap_time"
+        })
+
+        wizard = ImportWizardDialog(
+            file_path="/tmp/test.csv",
+            raw_columns=["Lap", "Time", "Speed"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset="MoTeC Original"
+        )
+        self.assertEqual(wizard.loaded_preset_name, "MoTeC Original")
+
+        # User maps Speed and types "MoTeC Renamed"
+        wizard.combos["Speed"].setCurrentText("Speed")
+        wizard.preset_combo.setCurrentText("MoTeC Renamed")
+
+        def _mock_exec(dlg):
+            dlg.selected_action = SavePresetChoiceDialog.ACTION_UPDATE
+            return QDialog.Accepted
+
+        with patch.object(SavePresetChoiceDialog, "exec", _mock_exec), \
+             patch.object(QMessageBox, "information"):
+            wizard._on_save_preset()
+
+        presets = state_mgr.load_presets()
+        preset_names = [p["name"] for p in presets]
+        self.assertNotIn("MoTeC Original", preset_names, "Old preset name should no longer exist")
+        self.assertIn("MoTeC Renamed", preset_names, "Preset should have the new name")
+
+        # Verify slug was preserved and mapping updated
+        renamed_preset = state_mgr.get_preset_by_slug(orig_slug)
+        self.assertIsNotNone(renamed_preset)
+        self.assertEqual(renamed_preset["name"], "MoTeC Renamed")
+        self.assertEqual(renamed_preset["mapping"], {"Lap": "lap_num", "Time": "lap_time", "Speed": "speed"})
+
+    def test_import_wizard_save_preset_with_name_change_cancel(self):
+        """Validates that when canceling SavePresetChoiceDialog, no changes are saved."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_preset("MoTeC Original", {
+            "Lap": "lap_num",
+            "Time": "lap_time"
+        })
+
+        wizard = ImportWizardDialog(
+            file_path="/tmp/test.csv",
+            raw_columns=["Lap", "Time", "Speed"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset="MoTeC Original"
+        )
+
+        wizard.combos["Speed"].setCurrentText("Speed")
+        wizard.preset_combo.setCurrentText("MoTeC Renamed")
+
+        # Mock SavePresetChoiceDialog to simulate clicking "Cancel" (reject)
+        with patch("ui.import_wizard.SavePresetChoiceDialog.exec", return_value=QDialog.Rejected):
+            wizard._on_save_preset()
+
+        presets = state_mgr.load_presets()
+        preset_names = [p["name"] for p in presets]
+        self.assertIn("MoTeC Original", preset_names)
+        self.assertNotIn("MoTeC Renamed", preset_names)
 
 
 if __name__ == "__main__":
