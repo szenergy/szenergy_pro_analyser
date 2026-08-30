@@ -7,7 +7,8 @@ dynamic color allocation, channel search filtering, and context menu session man
 from typing import Dict, List, Set, Tuple, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame
+    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame,
+    QGridLayout, QPushButton
 )
 from PySide6.QtCore import Signal, Qt, QPoint, QTimer, QEvent
 from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
@@ -39,6 +40,81 @@ def format_lap_time(seconds: float) -> str:
     return f"{mins}:{secs:05.2f}"
 
 
+class LapColorPickerPopup(QFrame):
+    """
+    Compact popup displaying a grid of color swatches from LAP_COLORS.
+    Clicking a swatch emits color_selected(str) and closes the popup.
+    """
+    color_selected = Signal(str)
+
+    def __init__(self, current_color: str = "", parent=None, is_dark: bool = True):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.current_color = current_color
+        self.is_dark = is_dark
+
+        bg_color = "#1E2125" if is_dark else "#FFFFFF"
+        border_color = "#3A3F47" if is_dark else "#CED4DA"
+        text_color = "#E0E0E0" if is_dark else "#212529"
+
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QLabel {{
+                color: {text_color};
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 11px;
+                font-weight: bold;
+                border: none;
+                background: transparent;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(8)
+
+        title_lbl = QLabel("Select Lap Color")
+        title_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_lbl)
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+
+        columns = 4
+        for idx, hex_color in enumerate(LAP_COLORS):
+            row = idx // columns
+            col = idx % columns
+
+            btn = QPushButton()
+            btn.setFixedSize(26, 26)
+            btn.setCursor(Qt.PointingHandCursor)
+            is_current = (hex_color.upper() == current_color.upper())
+            border_style = "2px solid #FFFFFF" if (is_current and is_dark) else ("2px solid #000000" if is_current else f"1px solid {border_color}")
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {hex_color};
+                    border: {border_style};
+                    border-radius: 4px;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid {"#00E676" if is_dark else "#00C853"};
+                }}
+            """)
+            btn.setToolTip(hex_color)
+            btn.clicked.connect(lambda _, c=hex_color: self._on_color_clicked(c))
+            grid.addWidget(btn, row, col)
+
+        layout.addLayout(grid)
+
+    def _on_color_clicked(self, color: str):
+        self.color_selected.emit(color)
+        self.close()
+
+
 class SidebarWidget(QWidget):
     """Left sidebar managing sessions, laps selection, and channel visibility with integrated menu bar."""
 
@@ -56,6 +132,7 @@ class SidebarWidget(QWidget):
         self.state_manager = state_manager
         self.sessions: Dict[str, Session] = {}
         self.selected_channels: Set[str] = set()
+        self.is_dark: bool = True
 
         # Dynamic color pool tracking
         self.available_colors: List[str] = list(LAP_COLORS)
@@ -144,6 +221,22 @@ class SidebarWidget(QWidget):
         session_vp = session_vp.viewport() if session_vp is not None else None
         channel_vp = channel_vp.viewport() if channel_vp is not None else None
 
+        if watched is not None and watched == session_vp:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+                item = self.session_tree.itemAt(pos)
+                if item:
+                    data = item.data(0, Qt.UserRole)
+                    if data and data[0] == "lap":
+                        session_id, lap_num = data[1], data[2]
+                        key = (session_id, lap_num)
+                        if key in self.allocated_colors:
+                            item_rect = self.session_tree.visualItemRect(item)
+                            # Check if click is on the color icon (within 28px of item_rect.left())
+                            if item_rect.left() <= pos.x() <= item_rect.left() + 28:
+                                self._show_color_picker_for_lap(session_id, lap_num, item_rect)
+                                return True
+
         if watched is not None and watched in (session_vp, channel_vp):
             if event.type() == QEvent.MouseButtonPress:
                 self._is_mouse_selecting = True
@@ -151,6 +244,44 @@ class SidebarWidget(QWidget):
                 self._is_mouse_selecting = False
                 self._flush_pending_selections()
         return super().eventFilter(watched, event)
+
+    def _show_color_picker_for_lap(self, session_id: str, lap_num: int, item_rect):
+        """Displays the LapColorPickerPopup next to the lap's color icon."""
+        current_color = self.allocated_colors.get((session_id, lap_num), "")
+        popup = LapColorPickerPopup(
+            current_color=current_color,
+            parent=self.session_tree.viewport(),
+            is_dark=getattr(self, "is_dark", True)
+        )
+        popup.color_selected.connect(lambda c: self.set_lap_color(session_id, lap_num, c))
+
+        # Position popup directly below the icon
+        global_pos = self.session_tree.viewport().mapToGlobal(QPoint(item_rect.left(), item_rect.bottom() + 2))
+        popup.move(global_pos)
+        popup.show()
+
+    def set_lap_color(self, session_id: str, lap_num: int, new_color: str):
+        """Changes the assigned color for a specific lap without modifying selection."""
+        key = (session_id, lap_num)
+        self.allocated_colors[key] = new_color
+
+        # Update the tree item icon
+        root_count = self.session_tree.topLevelItemCount()
+        for r in range(root_count):
+            session_item = self.session_tree.topLevelItem(r)
+            s_data = session_item.data(0, Qt.UserRole)
+            if s_data and s_data[0] == "session" and s_data[1] == session_id:
+                for c in range(session_item.childCount()):
+                    child = session_item.child(c)
+                    c_data = child.data(0, Qt.UserRole)
+                    if c_data and c_data[0] == "lap" and c_data[2] == lap_num:
+                        child.setIcon(0, create_color_icon(new_color))
+                        break
+                break
+
+        # Flush selection changed signal immediately
+        self._pending_lap_selection = True
+        self._flush_pending_selections()
 
     def _flush_pending_selections(self):
         """Flushes any pending lap or channel selection signals to update graphs once user finished selecting."""
@@ -168,6 +299,7 @@ class SidebarWidget(QWidget):
             self.channels_selection_changed.emit(self.selected_channels)
 
     def apply_theme(self, is_dark: bool):
+        self.is_dark = is_dark
         bar_style = (
             "background-color: #24272C; border-bottom: 1px solid #2C3036;"
             if is_dark else
@@ -206,10 +338,20 @@ class SidebarWidget(QWidget):
             menu.addAction(remove_action)
 
         elif data[0] == "lap":
+            session_id, lap_num = data[1], data[2]
+            key = (session_id, lap_num)
             is_selected = item.isSelected()
             toggle_action = QAction("Deselect Lap" if is_selected else "Select Lap", self)
             toggle_action.triggered.connect(lambda: item.setSelected(not is_selected))
             menu.addAction(toggle_action)
+
+            if key in self.allocated_colors:
+                menu.addSeparator()
+                color_menu = menu.addMenu("Change Color")
+                for color_hex in LAP_COLORS:
+                    c_act = QAction(create_color_icon(color_hex), color_hex, self)
+                    c_act.triggered.connect(lambda _, c=color_hex, s=session_id, l=lap_num: self.set_lap_color(s, l, c))
+                    color_menu.addAction(c_act)
 
         return menu
 
@@ -413,19 +555,20 @@ class SidebarWidget(QWidget):
         # Reclaim deselected colors
         deselected = set(self.allocated_colors.keys()) - currently_selected_laps
         for key in deselected:
-            color = self.allocated_colors.pop(key)
-            if color in LAP_COLORS and color not in self.available_colors:
-                self.available_colors.append(color)
-                self.available_colors.sort(key=lambda c: LAP_COLORS.index(c) if c in LAP_COLORS else 999)
+            self.allocated_colors.pop(key, None)
 
         # Allocate new colors
         newly_selected = currently_selected_laps - set(self.allocated_colors.keys())
         for key in sorted(list(newly_selected)):
-            if self.available_colors:
-                color = self.available_colors.pop(0)
+            used_colors = set(self.allocated_colors.values())
+            unused = [c for c in LAP_COLORS if c not in used_colors]
+            if unused:
+                color = unused[0]
             else:
-                color = "#%06x" % (hash(key) & 0xFFFFFF)
+                color = LAP_COLORS[len(self.allocated_colors) % len(LAP_COLORS)]
             self.allocated_colors[key] = color
+
+        self.available_colors = [c for c in LAP_COLORS if c not in self.allocated_colors.values()]
 
         # Update lap icon indicators immediately so tree UI is responsive
         root_count = self.session_tree.topLevelItemCount()
@@ -559,19 +702,16 @@ class SidebarWidget(QWidget):
             if key in item_map:
                 assigned_color = color
                 if not assigned_color:
-                    if self.available_colors:
-                        assigned_color = self.available_colors.pop(0)
-                    else:
-                        assigned_color = "#%06x" % (hash(key) & 0xFFFFFF)
-                else:
-                    if assigned_color in self.available_colors:
-                        self.available_colors.remove(assigned_color)
+                    used_colors = set(self.allocated_colors.values())
+                    unused = [c for c in LAP_COLORS if c not in used_colors]
+                    assigned_color = unused[0] if unused else LAP_COLORS[len(self.allocated_colors) % len(LAP_COLORS)]
 
                 self.allocated_colors[key] = assigned_color
                 child_item = item_map[key]
                 child_item.setSelected(True)
                 child_item.setIcon(0, create_color_icon(assigned_color))
 
+        self.available_colors = [c for c in LAP_COLORS if c not in self.allocated_colors.values()]
         self.session_tree.blockSignals(False)
 
         self._pending_lap_selection = True

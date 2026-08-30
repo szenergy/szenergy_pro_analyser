@@ -18,10 +18,10 @@ from PySide6.QtGui import QKeyEvent
 from core.data_models import Session, Lap
 from core.state_manager import StateManager
 from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
-from ui.sidebar import SidebarWidget
+from ui.sidebar import SidebarWidget, LapColorPickerPopup
 from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog, FileMappingManagerDialog
 from ui.import_wizard import ImportWizardDialog, SavePresetChoiceDialog
-from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
+from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG, LAP_COLORS
 
 app = QApplication.instance()
 if app is None:
@@ -1990,6 +1990,103 @@ class TestUIComponents(unittest.TestCase):
         preset_names = [p["name"] for p in presets]
         self.assertIn("MoTeC Original", preset_names)
         self.assertNotIn("MoTeC Renamed", preset_names)
+
+    def test_lap_color_picker_popup_selection(self):
+        """Validates that LapColorPickerPopup emits color_selected and closes upon picking a color."""
+        popup = LapColorPickerPopup(current_color=LAP_COLORS[0], is_dark=True)
+        selected_colors = []
+        popup.color_selected.connect(lambda c: selected_colors.append(c))
+
+        target_color = LAP_COLORS[3]
+        popup._on_color_clicked(target_color)
+
+        self.assertEqual(len(selected_colors), 1)
+        self.assertEqual(selected_colors[0], target_color)
+
+    def test_sidebar_set_lap_color_and_duplicate_colors(self):
+        """Validates that set_lap_color changes lap color without deselecting and allows multiple laps to share a color."""
+        sidebar = SidebarWidget()
+        s1 = Session(id="s1", name="run.csv", file_path="/tmp/run.csv", channels=["speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([10, 20])}))
+        s1.laps.append(Lap("s1", 2, 12.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([15, 25])}))
+        s1.laps.append(Lap("s1", 3, 14.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([20, 30])}))
+        sidebar.add_session(s1)
+
+        # Select Lap 1 and Lap 2
+        sidebar.select_laps_for_session("s1", [1, 2])
+        self.assertEqual(len(sidebar.allocated_colors), 2)
+        color_l1 = sidebar.allocated_colors[("s1", 1)]
+        color_l2 = sidebar.allocated_colors[("s1", 2)]
+        self.assertNotEqual(color_l1, color_l2)
+
+        # Change Lap 2 color to match Lap 1
+        received_signals = []
+        sidebar.laps_selection_changed.connect(lambda lst: received_signals.append(lst))
+        sidebar.set_lap_color("s1", 2, color_l1)
+
+        # Both laps must have color_l1 and both must still be selected
+        self.assertEqual(sidebar.allocated_colors[("s1", 1)], color_l1)
+        self.assertEqual(sidebar.allocated_colors[("s1", 2)], color_l1)
+        selected_laps = sidebar.get_selected_laps()
+        self.assertEqual(selected_laps["s1"], [1, 2])
+        self.assertTrue(len(received_signals) > 0)
+        self.assertEqual(received_signals[-1], [("s1", 1, color_l1), ("s1", 2, color_l1)])
+
+        # Select Lap 3; auto-allocation should pick an unused color from LAP_COLORS
+        sidebar.select_laps_for_session("s1", [1, 2, 3])
+        self.assertIn(("s1", 3), sidebar.allocated_colors)
+        color_l3 = sidebar.allocated_colors[("s1", 3)]
+        self.assertNotEqual(color_l3, color_l1)
+
+    def test_sidebar_click_lap_color_icon_event_filter(self):
+        """Validates that clicking the color icon opens color picker and consumes event without deselecting laps."""
+        from PySide6.QtGui import QMouseEvent
+        sidebar = SidebarWidget()
+        s1 = Session(id="s1", name="run.csv", file_path="/tmp/run.csv", channels=["speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([10, 20])}))
+        s1.laps.append(Lap("s1", 2, 12.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([15, 25])}))
+        sidebar.add_session(s1)
+
+        sidebar.select_laps_for_session("s1", [1, 2])
+        item_l1 = sidebar.session_tree.topLevelItem(0).child(0)
+        item_rect = sidebar.session_tree.visualItemRect(item_l1)
+
+        # Click inside the 28px icon region
+        click_pos = QPoint(item_rect.left() + 10, item_rect.center().y())
+        press_event = QMouseEvent(
+            QEvent.MouseButtonPress,
+            QPointF(click_pos),
+            QPointF(sidebar.session_tree.viewport().mapToGlobal(click_pos)),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier
+        )
+
+        with patch.object(sidebar, "_show_color_picker_for_lap") as mock_show:
+            handled = sidebar.eventFilter(sidebar.session_tree.viewport(), press_event)
+            self.assertTrue(handled, "Click on color icon must be consumed by eventFilter")
+            mock_show.assert_called_once_with("s1", 1, item_rect)
+
+        # Ensure both laps are still selected
+        self.assertTrue(sidebar.session_tree.topLevelItem(0).child(0).isSelected())
+        self.assertTrue(sidebar.session_tree.topLevelItem(0).child(1).isSelected())
+
+    def test_sidebar_lap_context_menu_has_change_color(self):
+        """Validates that right-clicking a selected lap includes a 'Change Color' menu with all LAP_COLORS."""
+        sidebar = SidebarWidget()
+        s1 = Session(id="s1", name="run.csv", file_path="/tmp/run.csv", channels=["speed"])
+        s1.laps.append(Lap("s1", 1, 10.0, 100.0, {"time": np.array([0, 1]), "speed": np.array([10, 20])}))
+        sidebar.add_session(s1)
+        sidebar.select_laps_for_session("s1", [1])
+
+        item_l1 = sidebar.session_tree.topLevelItem(0).child(0)
+        menu = sidebar._create_session_context_menu(item_l1)
+        self.assertIsNotNone(menu)
+
+        submenus = [act.menu() for act in menu.actions() if act.menu() is not None]
+        color_submenus = [m for m in submenus if m.title() == "Change Color"]
+        self.assertEqual(len(color_submenus), 1)
+        self.assertEqual(len(color_submenus[0].actions()), len(LAP_COLORS))
 
 
 if __name__ == "__main__":
