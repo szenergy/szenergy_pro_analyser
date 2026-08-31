@@ -9,6 +9,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import numpy as np
 import pandas as pd
+import pyqtgraph as pg
 from PySide6.QtWidgets import (
     QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog
 )
@@ -215,6 +216,35 @@ class TestUIComponents(unittest.TestCase):
         self.assertFalse(speed_dot.isVisible())
         self.assertFalse(speed_val_label.isVisible())
         self.assertFalse(widget.x_cursor_label.isVisible())
+
+    def test_non_zero_starting_x_axis_preserved(self):
+        """Validates that X-axis data starting at non-zero values (e.g. 500m or 150s) is preserved without forcing start at 0."""
+        s = Session(id="s_nonzero", name="nonzero.csv", file_path="/tmp/nz.csv", channels=["speed", "lap_dist"])
+        data_nz = {
+            "lap_dist": np.array([500.0, 550.0, 600.0]),
+            "speed": np.array([45.0, 50.0, 55.0])
+        }
+        s.laps.append(Lap("s_nonzero", 1, 10.0, 100.0, data_nz))
+        widget = GraphViewWidget()
+        widget.set_sessions({"s_nonzero": s})
+        widget.set_selected_channels({"speed"})
+        widget.set_selected_laps([("s_nonzero", 1, "#00E676")])
+        widget.x_axis_slug = STD_CH_LAP_DIST_SLUG
+        widget.rebuild_plots()
+
+        # Check plotted curve data points
+        plot = widget.plot_widgets["speed"]
+        curves = [item for item in plot.items if isinstance(item, pg.PlotDataItem)]
+        self.assertTrue(len(curves) >= 1)
+        x_data, y_data = curves[0].getData()
+        self.assertEqual(x_data[0], 500.0)
+        self.assertEqual(x_data[-1], 600.0)
+
+        # Test cursor sample lookup at X=550.0
+        sample = _get_nearest_channel_sample(data_nz["lap_dist"], data_nz["speed"], 550.0)
+        self.assertIsNotNone(sample)
+        self.assertEqual(sample[0], 550.0)
+        self.assertEqual(sample[1], 50.0)
 
     def test_import_wizard_defaults_to_skip_without_preset(self):
         """Validates that without an explicit preset or mapping, all channels default to '-- Skip --' and preset combo defaults to 'None'."""

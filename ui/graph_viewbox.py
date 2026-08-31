@@ -24,21 +24,11 @@ def _get_nearest_channel_sample(
     x_arr = np.asarray(raw_x[:min_len], dtype=float)
     y_arr = np.asarray(raw_y[:min_len], dtype=float)
 
-    if np.isnan(x_arr[0]):
-        valid_x0_indices = np.where(~np.isnan(x_arr))[0]
-        if len(valid_x0_indices) == 0:
-            return None
-        x0 = x_arr[valid_x0_indices[0]]
-    else:
-        x0 = x_arr[0]
-
-    x_norm = x_arr - x0
-
-    valid_mask = ~(np.isnan(x_norm) | np.isnan(y_arr) | np.isinf(x_norm) | np.isinf(y_arr))
+    valid_mask = ~(np.isnan(x_arr) | np.isnan(y_arr) | np.isinf(x_arr) | np.isinf(y_arr))
     if not np.any(valid_mask):
         return None
 
-    valid_x = x_norm[valid_mask]
+    valid_x = x_arr[valid_mask]
     valid_y = y_arr[valid_mask]
 
     # Bounds check: ensure cursor is within the lap's actual range

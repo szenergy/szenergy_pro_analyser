@@ -547,17 +547,12 @@ class GraphViewWidget(QWidget):
                     raw_y = lap.get_channel(channel_name)
 
                     if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
-                        if np.isnan(raw_x[0]):
-                            valid_x0_indices = np.where(~np.isnan(raw_x))[0]
-                            if len(valid_x0_indices) == 0:
-                                continue
-                            x0 = raw_x[valid_x0_indices[0]]
-                        else:
-                            x0 = raw_x[0]
-                        x_normalized = raw_x - x0
+                        min_len = min(len(raw_x), len(raw_y))
+                        x_data = raw_x[:min_len]
+                        y_data = raw_y[:min_len]
                         pen = pg.mkPen(color=color, width=1.8)
 
-                        curve = plot.plot(x_normalized, raw_y, pen=pen)
+                        curve = plot.plot(x_data, y_data, pen=pen)
 
                         # Create tracking dot for this curve
                         dot_pen = pg.mkPen("#FFFFFF" if self.is_dark else "#000000", width=1.2)
