@@ -302,6 +302,39 @@ class TestFileParser(unittest.TestCase):
         self.assertNotIn("speed", updated_session.channels)
         self.assertIsNotNone(updated_session.raw_df)
 
+    def test_excel_parsing_with_calamine_and_openpyxl_fallback(self):
+        """Validates that Excel parsing works with calamine and falls back gracefully to openpyxl if needed."""
+        from unittest.mock import patch
+
+        # 1. Standard read (uses calamine if available)
+        cols, preview = get_file_columns_and_preview(self.xlsx_path)
+        self.assertIn("Lap_No", cols)
+        self.assertEqual(len(preview), 4)
+
+        # 2. Simulate calamine failure to test openpyxl fallback
+        with patch("pandas.read_excel", side_effect=[ImportError("No calamine"), pd.DataFrame({"Lap_No": [1, 2], "RPM": [1000, 2000]})]):
+            fallback_df = load_full_dataframe(self.xlsx_path)
+            self.assertIn("Lap_No", fallback_df.columns)
+            self.assertIn("RPM", fallback_df.columns)
+
+    def test_excel_parsing_wide_file(self):
+        """Validates parsing wide Excel files with 70+ channels and 1000+ rows."""
+        wide_xlsx_path = os.path.join(self.temp_dir.name, "wide_telemetry.xlsx")
+        data = {f"Channel_{i}": np.random.randn(1000) for i in range(71)}
+        data["Lap"] = [1]*500 + [2]*500
+        data["Time"] = np.linspace(0, 100, 1000)
+        df_wide = pd.DataFrame(data)
+        df_wide.to_excel(wide_xlsx_path, index=False)
+
+        cols, preview = get_file_columns_and_preview(wide_xlsx_path)
+        self.assertEqual(len(cols), 73)
+        self.assertEqual(len(preview), 5)
+
+        mapping = {"Lap": "lap_num", "Time": "lap_time", "Channel_0": "ch0", "Channel_70": "ch70"}
+        session = parse_session(wide_xlsx_path, mapping, "sess_wide")
+        self.assertEqual(len(session.laps), 2)
+        self.assertEqual(len(session.channels), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

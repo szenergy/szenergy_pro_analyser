@@ -4,6 +4,9 @@ Includes modern stylesheet with smooth, thin scrollbars, startup splash screen,
 and system OS theme adaptation.
 """
 
+import faulthandler
+faulthandler.enable()
+
 from utils.constants import APP_NAME
 
 # Attempt to hook into PyInstaller bootloader splash immediately upon interpreter startup

@@ -98,14 +98,25 @@ def _resolve_channel_column(
 
 
 def _read_excel_dataframe(file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
-    """Reads an Excel workbook using its primary sheet."""
+    """
+    Reads an Excel workbook using its primary sheet.
+    Prefers the memory-safe, high-performance 'calamine' Rust engine if available,
+    with a graceful fallback to 'openpyxl'.
+    """
+    # 1. Try calamine engine (Rust-based, memory-safe, fast, immune to C XML parser segfaults)
+    try:
+        df = pd.read_excel(file_path, sheet_name=0, nrows=nrows, engine="calamine")
+        df.columns = [str(c) for c in df.columns]
+        return df
+    except Exception as e:
+        logger.debug("Calamine engine unavailable or failed for '%s' (%s), attempting openpyxl fallback", file_path, e)
+
+    # 2. Fallback to openpyxl directly without nested ExcelFile context leaks
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
-        with pd.ExcelFile(file_path) as excel_file:
-            target_sheet = excel_file.sheet_names[0]
-            df = pd.read_excel(excel_file, sheet_name=target_sheet, nrows=nrows)
-            df.columns = [str(c) for c in df.columns]
-            return df
+        df = pd.read_excel(file_path, sheet_name=0, nrows=nrows, engine="openpyxl")
+        df.columns = [str(c) for c in df.columns]
+        return df
 
 
 def _read_tdms_with_alignment(file_path: str, nrows: Optional[int] = None) -> Tuple[List[str], pd.DataFrame]:
