@@ -151,6 +151,21 @@ class TrackMapTabWidget(QWidget):
             self.start_line_curve.setData([], [])
             self.tracking_dots_scatter.setData([])
 
+    def get_selected_map(self) -> Optional[str]:
+        """Returns the currently selected track map name, or None."""
+        txt = self.map_combo.currentText()
+        if txt and txt != "-- No Maps Available --":
+            return txt
+        return None
+
+    def set_selected_map(self, map_name: Optional[str]):
+        """Selects the given track map name if it exists in the dropdown."""
+        if not map_name:
+            return
+        idx = self.map_combo.findText(map_name)
+        if idx >= 0:
+            self.map_combo.setCurrentIndex(idx)
+
     def _on_map_selection_changed(self, map_name: str):
         """Loads and displays track map geometry when selected from dropdown."""
         if self._rotation_save_timer.isActive():

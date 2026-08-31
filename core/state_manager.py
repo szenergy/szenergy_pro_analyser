@@ -56,7 +56,7 @@ class StateManager:
             pass
 
     def load_settings(self) -> Dict[str, Any]:
-        """Loads persistent application settings (theme, window geometry, graph toggles/x-axis)."""
+        """Loads persistent application settings (theme, window geometry, graph toggles/x-axis, sidebar tab & map)."""
         version, data = read_versioned_json(self.settings_file)
         if isinstance(data, dict):
             return data
@@ -71,6 +71,15 @@ class StateManager:
                     extracted["window"] = legacy_data["window"]
                 if "graph" in legacy_data:
                     extracted["graph"] = legacy_data["graph"]
+                if "sidebar" in legacy_data and isinstance(legacy_data["sidebar"], dict):
+                    sb = legacy_data["sidebar"]
+                    sb_settings = {}
+                    if "bottom_tab_index" in sb:
+                        sb_settings["bottom_tab_index"] = sb["bottom_tab_index"]
+                    if "selected_map" in sb:
+                        sb_settings["selected_map"] = sb["selected_map"]
+                    if sb_settings:
+                        extracted["sidebar"] = sb_settings
                 return extracted
         return {}
 
@@ -118,8 +127,14 @@ class StateManager:
         workspace = self.load_workspace_state()
         if workspace:
             combined["workspace"] = workspace
-            if "sidebar" in workspace:
-                combined["sidebar"] = workspace["sidebar"]
+            # Merge sidebar settings & workspace selections if both exist
+            merged_sidebar = {}
+            if "sidebar" in settings and isinstance(settings["sidebar"], dict):
+                merged_sidebar.update(settings["sidebar"])
+            if "sidebar" in workspace and isinstance(workspace["sidebar"], dict):
+                merged_sidebar.update(workspace["sidebar"])
+            if merged_sidebar:
+                combined["sidebar"] = merged_sidebar
         return combined
 
     def save_ui_state(self, state: Dict[str, Any]) -> None:
@@ -131,6 +146,15 @@ class StateManager:
             settings["window"] = state["window"]
         if "graph" in state:
             settings["graph"] = state["graph"]
+        if "sidebar" in state and isinstance(state["sidebar"], dict):
+            sb = state["sidebar"]
+            sb_settings = {}
+            if "bottom_tab_index" in sb:
+                sb_settings["bottom_tab_index"] = sb["bottom_tab_index"]
+            if "selected_map" in sb:
+                sb_settings["selected_map"] = sb["selected_map"]
+            if sb_settings:
+                settings["sidebar"] = sb_settings
         if settings:
             self.save_settings(settings)
 

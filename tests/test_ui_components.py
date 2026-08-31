@@ -153,6 +153,45 @@ class TestUIComponents(unittest.TestCase):
         widget.apply_theme(True)
         widget.apply_theme(False)
 
+    def test_graph_view_cursor_on_graph_and_above_graph_sub_toggles(self):
+        """Validates on-graph and above-graph cursor value sub-toggles and title bar formatting."""
+        widget = GraphViewWidget()
+        widget.set_sessions({self.session.id: self.session})
+        widget.set_selected_laps([(self.session.id, 1, "#FF5722")])
+        widget.set_selected_channels({"speed"})
+        self.assertIn("speed", widget.plot_widgets)
+
+        plot = widget.plot_widgets["speed"]
+
+        # 1. Defaults are True
+        self.assertTrue(widget.show_cursor_values_on_graph)
+        self.assertTrue(widget.show_cursor_values_above_graph)
+
+        # 2. Simulate cursor at X = 0.5
+        widget._update_title_cursor_values(0.5)
+        title_text = plot.titleLabel.text
+        # Title must contain colored bar character and value readout
+        self.assertIn("&#9612;", title_text)
+        self.assertIn("#FF5722", title_text)
+        self.assertIn("10.00", title_text)
+
+        # 3. Disable above-graph values
+        widget.set_cursor_values_above_graph(False)
+        self.assertFalse(widget.show_cursor_values_above_graph)
+        self.assertNotIn("&#9612;", plot.titleLabel.text)
+
+        # 4. Disable on-graph values
+        widget.set_cursor_values_on_graph(False)
+        self.assertFalse(widget.show_cursor_values_on_graph)
+        for _, value_label, _, _, _ in widget.tracking_dots:
+            self.assertFalse(value_label.isVisible())
+
+        # 5. Re-enable on-graph and above-graph values
+        widget.set_cursor_values_on_graph(True)
+        widget.set_cursor_values_above_graph(True)
+        self.assertTrue(widget.show_cursor_values_on_graph)
+        self.assertTrue(widget.show_cursor_values_above_graph)
+
     def test_rename_legend_labels_dialog_and_application(self):
         selected_laps = [(self.session.id, 1, "#00E676")]
         sessions = {self.session.id: self.session}
@@ -1751,6 +1790,16 @@ class TestUIComponents(unittest.TestCase):
         win1.graph_view.zoom_x_range(0.5, 2.5)
         win1.graph_view.saved_y_ranges["speed"] = [15.0, 35.0]
 
+        # Select Track Map tab and select a map
+        state_mgr.save_map("Hungaroring", np.array([0.0, 10.0]), np.array([0.0, 10.0]))
+        win1.sidebar.track_map_tab.refresh_map_list("Hungaroring")
+        win1.sidebar.set_bottom_tab_index(1)
+        win1.sidebar.set_selected_map("Hungaroring")
+
+        # Set Cursor Values toggles from View Menu
+        win1.cursor_on_graph_action.setChecked(True)
+        win1.cursor_above_graph_action.setChecked(False)
+
         # Save UI state
         win1._save_ui_state()
         win1.close()
@@ -1768,6 +1817,16 @@ class TestUIComponents(unittest.TestCase):
         self.assertFalse(win2.graph_view.show_cursor_values)
         self.assertTrue(win2.graph_view.show_legend)
         self.assertEqual(win2.graph_view.x_axis_slug, STD_CH_LAP_TIME_SLUG)
+
+        # Verify Cursor Values Submenu Toggles
+        self.assertTrue(win2.cursor_on_graph_action.isChecked())
+        self.assertFalse(win2.cursor_above_graph_action.isChecked())
+        self.assertTrue(win2.graph_view.show_cursor_values_on_graph)
+        self.assertFalse(win2.graph_view.show_cursor_values_above_graph)
+
+        # Verify Sidebar Bottom Tab and Selected Map
+        self.assertEqual(win2.sidebar.get_bottom_tab_index(), 1)
+        self.assertEqual(win2.sidebar.get_selected_map(), "Hungaroring")
 
         # Verify Restored Zoom Ranges
         self.assertTrue(win2.graph_view.has_manual_zoom_or_pan)
@@ -1805,7 +1864,11 @@ class TestUIComponents(unittest.TestCase):
         self.assertTrue(saved_settings["graph"]["show_x_grid"])
         self.assertFalse(saved_settings["graph"]["show_y_grid"])
         self.assertFalse(saved_settings["graph"]["show_cursor_values"])
+        self.assertTrue(saved_settings["graph"]["show_cursor_values_on_graph"])
+        self.assertFalse(saved_settings["graph"]["show_cursor_values_above_graph"])
         self.assertEqual(saved_settings["graph"]["x_axis_slug"], STD_CH_LAP_TIME_SLUG)
+        self.assertEqual(saved_settings["sidebar"]["bottom_tab_index"], 1)
+        self.assertEqual(saved_settings["sidebar"]["selected_map"], "Hungaroring")
         win2.close()
 
         # 4. Opening a new window with cleared workspace still has the settings restored
@@ -1814,7 +1877,11 @@ class TestUIComponents(unittest.TestCase):
         self.assertTrue(win3.graph_view.show_x_grid)
         self.assertFalse(win3.graph_view.show_y_grid)
         self.assertFalse(win3.graph_view.show_cursor_values)
+        self.assertTrue(win3.cursor_on_graph_action.isChecked())
+        self.assertFalse(win3.cursor_above_graph_action.isChecked())
         self.assertEqual(win3.graph_view.x_axis_slug, STD_CH_LAP_TIME_SLUG)
+        self.assertEqual(win3.sidebar.get_bottom_tab_index(), 1)
+        self.assertEqual(win3.sidebar.get_selected_map(), "Hungaroring")
         win3.close()
 
     def test_workspace_restore_worker(self):

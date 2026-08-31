@@ -58,6 +58,8 @@ class GraphViewWidget(QWidget):
         self.show_x_grid: bool = False
         self.show_y_grid: bool = True
         self.show_cursor_values: bool = True
+        self.show_cursor_values_on_graph: bool = True
+        self.show_cursor_values_above_graph: bool = True
         self.show_legend: bool = False
         self._is_rebuilding: bool = False
 
@@ -385,9 +387,83 @@ class GraphViewWidget(QWidget):
             v_line.setVisible(self.show_cursor_values)
         for dot, value_label, _, _, _ in self.tracking_dots:
             dot.setVisible(self.show_cursor_values)
-            value_label.setVisible(self.show_cursor_values)
+            has_data = False
+            try:
+                x_pts = dot.getData()[0]
+                has_data = x_pts is not None and len(x_pts) > 0
+            except Exception:
+                pass
+            value_label.setVisible(self.show_cursor_values and self.show_cursor_values_on_graph and has_data)
         if hasattr(self, "x_cursor_label") and self.x_cursor_label is not None:
             self.x_cursor_label.setVisible(self.show_cursor_values and getattr(self, "_last_cursor_x", None) is not None)
+        if self.show_cursor_values and self.show_cursor_values_above_graph and getattr(self, "_last_cursor_x", None) is not None:
+            self._update_title_cursor_values(self._last_cursor_x)
+        else:
+            self._reset_plot_titles()
+
+    def set_cursor_values_on_graph(self, enabled: bool):
+        """Toggles visibility of on-graph tracking dot numerical value labels."""
+        self.show_cursor_values_on_graph = enabled
+        for dot, value_label, _, _, _ in self.tracking_dots:
+            has_data = False
+            try:
+                x_pts = dot.getData()[0]
+                has_data = x_pts is not None and len(x_pts) > 0
+            except Exception:
+                pass
+            value_label.setVisible(self.show_cursor_values and self.show_cursor_values_on_graph and has_data)
+
+    def set_cursor_values_above_graph(self, enabled: bool):
+        """Toggles visibility of cursor value readouts in the graph header titles."""
+        self.show_cursor_values_above_graph = enabled
+        if getattr(self, "_last_cursor_x", None) is not None and self.show_cursor_values and self.show_cursor_values_above_graph:
+            self._update_title_cursor_values(self._last_cursor_x)
+        else:
+            self._reset_plot_titles()
+
+    def _reset_plot_titles(self):
+        """Resets plot titles to channel display labels without cursor numerical values."""
+        title_color = "#E0E0E0" if self.is_dark else "#202020"
+        for channel_name, plot in self.plot_widgets.items():
+            display_label = channel_name
+            if self.state_manager:
+                display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+            title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"
+            plot.setTitle(title_html, justify='left')
+
+    def _update_title_cursor_values(self, x_val: float):
+        """Updates plot titles with cursor values for each selected lap with colored bars."""
+        title_color = "#E0E0E0" if self.is_dark else "#202020"
+        val_text_color = "#E0E0E0" if self.is_dark else "#000000"
+
+        for channel_name, plot in self.plot_widgets.items():
+            display_label = channel_name
+            if self.state_manager:
+                display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+
+            title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"]
+
+            if self.show_cursor_values and self.show_cursor_values_above_graph:
+                for session_id, lap_num, color in self.selected_laps_info:
+                    session = self.sessions.get(session_id)
+                    if not session:
+                        continue
+                    lap = session.get_lap(lap_num)
+                    if not lap:
+                        continue
+
+                    raw_x = lap.get_channel(self.x_axis_slug)
+                    raw_y = lap.get_channel(channel_name)
+
+                    sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+                    if sample is not None:
+                        _, actual_y = sample
+                        title_parts.append(
+                            f"<span style='color:{color}; font-weight:bold; font-size:11pt;'>&#9612;</span>"
+                            f"<span style='color:{val_text_color}; font-size:10pt;'>{actual_y:.2f}</span>"
+                        )
+
+            plot.setTitle(" &nbsp;&nbsp; ".join(title_parts), justify='left')
 
     def _toggle_legend(self, checked: bool):
         self.show_legend = checked
@@ -585,7 +661,7 @@ class GraphViewWidget(QWidget):
                         )
                         value_label.setFont(font)
                         value_label.setZValue(11)
-                        value_label.setVisible(self.show_cursor_values)
+                        value_label.setVisible(self.show_cursor_values and self.show_cursor_values_on_graph)
                         plot.addItem(value_label, ignoreBounds=True)
 
                         self.tracking_dots.append((dot, value_label, session_id, lap_num, channel_name))
@@ -606,6 +682,9 @@ class GraphViewWidget(QWidget):
                     else:
                         plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
                         plot.autoRange(axis=pg.ViewBox.YAxis)
+
+            if getattr(self, "_last_cursor_x", None) is not None and self.show_cursor_values and self.show_cursor_values_above_graph:
+                self._update_title_cursor_values(self._last_cursor_x)
         finally:
             self.glw.scene().blockSignals(False)
             self._is_rebuilding = False
@@ -631,6 +710,10 @@ class GraphViewWidget(QWidget):
                 v_line.setPos(x_val)
             except Exception:
                 pass
+
+        # Update plot titles with cursor values if above-graph values are enabled
+        if self.show_cursor_values and self.show_cursor_values_above_graph:
+            self._update_title_cursor_values(x_val)
 
         # Update X-axis tracking label at the bottom of the cursor
         if hasattr(self, "x_cursor_label") and self.x_cursor_label is not None:
@@ -720,7 +803,7 @@ class GraphViewWidget(QWidget):
                 for actual_x, actual_y, _, value_label in samples:
                     value_label.setText(f"{actual_y:.2f}")
                     value_label.setPos(actual_x, actual_y)
-                    value_label.setVisible(True)
+                    value_label.setVisible(self.show_cursor_values and self.show_cursor_values_on_graph)
                 continue
 
             (x_min, x_max), (y_min, y_max) = plot.vb.viewRange()
@@ -777,7 +860,7 @@ class GraphViewWidget(QWidget):
 
                 value_label.setText(f"{actual_y:.2f}")
                 value_label.setPos(actual_x, layout_y)
-                value_label.setVisible(True)
+                value_label.setVisible(self.show_cursor_values and self.show_cursor_values_on_graph)
 
     def get_view_state(self) -> Dict[str, Any]:
         """Returns current graph view state dictionary for persistence, including zoom/pan states."""
@@ -788,6 +871,8 @@ class GraphViewWidget(QWidget):
             "show_x_grid": self.show_x_grid,
             "show_y_grid": self.show_y_grid,
             "show_cursor_values": self.show_cursor_values,
+            "show_cursor_values_on_graph": self.show_cursor_values_on_graph,
+            "show_cursor_values_above_graph": self.show_cursor_values_above_graph,
             "show_legend": self.show_legend,
             "x_axis_slug": self.x_axis_slug,
             "has_manual_zoom_or_pan": self.has_manual_zoom_or_pan,
@@ -811,6 +896,12 @@ class GraphViewWidget(QWidget):
         if "show_cursor_values" in state:
             self.show_cursor_values = bool(state["show_cursor_values"])
             self.btn_cursor.setChecked(self.show_cursor_values)
+
+        if "show_cursor_values_on_graph" in state:
+            self.set_cursor_values_on_graph(bool(state["show_cursor_values_on_graph"]))
+
+        if "show_cursor_values_above_graph" in state:
+            self.set_cursor_values_above_graph(bool(state["show_cursor_values_above_graph"]))
 
         if "show_legend" in state:
             self.show_legend = bool(state["show_legend"])

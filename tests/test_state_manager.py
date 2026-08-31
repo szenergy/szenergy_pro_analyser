@@ -205,8 +205,16 @@ class TestStateManager(unittest.TestCase):
 
         sample_settings = {
             "window": {"is_maximized": True, "main_splitter": [320, 880]},
-            "graph": {"show_x_grid": True, "show_y_grid": False, "x_axis_slug": "lap_dist"},
-            "theme_mode": "dark"
+            "graph": {
+                "show_x_grid": True,
+                "show_y_grid": False,
+                "show_cursor_values": True,
+                "show_cursor_values_on_graph": True,
+                "show_cursor_values_above_graph": False,
+                "x_axis_slug": "lap_dist"
+            },
+            "theme_mode": "dark",
+            "sidebar": {"bottom_tab_index": 1, "selected_map": "Test Track"}
         }
         sample_workspace = {
             "sidebar": {"selected_channels": ["speed", "throttle"]},
@@ -219,7 +227,11 @@ class TestStateManager(unittest.TestCase):
         loaded_settings = self.state_manager.load_settings()
         self.assertEqual(loaded_settings["window"]["is_maximized"], True)
         self.assertEqual(loaded_settings["graph"]["show_x_grid"], True)
+        self.assertEqual(loaded_settings["graph"]["show_cursor_values_on_graph"], True)
+        self.assertEqual(loaded_settings["graph"]["show_cursor_values_above_graph"], False)
         self.assertEqual(loaded_settings["theme_mode"], "dark")
+        self.assertEqual(loaded_settings["sidebar"]["bottom_tab_index"], 1)
+        self.assertEqual(loaded_settings["sidebar"]["selected_map"], "Test Track")
 
         # 2. Test saving and loading workspace state
         self.state_manager.save_workspace_state(sample_workspace)

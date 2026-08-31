@@ -155,6 +155,18 @@ class MainWindow(QMainWindow):
 
         self._sync_theme_menu_checks()
 
+        # Cursor Values Submenu
+        cursor_values_menu = view_menu.addMenu("Cursor Values")
+        self.cursor_on_graph_action = QAction("On Graph", self, checkable=True)
+        self.cursor_on_graph_action.setChecked(self.graph_view.show_cursor_values_on_graph if hasattr(self, "graph_view") else True)
+        self.cursor_on_graph_action.toggled.connect(self._on_toggle_cursor_on_graph)
+        cursor_values_menu.addAction(self.cursor_on_graph_action)
+
+        self.cursor_above_graph_action = QAction("Above Graph", self, checkable=True)
+        self.cursor_above_graph_action.setChecked(self.graph_view.show_cursor_values_above_graph if hasattr(self, "graph_view") else True)
+        self.cursor_above_graph_action.toggled.connect(self._on_toggle_cursor_above_graph)
+        cursor_values_menu.addAction(self.cursor_above_graph_action)
+
     def set_theme_mode(self, mode: str):
         """Sets active theme mode ('auto', 'dark', 'light') and applies stylesheets and widget themes."""
         if mode not in ("auto", "dark", "light"):
@@ -193,6 +205,18 @@ class MainWindow(QMainWindow):
             self.theme_dark_action.setChecked(self.theme_mode == "dark")
         if hasattr(self, "theme_light_action"):
             self.theme_light_action.setChecked(self.theme_mode == "light")
+
+    def _on_toggle_cursor_on_graph(self, checked: bool):
+        """Handles toggling of on-graph cursor numerical value labels."""
+        if hasattr(self, "graph_view"):
+            self.graph_view.set_cursor_values_on_graph(checked)
+        self._save_settings()
+
+    def _on_toggle_cursor_above_graph(self, checked: bool):
+        """Handles toggling of above-graph header title cursor numerical values."""
+        if hasattr(self, "graph_view"):
+            self.graph_view.set_cursor_values_above_graph(checked)
+        self._save_settings()
 
     def _init_ui(self):
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -585,14 +609,24 @@ class MainWindow(QMainWindow):
                     "show_x_grid": self.graph_view.show_x_grid,
                     "show_y_grid": self.graph_view.show_y_grid,
                     "show_cursor_values": self.graph_view.show_cursor_values,
+                    "show_cursor_values_on_graph": self.graph_view.show_cursor_values_on_graph,
+                    "show_cursor_values_above_graph": self.graph_view.show_cursor_values_above_graph,
                     "show_legend": self.graph_view.show_legend,
                     "x_axis_slug": self.graph_view.x_axis_slug,
+                }
+
+            sidebar_settings = {}
+            if hasattr(self, "sidebar"):
+                sidebar_settings = {
+                    "bottom_tab_index": self.sidebar.get_bottom_tab_index(),
+                    "selected_map": self.sidebar.get_selected_map(),
                 }
 
             settings_data = {
                 "theme_mode": self.theme_mode,
                 "window": window_state,
                 "graph": graph_state,
+                "sidebar": sidebar_settings,
             }
             self.state_manager.save_settings(settings_data)
             logger.debug("Application settings successfully saved to settings.json")
@@ -700,6 +734,17 @@ class MainWindow(QMainWindow):
 
                 if hasattr(self, "graph_view") and "graph" in settings:
                     self.graph_view.set_view_state(settings.get("graph", {}))
+                    if hasattr(self, "cursor_on_graph_action"):
+                        self.cursor_on_graph_action.setChecked(self.graph_view.show_cursor_values_on_graph)
+                    if hasattr(self, "cursor_above_graph_action"):
+                        self.cursor_above_graph_action.setChecked(self.graph_view.show_cursor_values_above_graph)
+
+                sidebar_settings = settings.get("sidebar", {})
+                if hasattr(self, "sidebar") and sidebar_settings:
+                    if "bottom_tab_index" in sidebar_settings:
+                        self.sidebar.set_bottom_tab_index(int(sidebar_settings["bottom_tab_index"]))
+                    if "selected_map" in sidebar_settings and sidebar_settings["selected_map"]:
+                        self.sidebar.set_selected_map(sidebar_settings["selected_map"])
 
             # 2. Restore Loaded Workspace Data (Sessions, Laps, Custom Labels, Sidebar Channels)
             workspace_data = self.state_manager.load_workspace_state()

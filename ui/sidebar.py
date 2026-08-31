@@ -663,3 +663,23 @@ class SidebarWidget(QWidget):
         self.channel_tree.blockSignals(False)
         self._pending_channel_selection = True
         self._flush_pending_selections()
+
+    def get_bottom_tab_index(self) -> int:
+        """Returns the active bottom tab index (0 for Channels, 1 for Track Map)."""
+        return self.bottom_tabs.currentIndex()
+
+    def set_bottom_tab_index(self, index: int):
+        """Sets the active bottom tab index."""
+        if 0 <= index < self.bottom_tabs.count():
+            self.bottom_tabs.setCurrentIndex(index)
+
+    def get_selected_map(self) -> Optional[str]:
+        """Returns the currently selected map in the track map tab."""
+        if hasattr(self, "track_map_tab"):
+            return self.track_map_tab.get_selected_map()
+        return None
+
+    def set_selected_map(self, map_name: Optional[str]):
+        """Sets the selected map in the track map tab."""
+        if hasattr(self, "track_map_tab") and map_name:
+            self.track_map_tab.set_selected_map(map_name)
