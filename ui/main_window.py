@@ -126,78 +126,6 @@ class MainWindow(QMainWindow):
         # 3. View Menu
         view_menu = menu_bar.addMenu("&View")
 
-        # Auto Range
-        autorange_action = QAction("&Auto Range All Graphs", self)
-        autorange_action.triggered.connect(self.graph_view._on_autorange)
-        view_menu.addAction(autorange_action)
-        self.addAction(autorange_action)
-
-        # X-Axis Grid
-        self.x_grid_action = QAction("&X-Axis Grid Lines", self, checkable=True)
-        self.x_grid_action.setChecked(self.graph_view.show_x_grid)
-        self.x_grid_action.toggled.connect(self.graph_view.btn_x_grid.setChecked)
-        self.graph_view.btn_x_grid.toggled.connect(self.x_grid_action.setChecked)
-        view_menu.addAction(self.x_grid_action)
-        self.addAction(self.x_grid_action)
-
-        # Y-Axis Grid
-        self.y_grid_action = QAction("&Y-Axis Grid Lines", self, checkable=True)
-        self.y_grid_action.setChecked(self.graph_view.show_y_grid)
-        self.y_grid_action.toggled.connect(self.graph_view.btn_y_grid.setChecked)
-        self.graph_view.btn_y_grid.toggled.connect(self.y_grid_action.setChecked)
-        view_menu.addAction(self.y_grid_action)
-        self.addAction(self.y_grid_action)
-
-        # Cursor Values
-        self.cursor_action = QAction("Show &Cursor and Values", self, checkable=True)
-        self.cursor_action.setChecked(self.graph_view.show_cursor_values)
-        self.cursor_action.toggled.connect(self.graph_view.btn_cursor.setChecked)
-        self.graph_view.btn_cursor.toggled.connect(self.cursor_action.setChecked)
-        view_menu.addAction(self.cursor_action)
-        self.addAction(self.cursor_action)
-
-        # X-Axis Selector Submenu
-        x_axis_menu = view_menu.addMenu("X-Axis")
-        self.x_axis_group = QActionGroup(self)
-        self.x_axis_group.setExclusive(True)
-
-        self.x_axis_dist_action = QAction(self.state_manager.get_distance_label(), self, checkable=True)
-        self.x_axis_group.addAction(self.x_axis_dist_action)
-        x_axis_menu.addAction(self.x_axis_dist_action)
-        self.x_axis_dist_action.triggered.connect(lambda: self._set_x_axis_by_slug(STD_CH_LAP_DIST_SLUG))
-
-        self.x_axis_time_action = QAction(self.state_manager.get_time_label(), self, checkable=True)
-        self.x_axis_group.addAction(self.x_axis_time_action)
-        x_axis_menu.addAction(self.x_axis_time_action)
-        self.x_axis_time_action.triggered.connect(lambda: self._set_x_axis_by_slug(STD_CH_LAP_TIME_SLUG))
-
-        self.graph_view.x_axis_combo.currentIndexChanged.connect(self._sync_x_axis_menu_checks)
-        self._sync_x_axis_menu_checks()
-
-        view_menu.addSeparator()
-
-        # Curve Legend
-        self.legend_action = QAction("Show &Legend", self, checkable=True)
-        self.legend_action.setChecked(self.graph_view.show_legend)
-        self.legend_action.toggled.connect(self.graph_view.btn_legend.setChecked)
-        self.graph_view.btn_legend.toggled.connect(self.legend_action.setChecked)
-        view_menu.addAction(self.legend_action)
-        self.addAction(self.legend_action)
-
-        # Rename Legend Labels
-        rename_legend_action = QAction("&Rename Legend Labels...", self)
-        rename_legend_action.triggered.connect(self.graph_view._on_rename_legend)
-        view_menu.addAction(rename_legend_action)
-        self.addAction(rename_legend_action)
-
-        # Export Plot / Data
-        export_plot_action = QAction("&Export Plots...", self)
-        export_plot_action.triggered.connect(self.graph_view._on_export_plot)
-        view_menu.addAction(export_plot_action)
-        self.addAction(export_plot_action)
-
-        view_menu.addSeparator()
-
         # Theme Submenu
         theme_menu = view_menu.addMenu("Theme")
         self.theme_group = QActionGroup(self)
@@ -219,18 +147,6 @@ class MainWindow(QMainWindow):
         self.theme_light_action.triggered.connect(lambda: self.set_theme_mode("light"))
 
         self._sync_theme_menu_checks()
-
-    def _set_x_axis_by_slug(self, slug: str):
-        idx = self.graph_view.x_axis_combo.findData(slug)
-        if idx >= 0:
-            self.graph_view.x_axis_combo.setCurrentIndex(idx)
-
-    def _sync_x_axis_menu_checks(self):
-        current_slug = self.graph_view.x_axis_slug
-        if hasattr(self, "x_axis_dist_action"):
-            self.x_axis_dist_action.setChecked(current_slug == STD_CH_LAP_DIST_SLUG)
-        if hasattr(self, "x_axis_time_action"):
-            self.x_axis_time_action.setChecked(current_slug == STD_CH_LAP_TIME_SLUG)
 
     def set_theme_mode(self, mode: str):
         """Sets active theme mode ('auto', 'dark', 'light') and applies stylesheets and widget themes."""

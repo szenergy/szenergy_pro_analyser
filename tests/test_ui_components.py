@@ -1922,51 +1922,13 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(emitted_laps[0][0][1], 1)
         self.assertEqual(emitted_laps[0][1][1], 2)
 
-    def test_view_menu_actions_and_toolbar_sync(self):
-        """Validates that View menu actions correctly mirror and control GraphView toolbar state."""
+    def test_view_menu_theme_selection_and_sync(self):
+        """Validates that View menu Theme selector correctly switches theme modes (Auto, Dark, Light)."""
         from ui.main_window import MainWindow
-        from utils.constants import STD_CH_LAP_DIST_SLUG, STD_CH_LAP_TIME_SLUG
 
         win = MainWindow()
 
-        # 1. Grid Toggles Sync
-        self.assertFalse(win.x_grid_action.isChecked())
-        win.x_grid_action.setChecked(True)
-        self.assertTrue(win.graph_view.btn_x_grid.isChecked())
-        self.assertTrue(win.graph_view.show_x_grid)
-
-        self.assertTrue(win.y_grid_action.isChecked())
-        win.graph_view.btn_y_grid.setChecked(False)
-        self.assertFalse(win.y_grid_action.isChecked())
-        self.assertFalse(win.graph_view.show_y_grid)
-
-        # 2. Cursor Values Sync
-        self.assertTrue(win.cursor_action.isChecked())
-        win.cursor_action.setChecked(False)
-        self.assertFalse(win.graph_view.btn_cursor.isChecked())
-        self.assertFalse(win.graph_view.show_cursor_values)
-
-        # 3. Curve Legend Sync
-        self.assertFalse(win.legend_action.isChecked())
-        win.legend_action.setChecked(True)
-        self.assertTrue(win.graph_view.btn_legend.isChecked())
-        self.assertTrue(win.graph_view.show_legend)
-
-        # 4. X-Axis Selection Sync
-        self.assertTrue(win.x_axis_dist_action.isChecked())
-        self.assertFalse(win.x_axis_time_action.isChecked())
-
-        win.x_axis_time_action.trigger()
-        self.assertEqual(win.graph_view.x_axis_slug, STD_CH_LAP_TIME_SLUG)
-        self.assertTrue(win.x_axis_time_action.isChecked())
-        self.assertFalse(win.x_axis_dist_action.isChecked())
-
-        win.x_axis_dist_action.trigger()
-        self.assertEqual(win.graph_view.x_axis_slug, STD_CH_LAP_DIST_SLUG)
-        self.assertTrue(win.x_axis_dist_action.isChecked())
-        self.assertFalse(win.x_axis_time_action.isChecked())
-
-        # 5. Theme Selection Sync (Auto, Dark, Light)
+        # Theme Selection Sync (Auto, Dark, Light)
         self.assertTrue(win.theme_auto_action.isChecked())
         self.assertEqual(win.theme_mode, "auto")
 
