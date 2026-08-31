@@ -20,7 +20,10 @@ from core.data_models import Session, Lap
 from core.state_manager import StateManager
 from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
 from ui.sidebar import SidebarWidget, LapColorPickerPopup
-from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog, FileMappingManagerDialog
+from ui.edit_dialogs import (
+    PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog,
+    FileMappingManagerDialog, MapManagerDialog
+)
 from ui.import_wizard import ImportWizardDialog, SavePresetChoiceDialog
 from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG, LAP_COLORS
 
@@ -1824,14 +1827,8 @@ class TestUIComponents(unittest.TestCase):
         def _on_session_loaded(session, selected_laps, custom_labels):
             loaded_sessions.append((session, selected_laps, custom_labels))
 
-        worker.session_loaded.connect(_on_session_loaded, Qt.QueuedConnection)
-        worker.start()
-        while worker.isRunning():
-            app.processEvents()
-            worker.wait(20)
-        worker.wait()
-        app.sendPostedEvents()
-        app.processEvents()
+        worker.session_loaded.connect(_on_session_loaded)
+        worker.run()
 
         self.assertEqual(len(loaded_sessions), 2)
         self.assertEqual(loaded_sessions[0][1], [1])
@@ -2182,6 +2179,45 @@ class TestUIComponents(unittest.TestCase):
         color_submenus = [m for m in submenus if m.title() == "Change Color"]
         self.assertEqual(len(color_submenus), 1)
         self.assertEqual(len(color_submenus[0].actions()), len(LAP_COLORS))
+
+    def test_map_manager_dialog_structure_and_interaction(self):
+        """Validates that MapManagerDialog displays list of maps, add/remove buttons, name input, preview canvas, and save button."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        state_mgr.save_map("Track 1", [0, 10, 20], [0, 5, 0])
+        state_mgr.save_map("Track 2", [0, 50, 100], [0, 25, 0])
+
+        dlg = MapManagerDialog(state_manager=state_mgr)
+        self.assertEqual(dlg.windowTitle(), "Manage Maps")
+
+        # 1. Left Panel List & Add/Remove Buttons
+        self.assertIsNotNone(dlg.map_list)
+        self.assertEqual(dlg.map_list.count(), 2)
+        self.assertIsNotNone(dlg.add_btn)
+        self.assertIsNotNone(dlg.remove_btn)
+        self.assertEqual(dlg.add_btn.text(), "Add")
+        self.assertEqual(dlg.remove_btn.text(), "Remove")
+
+        # 2. Right Panel Map Name & Canvas & Save Button
+        self.assertIsNotNone(dlg.map_name_input)
+        self.assertEqual(dlg.map_name_input.text(), dlg.map_list.item(0).text())
+        self.assertIsNotNone(dlg.map_canvas)
+        self.assertIsNotNone(dlg.save_btn)
+        self.assertEqual(dlg.save_btn.text(), "Save")
+
+        # 3. Selection change updates map_name_input
+        dlg.map_list.setCurrentRow(1)
+        self.assertEqual(dlg.map_name_input.text(), dlg.map_list.item(1).text())
+
+        # 4. Close dialog
+        dlg.close()
+
+    def test_main_window_on_manage_maps_triggers_dialog(self):
+        """Validates that MainWindow Edit -> Manage Maps action invokes MapManagerDialog."""
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        with patch.object(MapManagerDialog, "exec") as mock_exec:
+            win._on_manage_maps()
+            mock_exec.assert_called_once()
 
 
 if __name__ == "__main__":

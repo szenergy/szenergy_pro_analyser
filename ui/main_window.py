@@ -19,7 +19,9 @@ from core.data_models import Session
 from ui.sidebar import SidebarWidget
 from ui.graph_view import GraphViewWidget
 from ui.import_wizard import ImportWizardDialog, PresetPreviewDialog
-from ui.edit_dialogs import PresetManagerDialog, ChannelManagerDialog, FileMappingManagerDialog
+from ui.edit_dialogs import (
+    PresetManagerDialog, ChannelManagerDialog, FileMappingManagerDialog, MapManagerDialog
+)
 from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker, WorkspaceRestoreWorker
 from utils.constants import (
     APP_NAME, APP_VERSION,
@@ -122,6 +124,11 @@ class MainWindow(QMainWindow):
         manage_file_mappings_action.triggered.connect(self._on_manage_file_mappings)
         edit_menu.addAction(manage_file_mappings_action)
         self.addAction(manage_file_mappings_action)
+
+        manage_maps_action = QAction("Manage &Maps...", self)
+        manage_maps_action.triggered.connect(self._on_manage_maps)
+        edit_menu.addAction(manage_maps_action)
+        self.addAction(manage_maps_action)
 
         # 3. View Menu
         view_menu = menu_bar.addMenu("&View")
@@ -287,6 +294,12 @@ class MainWindow(QMainWindow):
     def _on_manage_file_mappings(self):
         dialog = FileMappingManagerDialog(self.state_manager, parent=self)
         dialog.exec()
+
+    def _on_manage_maps(self):
+        dialog = MapManagerDialog(self.state_manager, parent=self)
+        dialog.exec()
+        if hasattr(self, "sidebar") and hasattr(self.sidebar, "track_map_tab"):
+            self.sidebar.track_map_tab.refresh_map_list()
 
     def _on_clear_workspace(self):
         if not self.sessions:

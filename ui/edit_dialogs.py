@@ -7,6 +7,7 @@ from ui.preset_manager_dialog import PresetManagerDialog
 from ui.channel_manager_dialog import ChannelManagerDialog
 from ui.file_mapping_dialog import FileMappingManagerDialog, PathElideLeftDelegate
 from ui.rename_legend_dialog import RenameLegendLabelsDialog
+from ui.map_manager_dialog import MapManagerDialog
 
 __all__ = [
     "PresetManagerDialog",
@@ -14,4 +15,5 @@ __all__ = [
     "FileMappingManagerDialog",
     "PathElideLeftDelegate",
     "RenameLegendLabelsDialog",
+    "MapManagerDialog",
 ]

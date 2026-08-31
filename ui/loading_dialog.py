@@ -7,7 +7,7 @@ import logging
 import os
 import uuid
 from PySide6.QtCore import QThread, Signal, Slot, Qt
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar, QApplication
 
 from core.file_parser import parse_session, get_file_columns_and_preview
 from utils.constants import STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
@@ -207,25 +207,30 @@ class LoadingDialog(QDialog):
     def _on_preview_success(self, raw_columns, preview_df):
         self.is_success = True
         self.result_data = (raw_columns, preview_df)
-        self.progress.setRange(0, 1)
-        self.progress.setValue(1)
-        self.accept()
 
     @Slot(object)
     def _on_parse_success(self, session):
         self.is_success = True
         self.result_data = session
-        self.progress.setRange(0, 1)
-        self.progress.setValue(1)
-        self.accept()
 
     @Slot(str)
     def _on_worker_error(self, err_msg: str):
         self.is_success = False
         self.error_message = str(err_msg)
+
+    @Slot()
+    def _on_worker_finished(self):
         self.progress.setRange(0, 1)
-        self.progress.setValue(0)
-        self.reject()
+        self.progress.setValue(1 if self.is_success else 0)
+        if self.is_success:
+            self.accept()
+        else:
+            self.reject()
+
+    def done(self, r):
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1 if self.is_success else 0)
+        super().done(r)
 
     def exec_worker(self) -> bool:
         """Starts worker thread, connects signals via queued connections, blocks modal dialog, and joins worker thread."""
@@ -238,6 +243,7 @@ class LoadingDialog(QDialog):
             self.worker.success.connect(self._on_parse_success, Qt.QueuedConnection)
 
         self.worker.error.connect(self._on_worker_error, Qt.QueuedConnection)
+        self.worker.finished.connect(self._on_worker_finished, Qt.QueuedConnection)
 
         self.worker.start()
         try:
@@ -260,6 +266,10 @@ class LoadingDialog(QDialog):
                 pass
             try:
                 self.worker.error.disconnect(self._on_worker_error)
+            except Exception:
+                pass
+            try:
+                self.worker.finished.disconnect(self._on_worker_finished)
             except Exception:
                 pass
 

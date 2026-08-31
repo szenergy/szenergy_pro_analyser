@@ -122,7 +122,7 @@ class SidebarWidget(QWidget):
         ch_tab_layout.addWidget(self.channel_tree)
 
         # Tab 2: Track Map Tab
-        self.track_map_tab = TrackMapTabWidget()
+        self.track_map_tab = TrackMapTabWidget(state_manager=self.state_manager)
         self.placeholder_tab = self.track_map_tab  # Backwards compatibility alias
 
         self.bottom_tabs.addTab(self.channel_tab, "Channels")
@@ -226,6 +226,8 @@ class SidebarWidget(QWidget):
             "background-color: #E8ECEF; border-bottom: 1px solid #DEE2E6;"
         )
         self.menu_container.setStyleSheet(bar_style)
+        if hasattr(self, "track_map_tab") and hasattr(self.track_map_tab, "apply_theme"):
+            self.track_map_tab.apply_theme(is_dark)
 
     def _create_session_context_menu(self, item: QTreeWidgetItem) -> Optional[QMenu]:
         """Creates the context menu for a session or lap tree item."""

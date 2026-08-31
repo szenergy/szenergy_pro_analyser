@@ -10,11 +10,13 @@ import logging
 import os
 import re
 from typing import Dict, List, Optional, Any, Tuple
+import numpy as np
 from PySide6.QtCore import QStandardPaths, QSettings
 from utils.constants import (
     APP_NAME, ORGANIZATION_NAME, DEFAULT_CHANNEL_DEFS,
     STD_CH_LAP_NUM, STD_CH_LAP_TIME, STD_CH_LAP_DIST,
-    STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
+    STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG,
+    LAP_COLORS
 )
 
 from core.json_utils import (
@@ -45,6 +47,11 @@ class StateManager:
         self.channels_file = os.path.join(self.config_dir, "custom_channels.json")
         self.file_mappings_file = os.path.join(self.config_dir, "file_mappings.json")
         self.ui_state_file = os.path.join(self.config_dir, "ui_state.json")
+        self.maps_dir = os.path.join(self.config_dir, "maps")
+        try:
+            os.makedirs(self.maps_dir, exist_ok=True)
+        except OSError:
+            pass
 
     def load_ui_state(self) -> Dict[str, Any]:
         """Loads persistent UI state (window geometry, graph toggles, sidebar selections, workspace)."""
@@ -536,3 +543,141 @@ class StateManager:
         logger.info("Imported configuration from '%s' (%d presets, %d channels)",
                     file_path, num_presets_imported, num_channels_imported)
         return num_presets_imported, num_channels_imported
+
+    # -------------------------------------------------------------------------
+    # Track Map Management
+    # -------------------------------------------------------------------------
+
+    def get_maps_dir(self) -> str:
+        """Returns the directory path where track map JSON files are saved."""
+        os.makedirs(self.maps_dir, exist_ok=True)
+        return self.maps_dir
+
+    def load_maps(self) -> List[Dict[str, Any]]:
+        """Loads all saved track maps from the maps directory."""
+        maps = []
+        maps_dir = self.get_maps_dir()
+        if not os.path.exists(maps_dir):
+            return maps
+
+        for filename in sorted(os.listdir(maps_dir)):
+            if filename.endswith(".json"):
+                file_path = os.path.join(maps_dir, filename)
+                try:
+                    version, data = read_versioned_json(file_path)
+                    if isinstance(data, dict) and "name" in data and "x" in data and "y" in data:
+                        # Convert coordinate lists to numpy float64 arrays
+                        data["x"] = np.asarray(data["x"], dtype=np.float64)
+                        data["y"] = np.asarray(data["y"], dtype=np.float64)
+                        if "distance" in data and data["distance"] is not None:
+                            data["distance"] = np.asarray(data["distance"], dtype=np.float64)
+                        else:
+                            data["distance"] = None
+                        data["rotation"] = float(data.get("rotation", 0.0))
+                        data["color"] = str(data.get("color", LAP_COLORS[1]))
+                        maps.append(data)
+                except Exception as e:
+                    logger.error("Failed loading map from %s: %s", file_path, e)
+        return maps
+
+    def get_map(self, name: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single map by name (case-insensitive)."""
+        target = name.strip().lower()
+        for m in self.load_maps():
+            if m.get("name", "").strip().lower() == target:
+                return m
+        return None
+
+    def save_map(
+        self,
+        name: str,
+        x: Any,
+        y: Any,
+        distance: Optional[Any] = None,
+        rotation: float = 0.0,
+        color: Optional[str] = None,
+        old_name: Optional[str] = None
+    ) -> str:
+        """
+        Saves a track map to the maps folder in versioned envelope format with rotation and color.
+        Returns the saved file path.
+        """
+        maps_dir = self.get_maps_dir()
+        clean_name = name.strip()
+        slug = generate_slug(clean_name)
+        if not slug:
+            slug = "track_map"
+
+        if old_name and old_name.strip().lower() != clean_name.lower():
+            old_slug = generate_slug(old_name.strip())
+            old_file = os.path.join(maps_dir, f"{old_slug}.json")
+            if os.path.exists(old_file):
+                try:
+                    os.remove(old_file)
+                except OSError:
+                    pass
+
+        x_list = np.asarray(x, dtype=np.float64).tolist()
+        y_list = np.asarray(y, dtype=np.float64).tolist()
+        dist_list = np.asarray(distance, dtype=np.float64).tolist() if distance is not None else None
+        chosen_color = color if (color and color in LAP_COLORS) else (color or LAP_COLORS[1])
+
+        map_data = {
+            "name": clean_name,
+            "slug": slug,
+            "rotation": float(rotation),
+            "color": chosen_color,
+            "x": x_list,
+            "y": y_list,
+            "distance": dist_list
+        }
+
+        target_file = os.path.join(maps_dir, f"{slug}.json")
+        write_versioned_json(target_file, 1, map_data)
+        logger.info("Saved track map '%s' (%d points, rot=%.1f°, color=%s) to %s", clean_name, len(x_list), rotation, chosen_color, target_file)
+        return target_file
+
+    def save_map_rotation(self, name: str, rotation: float) -> bool:
+        """Updates the rotation angle of an existing map in its JSON file."""
+        map_data = self.get_map(name)
+        if not map_data:
+            return False
+        self.save_map(
+            name=map_data["name"],
+            x=map_data["x"],
+            y=map_data["y"],
+            distance=map_data.get("distance"),
+            rotation=float(rotation),
+            color=map_data.get("color")
+        )
+        return True
+
+    def save_map_color(self, name: str, color: str) -> bool:
+        """Updates the display color of an existing map in its JSON file."""
+        map_data = self.get_map(name)
+        if not map_data:
+            return False
+        self.save_map(
+            name=map_data["name"],
+            x=map_data["x"],
+            y=map_data["y"],
+            distance=map_data.get("distance"),
+            rotation=map_data.get("rotation", 0.0),
+            color=color
+        )
+        return True
+
+    def delete_map(self, name: str) -> bool:
+        """Deletes a saved track map by name."""
+        maps_dir = self.get_maps_dir()
+        slug = generate_slug(name.strip())
+        target_file = os.path.join(maps_dir, f"{slug}.json")
+        if os.path.exists(target_file):
+            try:
+                os.remove(target_file)
+                logger.info("Deleted track map '%s' (%s)", name, target_file)
+                return True
+            except OSError as e:
+                logger.error("Failed deleting map %s: %s", target_file, e)
+                return False
+        return False
