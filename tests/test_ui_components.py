@@ -912,7 +912,12 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(wizard.status_items["Raw_Extra"].text(), "✓")
         self.assertEqual(wizard.stat_matched.text(), "✓ 4 Matched")
 
-        with patch.object(QMessageBox, "information"):
+        def _mock_choice_exec(dlg):
+            dlg.selected_action = SavePresetChoiceDialog.ACTION_CREATE_NEW
+            return QDialog.Accepted
+
+        with patch.object(QMessageBox, "information"), \
+             patch.object(SavePresetChoiceDialog, "exec", _mock_choice_exec):
             wizard._on_save_preset()
         saved = state_mgr.load_presets()
         preset_names = [p["name"] for p in saved]
@@ -1662,6 +1667,7 @@ class TestUIComponents(unittest.TestCase):
             win2._on_clear_workspace()
         self.assertFalse(os.path.exists(state_mgr.ui_state_file))
         self.assertEqual(state_mgr.load_ui_state(), {})
+        win2.close()
 
     def test_workspace_restore_worker(self):
         """Validates WorkspaceRestoreWorker execution and progress reporting."""
@@ -1983,7 +1989,7 @@ class TestUIComponents(unittest.TestCase):
         wizard.preset_combo.setCurrentText("MoTeC Renamed")
 
         # Mock SavePresetChoiceDialog to simulate clicking "Cancel" (reject)
-        with patch("ui.import_wizard.SavePresetChoiceDialog.exec", return_value=QDialog.Rejected):
+        with patch.object(SavePresetChoiceDialog, "exec", return_value=QDialog.Rejected):
             wizard._on_save_preset()
 
         presets = state_mgr.load_presets()
