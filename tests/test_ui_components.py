@@ -186,7 +186,7 @@ class TestUIComponents(unittest.TestCase):
         widget.set_selected_laps([(self.session.id, 1, "#00E676")])
         widget.set_selected_channels({"speed", "rpm"})
 
-        # 2 channels * 1 lap = 2 tracking dots
+        # 2 channels * 1 lap = 2 tracking dots and value labels
         self.assertEqual(len(widget.tracking_dots), 2)
 
         # Test cursor movement at X = 1.0s (requires Time as X-axis)
@@ -196,16 +196,25 @@ class TestUIComponents(unittest.TestCase):
         scene_pos = first_plot.vb.mapViewToScene(QPointF(1.0, 20.0))
         widget._on_mouse_moved(scene_pos)
 
-        # Verify dot data updated (Speed should be 20.0 at X=1.0)
-        speed_dot = [d for d, _, _, ch in widget.tracking_dots if ch == "speed"][0]
+        # Verify dot and value label updated (Speed should be 20.0 at X=1.0)
+        speed_dot, speed_val_label, _, _, _ = [entry for entry in widget.tracking_dots if entry[4] == "speed"][0]
         points = speed_dot.points()
         self.assertEqual(len(points), 1)
         self.assertAlmostEqual(points[0].pos().x(), 1.0, places=2)
         self.assertAlmostEqual(points[0].pos().y(), 20.0, places=2)
+        self.assertEqual(speed_val_label.toPlainText(), "20.00")
+        self.assertTrue(speed_val_label.isVisible())
 
-        # Verify toggle cursor values hides tracking dots
+        # Verify X-axis bottom tracking cursor label
+        self.assertIsNotNone(widget.x_cursor_label)
+        self.assertEqual(widget.x_cursor_label.toPlainText().strip(), "1.00")
+        self.assertTrue(widget.x_cursor_label.isVisible())
+
+        # Verify toggle cursor values hides tracking dots, value labels, and X cursor label
         widget.btn_cursor.setChecked(False)
         self.assertFalse(speed_dot.isVisible())
+        self.assertFalse(speed_val_label.isVisible())
+        self.assertFalse(widget.x_cursor_label.isVisible())
 
     def test_import_wizard_defaults_to_skip_without_preset(self):
         """Validates that without an explicit preset or mapping, all channels default to '-- Skip --' and preset combo defaults to 'None'."""

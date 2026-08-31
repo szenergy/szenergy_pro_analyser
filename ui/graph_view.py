@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QFrame, QPushButton, QMessageBox
 )
 from PySide6.QtCore import Qt, QSize, QPointF, QTimer, QEvent
-from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
+from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF, QFont
 
 from core.data_models import Session, Lap
 from utils.constants import (
@@ -61,8 +61,10 @@ class GraphViewWidget(QWidget):
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
         self.v_lines: List[pg.InfiniteLine] = []
-        self.tracking_dots: List[Tuple[pg.ScatterPlotItem, str, int, str]] = []
+        self.tracking_dots: List[Tuple[pg.ScatterPlotItem, pg.TextItem, str, int, str]] = []
         self.legend: Optional[pg.LegendItem] = None
+        self.x_cursor_label: Optional[pg.TextItem] = None
+        self._last_cursor_x: Optional[float] = None
 
         self._init_ui()
 
@@ -293,6 +295,20 @@ class GraphViewWidget(QWidget):
         """Slot called when a ViewBox signals manual range change (pan, wheel, scale)."""
         if not getattr(self, "_is_rebuilding", False):
             self.mark_manual_zoom_or_pan()
+            if getattr(self, "_last_cursor_x", None) is not None and getattr(self, "x_cursor_label", None) is not None:
+                if self.show_cursor_values and self.selected_channels:
+                    bottom_channel = self.selected_channels[-1]
+                    bottom_plot = self.plot_widgets.get(bottom_channel)
+                    if bottom_plot and hasattr(bottom_plot, "vb") and bottom_plot.vb is not None:
+                        bottom_axis = bottom_plot.getAxis("bottom")
+                        view_pt = bottom_plot.vb.mapViewToScene(QPointF(self._last_cursor_x, 0))
+                        axis_pt = bottom_axis.mapFromScene(view_pt)
+                        x_min, x_max = bottom_plot.vb.viewRange()[0]
+                        if x_min <= self._last_cursor_x <= x_max:
+                            self.x_cursor_label.setPos(axis_pt.x(), 2)
+                            self.x_cursor_label.setVisible(True)
+                        else:
+                            self.x_cursor_label.setVisible(False)
 
     def cancel_drag_selection(self) -> bool:
         """Cancels any ongoing X-axis drag selection across all stacked plots."""
@@ -360,15 +376,11 @@ class GraphViewWidget(QWidget):
         self.show_cursor_values = checked
         for v_line in self.v_lines:
             v_line.setVisible(self.show_cursor_values)
-        for dot, _, _, _ in self.tracking_dots:
+        for dot, value_label, _, _, _ in self.tracking_dots:
             dot.setVisible(self.show_cursor_values)
-        if not self.show_cursor_values:
-            title_color = "#E0E0E0" if self.is_dark else "#202020"
-            for channel_name, plot in self.plot_widgets.items():
-                display_label = channel_name
-                if self.state_manager:
-                    display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
-                plot.setTitle(f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>", justify='left')
+            value_label.setVisible(self.show_cursor_values)
+        if hasattr(self, "x_cursor_label") and self.x_cursor_label is not None:
+            self.x_cursor_label.setVisible(self.show_cursor_values and getattr(self, "_last_cursor_x", None) is not None)
 
     def _toggle_legend(self, checked: bool):
         self.show_legend = checked
@@ -487,9 +499,25 @@ class GraphViewWidget(QWidget):
                     plot.setXLink(first_plot)
 
                 if row == len(self.selected_channels) - 1:
-                    plot.getAxis("bottom").setStyle(showValues=True)
-                    plot.getAxis("bottom").setHeight(40)
+                    bottom_axis = plot.getAxis("bottom")
+                    bottom_axis.setStyle(showValues=True)
+                    bottom_axis.setHeight(40)
                     plot.setLabel("bottom", f"{self.x_axis_channel}")
+
+                    # Label tracking the bottom of the cursor along the X-axis with matching graph background
+                    font = QFont("Segoe UI", 9)
+                    font.setBold(False)
+                    self.x_cursor_label = pg.TextItem(
+                        text="",
+                        anchor=(0.5, 0.0),
+                        fill=pg.mkBrush("#191B1F" if self.is_dark else "#FFFFFF"),
+                        border=None,
+                        color="#E0E0E0" if self.is_dark else "#202020"
+                    )
+                    self.x_cursor_label.setFont(font)
+                    self.x_cursor_label.setParentItem(bottom_axis)
+                    self.x_cursor_label.setZValue(100)
+                    self.x_cursor_label.setVisible(False)
                 else:
                     # Keep bottom axis active to render X grid lines, but without text numbers
                     plot.getAxis("bottom").setStyle(showValues=False, tickLength=0)
@@ -542,7 +570,22 @@ class GraphViewWidget(QWidget):
                         dot.setZValue(10)
                         dot.setVisible(self.show_cursor_values)
                         plot.addItem(dot, ignoreBounds=True)
-                        self.tracking_dots.append((dot, session_id, lap_num, channel_name))
+
+                        # Create numerical value label next to the tracking dot with matching lap color
+                        font = QFont("Segoe UI", 9)
+                        font.setBold(True)
+                        value_label = pg.TextItem(
+                            text="",
+                            color=color,
+                            anchor=(-0.3, 0.5),
+                            fill=None
+                        )
+                        value_label.setFont(font)
+                        value_label.setZValue(11)
+                        value_label.setVisible(self.show_cursor_values)
+                        plot.addItem(value_label, ignoreBounds=True)
+
+                        self.tracking_dots.append((dot, value_label, session_id, lap_num, channel_name))
 
             self._update_row_heights()
 
@@ -577,6 +620,8 @@ class GraphViewWidget(QWidget):
         except Exception:
             return
 
+        self._last_cursor_x = x_val
+
         # Update crosshair position on all stacked plots
         for v_line in self.v_lines:
             try:
@@ -584,51 +629,53 @@ class GraphViewWidget(QWidget):
             except Exception:
                 pass
 
-        title_color = "#E0E0E0" if self.is_dark else "#202020"
-        samples: Dict[Tuple[str, int, str], Optional[Tuple[float, float]]] = {}
+        # Update X-axis tracking label at the bottom of the cursor
+        if hasattr(self, "x_cursor_label") and self.x_cursor_label is not None:
+            if self.show_cursor_values and self.selected_channels:
+                bottom_channel = self.selected_channels[-1]
+                bottom_plot = self.plot_widgets.get(bottom_channel)
+                if bottom_plot and hasattr(bottom_plot, "vb") and bottom_plot.vb is not None:
+                    bottom_axis = bottom_plot.getAxis("bottom")
+                    view_pt = bottom_plot.vb.mapViewToScene(QPointF(x_val, 0))
+                    axis_pt = bottom_axis.mapFromScene(view_pt)
+                    x_min, x_max = bottom_plot.vb.viewRange()[0]
+                    if x_min <= x_val <= x_max:
+                        self.x_cursor_label.setText(f" {x_val:.2f} ")
+                        self.x_cursor_label.setPos(axis_pt.x(), 2)
+                        self.x_cursor_label.setVisible(True)
+                    else:
+                        self.x_cursor_label.setVisible(False)
+            else:
+                self.x_cursor_label.setVisible(False)
 
-        # Update tracking dots position on every curve (snapping directly to nearest actual curve vertex)
-        for dot, session_id, lap_num, channel_name in self.tracking_dots:
+        # Update tracking dots and numerical value labels on every curve
+        for dot, value_label, session_id, lap_num, channel_name in self.tracking_dots:
             try:
                 session = self.sessions.get(session_id)
                 if not session:
                     dot.setData(x=[], y=[])
+                    value_label.setVisible(False)
                     continue
                 lap = session.get_lap(lap_num)
                 if not lap:
                     dot.setData(x=[], y=[])
+                    value_label.setVisible(False)
                     continue
 
                 raw_x = lap.get_channel(self.x_axis_slug)
                 raw_y = lap.get_channel(channel_name)
 
                 sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
-                samples[(session_id, lap_num, channel_name)] = sample
                 if sample is not None:
                     actual_x, actual_y = sample
                     dot.setData(x=[actual_x], y=[actual_y])
                     dot.setVisible(True)
+                    value_label.setText(f"{actual_y:.2f}")
+                    value_label.setPos(actual_x, actual_y)
+                    value_label.setVisible(True)
                 else:
                     dot.setData(x=[], y=[])
-            except Exception:
-                pass
-
-        # Update each plot's header directly with its current channel values using cached samples
-        for channel_name, plot in self.plot_widgets.items():
-            try:
-                display_label = channel_name
-                if self.state_manager:
-                    display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
-                title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"]
-
-                for session_id, lap_num, color in self.selected_laps_info:
-                    sample = samples.get((session_id, lap_num, channel_name))
-                    if sample is not None:
-                        _, actual_y = sample
-                        title_parts.append(f"<span style='color:{color}; font-weight:bold; font-size:10pt;'>{actual_y:.2f}</span>")
-
-                full_title = " &nbsp;&nbsp;|&nbsp;&nbsp; ".join(title_parts)
-                plot.setTitle(full_title, justify='left')
+                    value_label.setVisible(False)
             except Exception:
                 pass
 
