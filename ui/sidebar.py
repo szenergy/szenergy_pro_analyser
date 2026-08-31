@@ -78,8 +78,13 @@ class SidebarWidget(QWidget):
         content_layout.setContentsMargins(5, 5, 5, 5)
         content_layout.setSpacing(6)
 
-        # 1. Sessions & Laps Section (Top Half)
+        # Import hint label shown at the top of the sidebar when no files are imported
+        self.import_hint_label = QLabel("Import telemetry data in the File menu")
+        self.import_hint_label.setAlignment(Qt.AlignCenter)
+        self.import_hint_label.setWordWrap(True)
+        content_layout.addWidget(self.import_hint_label)
 
+        # 1. Sessions & Laps Section (Top Half)
         self.session_tree = QTreeWidget()
         self.session_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.session_tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -226,8 +231,22 @@ class SidebarWidget(QWidget):
             "background-color: #E8ECEF; border-bottom: 1px solid #DEE2E6;"
         )
         self.menu_container.setStyleSheet(bar_style)
+
+        hint_style = (
+            "color: #9E9E9E; font-size: 9pt; padding: 6px 4px; font-style: italic;"
+            if is_dark else
+            "color: #666666; font-size: 9pt; padding: 6px 4px; font-style: italic;"
+        )
+        if hasattr(self, "import_hint_label"):
+            self.import_hint_label.setStyleSheet(hint_style)
+
         if hasattr(self, "track_map_tab") and hasattr(self.track_map_tab, "apply_theme"):
             self.track_map_tab.apply_theme(is_dark)
+
+    def _update_import_hint(self):
+        """Updates visibility of the import telemetry hint based on whether sessions are loaded."""
+        if hasattr(self, "import_hint_label"):
+            self.import_hint_label.setVisible(len(self.sessions) == 0)
 
     def _create_session_context_menu(self, item: QTreeWidgetItem) -> Optional[QMenu]:
         """Creates the context menu for a session or lap tree item."""
@@ -312,6 +331,7 @@ class SidebarWidget(QWidget):
             lap_item.setIcon(0, create_empty_icon())
             lap_item.setData(0, Qt.UserRole, ("lap", session.id, lap.lap_number))
         self.update_available_channels()
+        self._update_import_hint()
 
     def update_session(self, updated_session: Session):
         """Updates an existing session in the sidebar tree, preserving lap selections and colors."""
@@ -364,6 +384,7 @@ class SidebarWidget(QWidget):
 
         self.session_tree.blockSignals(False)
         self.update_available_channels()
+        self._update_import_hint()
         self._on_lap_selection_changed(immediate=True)
 
     def remove_session(self, session_id: str):
@@ -384,6 +405,7 @@ class SidebarWidget(QWidget):
                 break
 
         self.update_available_channels()
+        self._update_import_hint()
         self._on_lap_selection_changed(immediate=True)
         self.session_removed.emit(session_id)
 
@@ -394,6 +416,7 @@ class SidebarWidget(QWidget):
         self.available_colors = list(LAP_COLORS)
         self.session_tree.clear()
         self.update_available_channels()
+        self._update_import_hint()
         self._on_lap_selection_changed(immediate=True)
 
     def update_available_channels(self):

@@ -6,7 +6,7 @@ Provides UI controls for selecting and rotating track maps with a central canvas
 import math
 from typing import Optional, Dict, Any, List, Tuple
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QSlider, QLabel, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QSlider, QLabel, QFrame, QPushButton
 )
 from PySide6.QtCore import Qt, QTimer
 import pyqtgraph as pg
@@ -16,6 +16,7 @@ from utils.theme import is_system_dark_theme
 from utils.constants import LAP_COLORS
 from core.state_manager import StateManager
 from core.map_parser import compute_start_line_coords
+from ui.graph_icons import create_icon_settings
 
 
 class TrackMapTabWidget(QWidget):
@@ -52,14 +53,21 @@ class TrackMapTabWidget(QWidget):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(4)
 
-        # Map dropdown row
+        # Map dropdown row with Manage Maps button
         map_row = QHBoxLayout()
         map_row.setContentsMargins(0, 0, 0, 0)
-        map_row.setSpacing(6)
+        map_row.setSpacing(4)
         map_row.addWidget(QLabel("Map:"))
         self.map_combo = QComboBox()
         self.map_combo.currentTextChanged.connect(self._on_map_selection_changed)
         map_row.addWidget(self.map_combo, 1)
+
+        self.btn_manage_maps = QPushButton()
+        self.btn_manage_maps.setToolTip("Manage Track Maps")
+        self.btn_manage_maps.setFixedSize(28, 24)
+        self.btn_manage_maps.setCursor(Qt.PointingHandCursor)
+        self.btn_manage_maps.clicked.connect(self._on_open_map_manager)
+        map_row.addWidget(self.btn_manage_maps)
         controls_layout.addLayout(map_row)
 
         # Rotation slider row
@@ -102,16 +110,36 @@ class TrackMapTabWidget(QWidget):
         self.tracking_dots_scatter = pg.ScatterPlotItem(size=14, pxMode=True)
         self.plot_widget.addItem(self.tracking_dots_scatter)
 
+        # Placeholder text when no maps are available
+        self.placeholder_text_item = pg.TextItem(
+            html="<div style='text-align: center; color: #888888; font-size: 9.5pt; font-family: Segoe UI, sans-serif;'>"
+                 "No maps available.<br><br>Import maps by clicking on the settings icon above.</div>",
+            anchor=(0.5, 0.5)
+        )
+        self.placeholder_text_item.setPos(0, 0)
+        self.placeholder_text_item.setZValue(10)
+        self.placeholder_text_item.setVisible(False)
+        self.plot_widget.addItem(self.placeholder_text_item)
+
         # Compatibility aliases
         self.map_canvas = self.plot_widget
-        self.placeholder_canvas_label = QLabel()
+        self.placeholder_canvas_label = QLabel("Import maps by clicking on the settings icon above")
 
         layout.addWidget(self.plot_widget, 1)
         self.apply_theme(self.is_dark)
 
+    def _on_open_map_manager(self):
+        """Opens the MapManagerDialog to manage and import track maps."""
+        from ui.map_manager_dialog import MapManagerDialog
+        dialog = MapManagerDialog(state_manager=self.state_manager, parent=self)
+        dialog.exec()
+        self.refresh_map_list(select_name=dialog.current_map_name or self._current_map_name)
+
     def apply_theme(self, is_dark: bool):
         """Updates the map canvas background and track pen color to match the theme."""
         self.is_dark = is_dark
+        if hasattr(self, "btn_manage_maps"):
+            self.btn_manage_maps.setIcon(create_icon_settings(is_dark))
         bg_color = "#191B1F" if is_dark else "#FFFFFF"
         self.plot_widget.setBackground(bg_color)
         pen_color = self._current_color if self._current_color else ("#00E676" if is_dark else "#00A844")
@@ -142,6 +170,7 @@ class TrackMapTabWidget(QWidget):
 
         current_text = self.map_combo.currentText()
         if current_text and current_text != "-- No Maps Available --":
+            self.placeholder_text_item.setVisible(False)
             self._load_and_render_map(current_text)
         else:
             self._raw_x = None
@@ -150,6 +179,9 @@ class TrackMapTabWidget(QWidget):
             self.map_curve.setData([], [])
             self.start_line_curve.setData([], [])
             self.tracking_dots_scatter.setData([])
+            self.placeholder_text_item.setVisible(True)
+            self.plot_widget.setXRange(-10, 10, padding=0)
+            self.plot_widget.setYRange(-10, 10, padding=0)
 
     def get_selected_map(self) -> Optional[str]:
         """Returns the currently selected track map name, or None."""
@@ -180,12 +212,16 @@ class TrackMapTabWidget(QWidget):
             self.map_curve.setData([], [])
             self.start_line_curve.setData([], [])
             self.tracking_dots_scatter.setData([])
+            self.placeholder_text_item.setVisible(True)
+            self.plot_widget.setXRange(-10, 10, padding=0)
+            self.plot_widget.setYRange(-10, 10, padding=0)
             return
 
         self._load_and_render_map(map_name)
 
     def _load_and_render_map(self, map_name: str):
         """Loads coordinates, saved rotation, color, and distance for the given map name and renders."""
+        self.placeholder_text_item.setVisible(False)
         self._current_map_name = map_name
         map_data = self.state_manager.get_map(map_name)
         if map_data and "x" in map_data and "y" in map_data:

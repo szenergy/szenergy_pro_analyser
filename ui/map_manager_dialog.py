@@ -92,39 +92,34 @@ class MapManagerDialog(QDialog):
         name_layout.addWidget(self.map_name_input)
         right_layout.addLayout(name_layout)
 
-        # Rotation Slider Row
-        rot_layout = QHBoxLayout()
-        rot_layout.setContentsMargins(0, 0, 0, 0)
-        rot_layout.setSpacing(6)
-        rot_layout.addWidget(QLabel("<b>Rotation:</b>"))
+        # Rotation Slider & Track Color Row
+        rot_color_layout = QHBoxLayout()
+        rot_color_layout.setContentsMargins(0, 0, 0, 0)
+        rot_color_layout.setSpacing(8)
+        rot_color_layout.addWidget(QLabel("<b>Rotation:</b>"))
 
         self.rotation_slider = QSlider(Qt.Horizontal)
         self.rotation_slider.setRange(-180, 180)
         self.rotation_slider.setValue(0)
         self.rotation_slider.setSingleStep(1)
         self.rotation_slider.setPageStep(15)
-        rot_layout.addWidget(self.rotation_slider, 1)
+        rot_color_layout.addWidget(self.rotation_slider, 1)
 
         self.rotation_value_label = QLabel("0°")
         self.rotation_value_label.setMinimumWidth(36)
-        rot_layout.addWidget(self.rotation_value_label)
+        rot_color_layout.addWidget(self.rotation_value_label)
 
-        self.rotation_slider.valueChanged.connect(self._on_rotation_changed)
-        right_layout.addLayout(rot_layout)
-
-        # Track Color Row
-        color_layout = QHBoxLayout()
-        color_layout.setContentsMargins(0, 0, 0, 0)
-        color_layout.setSpacing(8)
-        color_layout.addWidget(QLabel("<b>Color:</b>"))
+        rot_color_layout.addSpacing(8)
+        rot_color_layout.addWidget(QLabel("<b>Color:</b>"))
 
         self.color_btn = QPushButton()
         self.color_btn.setFixedSize(36, 24)
         self.color_btn.setCursor(Qt.PointingHandCursor)
         self.color_btn.clicked.connect(self._on_open_color_picker)
-        color_layout.addWidget(self.color_btn)
-        color_layout.addStretch()
-        right_layout.addLayout(color_layout)
+        rot_color_layout.addWidget(self.color_btn)
+
+        self.rotation_slider.valueChanged.connect(self._on_rotation_changed)
+        right_layout.addLayout(rot_color_layout)
 
         # Map Display / Preview Canvas using PyQtGraph
         self.plot_widget = pg.PlotWidget()

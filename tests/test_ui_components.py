@@ -20,6 +20,7 @@ from core.data_models import Session, Lap
 from core.state_manager import StateManager
 from ui.graph_view import GraphViewWidget, _get_nearest_channel_sample, XZoomViewBox
 from ui.sidebar import SidebarWidget, LapColorPickerPopup
+from ui.track_map_tab import TrackMapTabWidget
 from ui.edit_dialogs import (
     PresetManagerDialog, ChannelManagerDialog, RenameLegendLabelsDialog,
     FileMappingManagerDialog, MapManagerDialog
@@ -2289,11 +2290,15 @@ class TestUIComponents(unittest.TestCase):
         self.assertIsNotNone(dlg.save_btn)
         self.assertEqual(dlg.save_btn.text(), "Save")
 
-        # 3. Selection change updates map_name_input
+        # 3. Rotation Slider and Color button are next to each other
+        self.assertIsNotNone(dlg.rotation_slider)
+        self.assertIsNotNone(dlg.color_btn)
+
+        # 4. Selection change updates map_name_input
         dlg.map_list.setCurrentRow(1)
         self.assertEqual(dlg.map_name_input.text(), dlg.map_list.item(1).text())
 
-        # 4. Close dialog
+        # 5. Close dialog
         dlg.close()
 
     def test_main_window_on_manage_maps_triggers_dialog(self):
@@ -2303,6 +2308,51 @@ class TestUIComponents(unittest.TestCase):
         with patch.object(MapManagerDialog, "exec") as mock_exec:
             win._on_manage_maps()
             mock_exec.assert_called_once()
+
+    def test_sidebar_import_hint_label_lifecycle(self):
+        """Validates that sidebar displays import hint label when empty and hides when sessions are present."""
+        sidebar = SidebarWidget()
+        self.assertIsNotNone(sidebar.import_hint_label)
+        self.assertIn("import telemetry data in the file menu", sidebar.import_hint_label.text().lower())
+        self.assertFalse(sidebar.import_hint_label.isHidden())
+
+        # Add session -> hides label
+        sidebar.add_session(self.session)
+        self.assertTrue(sidebar.import_hint_label.isHidden())
+
+        # Remove session -> shows label again
+        sidebar.remove_session(self.session.id)
+        self.assertFalse(sidebar.import_hint_label.isHidden())
+
+        # Add session again -> clear all -> shows label
+        sidebar.add_session(self.session)
+        self.assertTrue(sidebar.import_hint_label.isHidden())
+        sidebar.clear_all_sessions()
+        self.assertFalse(sidebar.import_hint_label.isHidden())
+
+    def test_track_map_tab_manage_maps_button_and_placeholder(self):
+        """Validates that track map tab has a settings button and placeholder text when no maps are available."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        tab = TrackMapTabWidget(state_manager=state_mgr)
+
+        # 1. Manage maps button exists with icon and tooltip
+        self.assertIsNotNone(tab.btn_manage_maps)
+        self.assertEqual(tab.btn_manage_maps.toolTip(), "Manage Track Maps")
+        self.assertFalse(tab.btn_manage_maps.icon().isNull())
+
+        # 2. Placeholder text item is visible when no maps exist
+        self.assertTrue(tab.placeholder_text_item.isVisible())
+        self.assertIn("import maps by clicking on the settings icon above", tab.placeholder_text_item.toPlainText().lower())
+
+        # 3. Clicking manage maps button triggers MapManagerDialog
+        with patch.object(MapManagerDialog, "exec") as mock_exec:
+            tab.btn_manage_maps.click()
+            mock_exec.assert_called_once()
+
+        # 4. Adding and selecting a map hides the placeholder text
+        state_mgr.save_map("Circuit 1", [0, 10, 20], [0, 5, 0])
+        tab.refresh_map_list("Circuit 1")
+        self.assertFalse(tab.placeholder_text_item.isVisible())
 
 
 if __name__ == "__main__":

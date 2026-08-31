@@ -1,7 +1,4 @@
-"""
-Vector icon factories for GraphView toolbar buttons.
-Draws crisp icons for dark and light theme palettes.
-"""
+import math
 
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
@@ -148,5 +145,35 @@ def create_icon_export(is_dark: bool) -> QIcon:
     # Upward arrow head
     painter.drawLine(7, 8, 12, 3)
     painter.drawLine(17, 8, 12, 3)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def create_icon_settings(is_dark: bool) -> QIcon:
+    """Draws a vector gear / settings icon for map management and configuration."""
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    fg = QColor("#E0E0E0" if is_dark else "#2A2E33")
+    pen = QPen(fg, 1.5)
+    painter.setPen(pen)
+
+    cx, cy = 12.0, 12.0
+    painter.drawEllipse(QPointF(cx, cy), 6.0, 6.0)
+    painter.setBrush(fg)
+    painter.drawEllipse(QPointF(cx, cy), 2.2, 2.2)
+
+    # 8 radial teeth
+    for i in range(8):
+        angle_rad = i * (math.pi / 4.0)
+        x1 = cx + 5.0 * math.cos(angle_rad)
+        y1 = cy + 5.0 * math.sin(angle_rad)
+        x2 = cx + 9.5 * math.cos(angle_rad)
+        y2 = cy + 9.5 * math.sin(angle_rad)
+        pen.setWidthF(2.2)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
     painter.end()
     return QIcon(pixmap)
