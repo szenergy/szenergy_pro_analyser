@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtWidgets import (
-    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog
+    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog, QTabWidget
 )
 from PySide6.QtCore import QPointF, QPoint, Qt, QEvent
 from PySide6.QtGui import QKeyEvent
@@ -302,6 +302,37 @@ class TestUIComponents(unittest.TestCase):
         scene_pos_mid = plot.vb.mapViewToScene(QPointF(5.0, 50.0))
         widget._on_mouse_moved(scene_pos_mid)
         self.assertEqual(lbl.anchor[0], -0.3)  # Normal right side
+
+    def test_sidebar_bottom_tabs_structure_and_south_position(self):
+        """Validates that the sidebar bottom half uses QTabWidget with South tabs (Channels & Track Map)."""
+        sidebar = SidebarWidget()
+        self.assertTrue(hasattr(sidebar, "bottom_tabs"))
+        self.assertEqual(sidebar.bottom_tabs.tabPosition(), QTabWidget.TabPosition.South)
+        self.assertEqual(sidebar.bottom_tabs.count(), 2)
+        self.assertEqual(sidebar.bottom_tabs.tabText(0), "Channels")
+        self.assertEqual(sidebar.bottom_tabs.tabText(1), "Track Map")
+
+        # Verify channels tab contains search input and channel tree
+        self.assertEqual(sidebar.bottom_tabs.widget(0), sidebar.channel_tab)
+        self.assertIsNotNone(sidebar.channel_search_input)
+        self.assertIsNotNone(sidebar.channel_tree)
+        self.assertEqual(sidebar.channel_tree.parentWidget(), sidebar.channel_tab)
+
+        # Verify Track Map tab controls
+        self.assertEqual(sidebar.bottom_tabs.widget(1), sidebar.track_map_tab)
+        self.assertIsNotNone(sidebar.track_map_tab.map_combo)
+        self.assertGreaterEqual(sidebar.track_map_tab.map_combo.count(), 1)
+        self.assertIsNotNone(sidebar.track_map_tab.rotation_slider)
+        self.assertEqual(sidebar.track_map_tab.rotation_slider.value(), 0)
+        self.assertEqual(sidebar.track_map_tab.rotation_value_label.text(), "0°")
+
+        # Test rotation slider updates label
+        sidebar.track_map_tab.rotation_slider.setValue(90)
+        self.assertEqual(sidebar.track_map_tab.rotation_value_label.text(), "90°")
+
+        # Verify canvas placeholder
+        self.assertIsNotNone(sidebar.track_map_tab.map_canvas)
+        self.assertIsNotNone(sidebar.track_map_tab.placeholder_canvas_label)
 
     def test_import_wizard_defaults_to_skip_without_preset(self):
         """Validates that without an explicit preset or mapping, all channels default to '-- Skip --' and preset combo defaults to 'None'."""

@@ -7,7 +7,8 @@ dynamic color allocation, channel search filtering, and context menu session man
 from typing import Dict, List, Set, Tuple, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame
+    QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame,
+    QTabWidget
 )
 from PySide6.QtCore import Signal, Qt, QPoint, QTimer, QEvent
 from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
@@ -17,6 +18,7 @@ from utils.constants import LAP_COLORS, MAX_SELECTED_CHANNELS
 from ui.color_picker_popup import (
     LapColorPickerPopup, create_color_icon, create_empty_icon, format_lap_time
 )
+from ui.track_map_tab import TrackMapTabWidget
 
 
 class SidebarWidget(QWidget):
@@ -76,8 +78,7 @@ class SidebarWidget(QWidget):
         content_layout.setContentsMargins(5, 5, 5, 5)
         content_layout.setSpacing(6)
 
-        # 1. Sessions & Laps Section
-        content_layout.addWidget(QLabel("<b>Sessions & Laps</b>"))
+        # 1. Sessions & Laps Section (Top Half)
 
         self.session_tree = QTreeWidget()
         self.session_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -92,16 +93,23 @@ class SidebarWidget(QWidget):
         self.session_tree.itemSelectionChanged.connect(self._on_lap_selection_changed)
         self.session_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.session_tree.customContextMenuRequested.connect(self._show_session_context_menu)
-        content_layout.addWidget(self.session_tree)
+        content_layout.addWidget(self.session_tree, 1)
 
-        # 2. Channels Section with Search Filter
-        content_layout.addWidget(QLabel("<b>Available Channels</b>"))
+        # 2. Bottom Tabs Section (Channels & Placeholder with tab selector on the bottom)
+        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.setTabPosition(QTabWidget.TabPosition.South)
+
+        # Tab 1: Channel Selector
+        self.channel_tab = QWidget()
+        ch_tab_layout = QVBoxLayout(self.channel_tab)
+        ch_tab_layout.setContentsMargins(2, 4, 2, 2)
+        ch_tab_layout.setSpacing(4)
 
         self.channel_search_input = QLineEdit()
         self.channel_search_input.setPlaceholderText("Filter channels...")
         self.channel_search_input.setClearButtonEnabled(True)
         self.channel_search_input.textChanged.connect(self._filter_channels)
-        content_layout.addWidget(self.channel_search_input)
+        ch_tab_layout.addWidget(self.channel_search_input)
 
         self.channel_tree = QTreeWidget()
         self.channel_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -111,7 +119,15 @@ class SidebarWidget(QWidget):
 
         self.channel_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.channel_tree.itemSelectionChanged.connect(self._on_channel_selection_changed)
-        content_layout.addWidget(self.channel_tree)
+        ch_tab_layout.addWidget(self.channel_tree)
+
+        # Tab 2: Track Map Tab
+        self.track_map_tab = TrackMapTabWidget()
+        self.placeholder_tab = self.track_map_tab  # Backwards compatibility alias
+
+        self.bottom_tabs.addTab(self.channel_tab, "Channels")
+        self.bottom_tabs.addTab(self.track_map_tab, "Track Map")
+        content_layout.addWidget(self.bottom_tabs, 1)
 
         layout.addWidget(content_widget, 1)
 

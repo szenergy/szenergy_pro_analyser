@@ -20,6 +20,40 @@ DARK_STYLESHEET = """
     QMenu::item:selected { background-color: #353A40; }
     QSplitter::handle { background-color: #2C3036; }
 
+    /* QTabWidget & QTabBar (Dark Theme) */
+    QTabWidget::pane {
+        border: 1px solid #2C3036;
+        background-color: #1E2125;
+        top: 0px;
+    }
+    QTabBar::tab {
+        background-color: #25282D;
+        color: #A0A0A0;
+        padding: 5px 12px;
+        border: 1px solid #2C3036;
+        min-width: 60px;
+    }
+    QTabBar::tab:selected {
+        background-color: #1E2125;
+        color: #00E676;
+        border-color: #2C3036;
+        font-weight: bold;
+    }
+    QTabBar::tab:hover:!selected {
+        background-color: #2C3036;
+        color: #FFFFFF;
+    }
+    QTabBar::tab:bottom {
+        border-top: none;
+        border-bottom-left-radius: 4px;
+        border-bottom-right-radius: 4px;
+    }
+    QTabBar::tab:top {
+        border-bottom: none;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+    }
+
     /* Modern Thin Scrollbars (Dark Theme) */
     QScrollBar:vertical {
         background: #16181B;
@@ -74,6 +108,40 @@ LIGHT_STYLESHEET = """
     QMenu { background-color: #FFFFFF; border: 1px solid #CED4DA; }
     QMenu::item:selected { background-color: #E9ECEF; }
     QSplitter::handle { background-color: #DEE2E6; }
+
+    /* QTabWidget & QTabBar (Light Theme) */
+    QTabWidget::pane {
+        border: 1px solid #DEE2E6;
+        background-color: #F8F9FA;
+        top: 0px;
+    }
+    QTabBar::tab {
+        background-color: #E9ECEF;
+        color: #495057;
+        padding: 5px 12px;
+        border: 1px solid #DEE2E6;
+        min-width: 60px;
+    }
+    QTabBar::tab:selected {
+        background-color: #FFFFFF;
+        color: #00C853;
+        border-color: #DEE2E6;
+        font-weight: bold;
+    }
+    QTabBar::tab:hover:!selected {
+        background-color: #DEE2E6;
+        color: #212529;
+    }
+    QTabBar::tab:bottom {
+        border-top: none;
+        border-bottom-left-radius: 4px;
+        border-bottom-right-radius: 4px;
+    }
+    QTabBar::tab:top {
+        border-bottom: none;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+    }
 
     /* Modern Thin Scrollbars (Light Theme) */
     QScrollBar:vertical {
