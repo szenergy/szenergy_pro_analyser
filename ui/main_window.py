@@ -317,7 +317,8 @@ class MainWindow(QMainWindow):
             self.sidebar.clear_all_sessions()
             self.graph_view.custom_lap_labels.clear()
             self.graph_view.set_sessions(self.sessions)
-            self.state_manager.clear_ui_state()
+            self.state_manager.clear_workspace_state()
+            self._save_settings()
 
     def _on_session_removed(self, session_id: str):
         if session_id in self.sessions:
@@ -568,14 +569,9 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(event)
 
-    def _save_ui_state(self):
-        """Saves current window geometry, graph settings, sidebar selections, and workspace sessions."""
+    def _save_settings(self):
+        """Saves application settings (theme, window geometry, graph grid lines, x-axis, cursor toggle) to settings.json."""
         try:
-            if not self.sessions:
-                self.state_manager.clear_ui_state()
-                return
-
-            # 1. Window State
             geometry_hex = self.saveGeometry().toHex().data().decode("ascii")
             window_state = {
                 "geometry": geometry_hex,
@@ -583,16 +579,39 @@ class MainWindow(QMainWindow):
                 "main_splitter": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [300, 900]
             }
 
-            # 2. Graph State
-            graph_state = self.graph_view.get_view_state() if hasattr(self, "graph_view") else {}
+            graph_state = {}
+            if hasattr(self, "graph_view"):
+                graph_state = {
+                    "show_x_grid": self.graph_view.show_x_grid,
+                    "show_y_grid": self.graph_view.show_y_grid,
+                    "show_cursor_values": self.graph_view.show_cursor_values,
+                    "show_legend": self.graph_view.show_legend,
+                    "x_axis_slug": self.graph_view.x_axis_slug,
+                }
 
-            # 3. Sidebar State
+            settings_data = {
+                "theme_mode": self.theme_mode,
+                "window": window_state,
+                "graph": graph_state,
+            }
+            self.state_manager.save_settings(settings_data)
+            logger.debug("Application settings successfully saved to settings.json")
+        except Exception as e:
+            logger.error("Failed to save application settings: %s", e, exc_info=True)
+
+    def _save_workspace_state(self):
+        """Saves currently loaded sessions, selected laps, custom labels, and sidebar channels to workspace_state.json."""
+        try:
+            if not self.sessions:
+                self.state_manager.clear_workspace_state()
+                return
+
+            # 1. Sidebar State
             sidebar_state = {
                 "selected_channels": self.sidebar.get_selected_channels() if hasattr(self, "sidebar") else []
             }
 
-            # 4. Workspace Sessions & Custom Lap Labels
-            selected_laps_dict = self.sidebar.get_selected_laps() if hasattr(self, "sidebar") else {}
+            # 2. Workspace Sessions & Custom Lap Labels
             sessions_data = []
             for session in self.sessions.values():
                 session_laps = []
@@ -631,54 +650,63 @@ class MainWindow(QMainWindow):
                         norm_path = os.path.abspath(session.file_path)
                         custom_labels_data[f"{norm_path}::{lap_num}"] = str(label)
 
-            ui_state = {
-                "theme_mode": self.theme_mode,
-                "window": window_state,
-                "graph": graph_state,
-                "sidebar": sidebar_state,
-                "workspace": {
-                    "sessions": sessions_data,
-                    "selected_laps_order": selected_laps_order,
-                    "custom_lap_labels": custom_labels_data
+            zoom_state = {}
+            if hasattr(self, "graph_view"):
+                if self.graph_view.has_manual_zoom_or_pan and self.graph_view.plot_widgets:
+                    self.graph_view._record_current_view_ranges()
+                zoom_state = {
+                    "has_manual_zoom_or_pan": self.graph_view.has_manual_zoom_or_pan,
+                    "saved_x_range": self.graph_view.saved_x_range,
+                    "saved_y_ranges": self.graph_view.saved_y_ranges,
                 }
+
+            workspace_data = {
+                "sessions": sessions_data,
+                "selected_laps_order": selected_laps_order,
+                "custom_lap_labels": custom_labels_data,
+                "sidebar": sidebar_state,
+                "zoom": zoom_state,
             }
-            self.state_manager.save_ui_state(ui_state)
-            logger.debug("UI state successfully saved (%d sessions, %d custom labels)",
+            self.state_manager.save_workspace_state(workspace_data)
+            logger.debug("Workspace state successfully saved (%d sessions, %d custom labels)",
                          len(sessions_data), len(custom_labels_data))
         except Exception as e:
-            logger.error("Failed to save UI state: %s", e, exc_info=True)
+            logger.error("Failed to save workspace state: %s", e, exc_info=True)
+
+    def _save_ui_state(self):
+        """Saves current application settings to settings.json and workspace to workspace_state.json."""
+        self._save_settings()
+        self._save_workspace_state()
 
     def _restore_ui_state(self, splash=None):
-        """Restores window geometry, graph settings, sidebar selections, and workspace sessions."""
+        """Restores application settings and loaded workspace data from persistent storage."""
         try:
-            ui_state = self.state_manager.load_ui_state()
-            if not ui_state:
-                logger.debug("No saved UI state found on startup")
+            # 1. Restore Application Settings (Theme, Window Geometry, Graph Toggles/X-Axis)
+            settings = self.state_manager.load_settings()
+            if settings:
+                logger.info("Restoring application settings...")
+                if "theme_mode" in settings:
+                    self.set_theme_mode(settings.get("theme_mode", "auto"))
+
+                window_data = settings.get("window", {})
+                geo = window_data.get("geometry")
+                if geo:
+                    self.restoreGeometry(QByteArray.fromHex(geo.encode("ascii")))
+                self._restore_is_maximized = bool(window_data.get("is_maximized", False))
+                if self._restore_is_maximized:
+                    self.setWindowState(Qt.WindowMaximized)
+                if window_data.get("main_splitter") and hasattr(self, "main_splitter"):
+                    self.main_splitter.setSizes(window_data["main_splitter"])
+
+                if hasattr(self, "graph_view") and "graph" in settings:
+                    self.graph_view.set_view_state(settings.get("graph", {}))
+
+            # 2. Restore Loaded Workspace Data (Sessions, Laps, Custom Labels, Sidebar Channels)
+            workspace_data = self.state_manager.load_workspace_state()
+            if not workspace_data:
+                logger.debug("No saved workspace state found on startup")
                 return
 
-            logger.info("Restoring saved UI state...")
-
-            # 0. Restore Theme Mode if saved
-            if "theme_mode" in ui_state:
-                self.set_theme_mode(ui_state.get("theme_mode", "auto"))
-
-            # 1. Restore Window State
-            window_data = ui_state.get("window", {})
-            geo = window_data.get("geometry")
-            if geo:
-                self.restoreGeometry(QByteArray.fromHex(geo.encode("ascii")))
-            self._restore_is_maximized = bool(window_data.get("is_maximized", False))
-            if self._restore_is_maximized:
-                self.setWindowState(Qt.WindowMaximized)
-            if window_data.get("main_splitter") and hasattr(self, "main_splitter"):
-                self.main_splitter.setSizes(window_data["main_splitter"])
-
-            # 2. Restore Graph View Toggles & X-Axis
-            if hasattr(self, "graph_view"):
-                self.graph_view.set_view_state(ui_state.get("graph", {}))
-
-            # 3. Restore Workspace Sessions directly (reporting to splash screen if active)
-            workspace_data = ui_state.get("workspace", {})
             sessions_list = workspace_data.get("sessions", [])
             custom_labels_dict = workspace_data.get("custom_lap_labels", {})
 
@@ -725,7 +753,7 @@ class MainWindow(QMainWindow):
                         for lap_num, custom_name in session_custom_labels.items():
                             self.graph_view.custom_lap_labels[(session.id, int(lap_num))] = str(custom_name)
 
-            # 4. Restore exact lap selections and color allocations across all sessions
+            # 3. Restore exact lap selections and color allocations across all sessions
             lap_entries_to_restore = []
             selected_laps_order = workspace_data.get("selected_laps_order")
             if selected_laps_order and isinstance(selected_laps_order, list):
@@ -761,10 +789,15 @@ class MainWindow(QMainWindow):
             if lap_entries_to_restore and hasattr(self, "sidebar"):
                 self.sidebar.restore_selected_laps(lap_entries_to_restore)
 
-            # 5. Restore Sidebar Selected Channels
-            selected_channels = ui_state.get("sidebar", {}).get("selected_channels", [])
+            # 4. Restore Sidebar Selected Channels
+            selected_channels = workspace_data.get("sidebar", {}).get("selected_channels", [])
             if selected_channels and hasattr(self, "sidebar"):
                 self.sidebar.set_selected_channels(selected_channels)
+
+            # 5. Restore Zoom Ranges if saved
+            zoom_data = workspace_data.get("zoom", {})
+            if zoom_data and hasattr(self, "graph_view"):
+                self.graph_view.set_view_state(zoom_data)
 
             if self.sessions and hasattr(self, "graph_view"):
                 self.graph_view.set_sessions(self.sessions)

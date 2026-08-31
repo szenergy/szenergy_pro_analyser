@@ -46,6 +46,8 @@ class StateManager:
         self.presets_file = os.path.join(self.config_dir, "presets.json")
         self.channels_file = os.path.join(self.config_dir, "custom_channels.json")
         self.file_mappings_file = os.path.join(self.config_dir, "file_mappings.json")
+        self.settings_file = os.path.join(self.config_dir, "settings.json")
+        self.workspace_state_file = os.path.join(self.config_dir, "workspace_state.json")
         self.ui_state_file = os.path.join(self.config_dir, "ui_state.json")
         self.maps_dir = os.path.join(self.config_dir, "maps")
         try:
@@ -53,25 +55,97 @@ class StateManager:
         except OSError:
             pass
 
-    def load_ui_state(self) -> Dict[str, Any]:
-        """Loads persistent UI state (window geometry, graph toggles, sidebar selections, workspace)."""
-        version, data = read_versioned_json(self.ui_state_file)
+    def load_settings(self) -> Dict[str, Any]:
+        """Loads persistent application settings (theme, window geometry, graph toggles/x-axis)."""
+        version, data = read_versioned_json(self.settings_file)
         if isinstance(data, dict):
             return data
+        # Fallback to legacy ui_state_file if settings.json does not exist yet
+        if os.path.exists(self.ui_state_file):
+            _, legacy_data = read_versioned_json(self.ui_state_file)
+            if isinstance(legacy_data, dict):
+                extracted = {}
+                if "theme_mode" in legacy_data:
+                    extracted["theme_mode"] = legacy_data["theme_mode"]
+                if "window" in legacy_data:
+                    extracted["window"] = legacy_data["window"]
+                if "graph" in legacy_data:
+                    extracted["graph"] = legacy_data["graph"]
+                return extracted
         return {}
 
+    def save_settings(self, settings: Dict[str, Any]) -> None:
+        """Saves persistent application settings to settings.json in versioned envelope format."""
+        write_versioned_json(self.settings_file, 1, settings)
+
+    def load_workspace_state(self) -> Dict[str, Any]:
+        """Loads persistent workspace state (loaded sessions, selected laps, custom lap labels, sidebar channels)."""
+        version, data = read_versioned_json(self.workspace_state_file)
+        if isinstance(data, dict):
+            return data
+        # Fallback to legacy ui_state_file if workspace_state.json does not exist yet
+        if os.path.exists(self.ui_state_file):
+            _, legacy_data = read_versioned_json(self.ui_state_file)
+            if isinstance(legacy_data, dict):
+                if "workspace" in legacy_data:
+                    ws = dict(legacy_data["workspace"])
+                    if "sidebar" in legacy_data:
+                        ws["sidebar"] = legacy_data["sidebar"]
+                    return ws
+                return legacy_data
+        return {}
+
+    def save_workspace_state(self, state: Dict[str, Any]) -> None:
+        """Saves persistent workspace state to workspace_state.json in versioned envelope format."""
+        write_versioned_json(self.workspace_state_file, 1, state)
+
+    def clear_workspace_state(self) -> None:
+        """Deletes the persistent workspace_state.json and legacy ui_state.json files if they exist."""
+        for fpath in (self.workspace_state_file, self.ui_state_file):
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                    logger.info("Removed persistent workspace state file '%s'", fpath)
+                except OSError as e:
+                    logger.warning("Failed to remove workspace state file '%s': %s", fpath, e)
+
+    def load_ui_state(self) -> Dict[str, Any]:
+        """Loads combined UI state (settings + workspace) for backwards compatibility."""
+        combined = {}
+        settings = self.load_settings()
+        if settings:
+            combined.update(settings)
+        workspace = self.load_workspace_state()
+        if workspace:
+            combined["workspace"] = workspace
+            if "sidebar" in workspace:
+                combined["sidebar"] = workspace["sidebar"]
+        return combined
+
     def save_ui_state(self, state: Dict[str, Any]) -> None:
-        """Saves persistent UI state in versioned envelope format."""
-        write_versioned_json(self.ui_state_file, 1, state)
+        """Saves state dictionary by routing settings to settings.json and workspace to workspace_state.json."""
+        settings = {}
+        if "theme_mode" in state:
+            settings["theme_mode"] = state["theme_mode"]
+        if "window" in state:
+            settings["window"] = state["window"]
+        if "graph" in state:
+            settings["graph"] = state["graph"]
+        if settings:
+            self.save_settings(settings)
+
+        workspace_data = state.get("workspace")
+        if workspace_data and isinstance(workspace_data, dict):
+            ws_copy = dict(workspace_data)
+            if "sidebar" in state and "sidebar" not in ws_copy:
+                ws_copy["sidebar"] = state["sidebar"]
+            self.save_workspace_state(ws_copy)
+        elif "sidebar" in state or "sessions" in state:
+            self.save_workspace_state(state)
 
     def clear_ui_state(self) -> None:
-        """Deletes the persistent ui_state.json file if it exists."""
-        if os.path.exists(self.ui_state_file):
-            try:
-                os.remove(self.ui_state_file)
-                logger.info("Removed persistent UI state file '%s'", self.ui_state_file)
-            except OSError as e:
-                logger.warning("Failed to remove UI state file '%s': %s", self.ui_state_file, e)
+        """Clears workspace state without removing application settings."""
+        self.clear_workspace_state()
 
     def load_presets(self) -> List[Dict[str, Any]]:
         """Load saved presets from JSON file. Handles versioned envelope and returns list of preset dicts."""

@@ -199,24 +199,42 @@ class TestStateManager(unittest.TestCase):
         self.assertIsNone(self.state_manager.get_file_preset(file_path))
 
     def test_ui_state_persistence(self):
-        """Validates saving, loading, and clearing UI state in StateManager."""
-        self.assertEqual(self.state_manager.load_ui_state(), {})
+        """Validates saving, loading, and clearing settings and workspace state in StateManager."""
+        self.assertEqual(self.state_manager.load_settings(), {})
+        self.assertEqual(self.state_manager.load_workspace_state(), {})
 
-        sample_state = {
+        sample_settings = {
             "window": {"is_maximized": True, "main_splitter": [320, 880]},
             "graph": {"show_x_grid": True, "show_y_grid": False, "x_axis_slug": "lap_dist"},
-            "sidebar": {"selected_channels": ["speed", "throttle"]}
+            "theme_mode": "dark"
         }
-        self.state_manager.save_ui_state(sample_state)
-        self.assertTrue(os.path.exists(self.state_manager.ui_state_file))
-        loaded = self.state_manager.load_ui_state()
-        self.assertEqual(loaded["window"]["is_maximized"], True)
-        self.assertEqual(loaded["sidebar"]["selected_channels"], ["speed", "throttle"])
+        sample_workspace = {
+            "sidebar": {"selected_channels": ["speed", "throttle"]},
+            "sessions": [{"file_path": "/path/to/log.csv", "selected_laps": [1, 2]}]
+        }
 
-        # Test clear_ui_state removes the file
-        self.state_manager.clear_ui_state()
-        self.assertFalse(os.path.exists(self.state_manager.ui_state_file))
-        self.assertEqual(self.state_manager.load_ui_state(), {})
+        # 1. Test saving and loading settings
+        self.state_manager.save_settings(sample_settings)
+        self.assertTrue(os.path.exists(self.state_manager.settings_file))
+        loaded_settings = self.state_manager.load_settings()
+        self.assertEqual(loaded_settings["window"]["is_maximized"], True)
+        self.assertEqual(loaded_settings["graph"]["show_x_grid"], True)
+        self.assertEqual(loaded_settings["theme_mode"], "dark")
+
+        # 2. Test saving and loading workspace state
+        self.state_manager.save_workspace_state(sample_workspace)
+        self.assertTrue(os.path.exists(self.state_manager.workspace_state_file))
+        loaded_ws = self.state_manager.load_workspace_state()
+        self.assertEqual(loaded_ws["sidebar"]["selected_channels"], ["speed", "throttle"])
+        self.assertEqual(len(loaded_ws["sessions"]), 1)
+
+        # 3. Test clear_workspace_state removes workspace file but keeps settings
+        self.state_manager.clear_workspace_state()
+        self.assertFalse(os.path.exists(self.state_manager.workspace_state_file))
+        self.assertEqual(self.state_manager.load_workspace_state(), {})
+        # Settings remain untouched!
+        self.assertTrue(os.path.exists(self.state_manager.settings_file))
+        self.assertEqual(self.state_manager.load_settings()["theme_mode"], "dark")
 
     def test_export_and_import_config(self):
         """Validates export and import of non-machine-specific configuration (presets & channels)."""

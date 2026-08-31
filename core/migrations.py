@@ -4,6 +4,7 @@ Each JSON file uses a versioned envelope: {"schema_version": N, "data": ...}.
 Migrations run sequentially on program startup to upgrade legacy formats.
 """
 
+import os
 import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -249,3 +250,65 @@ def run_migrations(state_manager: StateManager) -> None:
         state_manager=state_manager,
         file_label="file_mappings.json"
     )
+
+    # Migrate legacy unified ui_state.json to separate settings.json and workspace_state.json
+    _migrate_legacy_ui_state(state_manager)
+
+
+# ---------------------------------------------------------------------------
+# UI State / Settings Migration
+# ---------------------------------------------------------------------------
+
+def _migrate_legacy_ui_state(state_manager: StateManager) -> bool:
+    """
+    Migrates legacy unified ui_state.json into separate settings.json and workspace_state.json.
+    """
+    if not os.path.exists(state_manager.ui_state_file):
+        return False
+
+    version, legacy_data = read_versioned_json(state_manager.ui_state_file)
+    if not isinstance(legacy_data, dict) or not legacy_data:
+        try:
+            os.remove(state_manager.ui_state_file)
+        except OSError:
+            pass
+        return False
+
+    logger.info("Migrating legacy ui_state.json to settings.json and workspace_state.json...")
+
+    # 1. Extract and save settings if settings.json does not exist
+    if not os.path.exists(state_manager.settings_file):
+        settings_data = {}
+        if "theme_mode" in legacy_data:
+            settings_data["theme_mode"] = legacy_data["theme_mode"]
+        if "window" in legacy_data:
+            settings_data["window"] = legacy_data["window"]
+        if "graph" in legacy_data:
+            settings_data["graph"] = legacy_data["graph"]
+
+        if settings_data:
+            state_manager.save_settings(settings_data)
+            logger.info("Extracted application settings into '%s'", state_manager.settings_file)
+
+    # 2. Extract and save workspace state if workspace_state.json does not exist
+    if not os.path.exists(state_manager.workspace_state_file):
+        workspace_data = {}
+        if "workspace" in legacy_data and isinstance(legacy_data["workspace"], dict):
+            workspace_data = dict(legacy_data["workspace"])
+            if "sidebar" in legacy_data and "sidebar" not in workspace_data:
+                workspace_data["sidebar"] = legacy_data["sidebar"]
+        elif "sessions" in legacy_data:
+            workspace_data = dict(legacy_data)
+
+        if workspace_data and workspace_data.get("sessions"):
+            state_manager.save_workspace_state(workspace_data)
+            logger.info("Extracted workspace state into '%s'", state_manager.workspace_state_file)
+
+    # 3. Clean up legacy ui_state.json
+    try:
+        os.remove(state_manager.ui_state_file)
+        logger.info("Removed legacy '%s' after migration", state_manager.ui_state_file)
+    except OSError as e:
+        logger.warning("Could not remove legacy ui_state.json: %s", e)
+
+    return True

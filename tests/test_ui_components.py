@@ -1791,13 +1791,31 @@ class TestUIComponents(unittest.TestCase):
         legend_texts = [label.text for item, label in win2.graph_view.legend.items]
         self.assertIn("Fastest Lap Alpha", legend_texts)
 
-        # 3. Test Clearing Workspace removes ui_state.json file
-        self.assertTrue(os.path.exists(state_mgr.ui_state_file))
+        # 3. Test Clearing Workspace removes workspace_state.json but preserves settings.json
+        self.assertTrue(os.path.exists(state_mgr.workspace_state_file))
+        self.assertTrue(os.path.exists(state_mgr.settings_file))
         with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
             win2._on_clear_workspace()
-        self.assertFalse(os.path.exists(state_mgr.ui_state_file))
-        self.assertEqual(state_mgr.load_ui_state(), {})
+        self.assertFalse(os.path.exists(state_mgr.workspace_state_file))
+        self.assertEqual(state_mgr.load_workspace_state(), {})
+
+        # Settings are NOT reset!
+        self.assertTrue(os.path.exists(state_mgr.settings_file))
+        saved_settings = state_mgr.load_settings()
+        self.assertTrue(saved_settings["graph"]["show_x_grid"])
+        self.assertFalse(saved_settings["graph"]["show_y_grid"])
+        self.assertFalse(saved_settings["graph"]["show_cursor_values"])
+        self.assertEqual(saved_settings["graph"]["x_axis_slug"], STD_CH_LAP_TIME_SLUG)
         win2.close()
+
+        # 4. Opening a new window with cleared workspace still has the settings restored
+        win3 = MainWindow(state_manager=state_mgr)
+        self.assertEqual(len(win3.sessions), 0)
+        self.assertTrue(win3.graph_view.show_x_grid)
+        self.assertFalse(win3.graph_view.show_y_grid)
+        self.assertFalse(win3.graph_view.show_cursor_values)
+        self.assertEqual(win3.graph_view.x_axis_slug, STD_CH_LAP_TIME_SLUG)
+        win3.close()
 
     def test_workspace_restore_worker(self):
         """Validates WorkspaceRestoreWorker execution and progress reporting."""

@@ -15,6 +15,7 @@ from core.migrations import (
     _migrate_presets_v0_to_v1,
     _migrate_presets_v1_to_v2,
     _migrate_file_mappings_to_slugs,
+    _migrate_legacy_ui_state,
     run_migrations,
 )
 from core.state_manager import StateManager, read_versioned_json, write_versioned_json
@@ -165,6 +166,41 @@ class TestMigrations(unittest.TestCase):
 
         # Should not raise exception
         run_migrations(self.state_mgr)
+
+    def test_migrate_legacy_ui_state(self):
+        """Validates that legacy ui_state.json is extracted into settings.json and workspace_state.json."""
+        legacy_ui_state = {
+            "theme_mode": "light",
+            "window": {"is_maximized": False, "main_splitter": [400, 800]},
+            "graph": {"show_x_grid": True, "show_y_grid": True, "x_axis_slug": "lap_dist"},
+            "workspace": {
+                "sessions": [{"file_path": "/path/to/race.csv", "selected_laps": [1]}],
+                "sidebar": {"selected_channels": ["speed"]}
+            }
+        }
+        write_versioned_json(self.state_mgr.ui_state_file, 1, legacy_ui_state)
+        self.assertTrue(os.path.exists(self.state_mgr.ui_state_file))
+
+        # Run migration
+        result = _migrate_legacy_ui_state(self.state_mgr)
+        self.assertTrue(result)
+
+        # Legacy file should be removed
+        self.assertFalse(os.path.exists(self.state_mgr.ui_state_file))
+
+        # Settings should be extracted
+        self.assertTrue(os.path.exists(self.state_mgr.settings_file))
+        settings = self.state_mgr.load_settings()
+        self.assertEqual(settings["theme_mode"], "light")
+        self.assertEqual(settings["graph"]["show_x_grid"], True)
+        self.assertEqual(settings["window"]["main_splitter"], [400, 800])
+
+        # Workspace state should be extracted
+        self.assertTrue(os.path.exists(self.state_mgr.workspace_state_file))
+        ws = self.state_mgr.load_workspace_state()
+        self.assertEqual(len(ws["sessions"]), 1)
+        self.assertEqual(ws["sessions"][0]["file_path"], "/path/to/race.csv")
+        self.assertEqual(ws["sidebar"]["selected_channels"], ["speed"])
 
 
 if __name__ == "__main__":
