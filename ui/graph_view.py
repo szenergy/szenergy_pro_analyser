@@ -305,7 +305,10 @@ class GraphViewWidget(QWidget):
                         axis_pt = bottom_axis.mapFromScene(view_pt)
                         x_min, x_max = bottom_plot.vb.viewRange()[0]
                         if x_min <= self._last_cursor_x <= x_max:
-                            self.x_cursor_label.setPos(axis_pt.x(), 2)
+                            axis_w = bottom_axis.boundingRect().width()
+                            label_half_w = max(20.0, self.x_cursor_label.boundingRect().width() / 2.0)
+                            clamped_x = max(label_half_w, min(axis_w - label_half_w, axis_pt.x()))
+                            self.x_cursor_label.setPos(clamped_x, 2)
                             self.x_cursor_label.setVisible(True)
                         else:
                             self.x_cursor_label.setVisible(False)
@@ -636,14 +639,19 @@ class GraphViewWidget(QWidget):
                     x_min, x_max = bottom_plot.vb.viewRange()[0]
                     if x_min <= x_val <= x_max:
                         self.x_cursor_label.setText(f" {x_val:.2f} ")
-                        self.x_cursor_label.setPos(axis_pt.x(), 2)
+                        axis_w = bottom_axis.boundingRect().width()
+                        label_half_w = max(20.0, self.x_cursor_label.boundingRect().width() / 2.0)
+                        clamped_x = max(label_half_w, min(axis_w - label_half_w, axis_pt.x()))
+                        self.x_cursor_label.setPos(clamped_x, 2)
                         self.x_cursor_label.setVisible(True)
                     else:
                         self.x_cursor_label.setVisible(False)
             else:
                 self.x_cursor_label.setVisible(False)
 
-        # Update tracking dots and numerical value labels on every curve
+        # Collect active samples per channel for collision-free label stacking
+        channel_samples: Dict[str, List[Tuple[float, float, pg.ScatterPlotItem, pg.TextItem]]] = {}
+
         for dot, value_label, session_id, lap_num, channel_name in self.tracking_dots:
             try:
                 session = self.sessions.get(session_id)
@@ -665,14 +673,80 @@ class GraphViewWidget(QWidget):
                     actual_x, actual_y = sample
                     dot.setData(x=[actual_x], y=[actual_y])
                     dot.setVisible(True)
-                    value_label.setText(f"{actual_y:.2f}")
-                    value_label.setPos(actual_x, actual_y)
-                    value_label.setVisible(True)
+                    if channel_name not in channel_samples:
+                        channel_samples[channel_name] = []
+                    channel_samples[channel_name].append((actual_x, actual_y, dot, value_label))
                 else:
                     dot.setData(x=[], y=[])
                     value_label.setVisible(False)
             except Exception:
                 pass
+
+        # Position and vertically stack value labels per plot, avoiding collisions and graph edges
+        for channel_name, samples in channel_samples.items():
+            plot = self.plot_widgets.get(channel_name)
+            if not plot or not hasattr(plot, "vb") or plot.vb is None:
+                for actual_x, actual_y, _, value_label in samples:
+                    value_label.setText(f"{actual_y:.2f}")
+                    value_label.setPos(actual_x, actual_y)
+                    value_label.setVisible(True)
+                continue
+
+            (x_min, x_max), (y_min, y_max) = plot.vb.viewRange()
+            vb_width = max(10.0, float(plot.vb.width()))
+            vb_height = max(10.0, float(plot.vb.height()))
+            data_per_px_x = abs(x_max - x_min) / vb_width
+            data_per_px_y = abs(y_max - y_min) / vb_height
+
+            # Graph boundary safety limits (top, bottom, and right edge flip)
+            top_margin = 12.0 * data_per_px_y
+            bottom_margin = 12.0 * data_per_px_y
+            top_limit = y_max - top_margin
+            bottom_limit = y_min + bottom_margin
+            right_flip_threshold = x_max - (65.0 * data_per_px_x)
+
+            min_gap = 18.0 * data_per_px_y  # 18px vertical separation between text lines
+            count = len(samples)
+            total_available_height = max(0.0, top_limit - bottom_limit)
+            if count > 1 and (count - 1) * min_gap > total_available_height:
+                effective_gap = total_available_height / (count - 1)
+            else:
+                effective_gap = min_gap
+
+            # Sort samples top-to-bottom (Y descending)
+            sorted_samples = sorted(samples, key=lambda s: s[1], reverse=True)
+
+            assigned_y = []
+            prev_y = None
+            for actual_x, actual_y, dot, value_label in sorted_samples:
+                clamped_orig_y = min(top_limit, max(bottom_limit, actual_y))
+                if prev_y is None:
+                    curr_y = clamped_orig_y
+                else:
+                    curr_y = min(clamped_orig_y, prev_y - effective_gap)
+                assigned_y.append((curr_y, actual_x, actual_y, value_label))
+                prev_y = curr_y
+
+            # If stacking pushed below bottom_limit, shift cluster upwards
+            if assigned_y:
+                lowest_y = assigned_y[-1][0]
+                if lowest_y < bottom_limit:
+                    shift = bottom_limit - lowest_y
+                    assigned_y = [
+                        (min(top_limit, y + shift), ax, ay, lbl)
+                        for y, ax, ay, lbl in assigned_y
+                    ]
+
+            for layout_y, actual_x, actual_y, value_label in assigned_y:
+                # Flip anchor to left of cursor when near the right edge of the plot
+                if actual_x > right_flip_threshold:
+                    value_label.setAnchor((1.3, 0.5))
+                else:
+                    value_label.setAnchor((-0.3, 0.5))
+
+                value_label.setText(f"{actual_y:.2f}")
+                value_label.setPos(actual_x, layout_y)
+                value_label.setVisible(True)
 
     def get_view_state(self) -> Dict[str, Any]:
         """Returns current graph view state dictionary for persistence, including zoom/pan states."""

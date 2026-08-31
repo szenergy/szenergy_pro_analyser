@@ -24,20 +24,24 @@ logger = logging.getLogger(__name__)
 
 
 def _read_csv_with_fallback(file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
-    """Reads a CSV file trying common encodings and sniffing delimiters."""
+    """Reads a CSV file trying common delimiters (comma, semicolon, tab) and encodings using the C engine."""
     encodings = ["utf-8", "latin-1", "cp1252", "iso-8859-1"]
-    
-    for encoding in encodings:
-        try:
-            # Try python engine with separator auto-detection
-            return pd.read_csv(file_path, sep=None, engine="python", encoding=encoding, nrows=nrows)
-        except Exception:
-            pass
+    separators = [",", ";", "\t"]
 
-    # Fallback to standard comma and C engine
+    # 1. Try fast and memory-safe C engine with common delimiters
+    for sep in separators:
+        for encoding in encodings:
+            try:
+                df = pd.read_csv(file_path, sep=sep, encoding=encoding, nrows=nrows, engine="c")
+                if df.shape[1] > 1:
+                    return df
+            except Exception:
+                pass
+
+    # 2. Fallback to standard comma and C engine
     for encoding in encodings:
         try:
-            return pd.read_csv(file_path, encoding=encoding, nrows=nrows)
+            return pd.read_csv(file_path, sep=",", encoding=encoding, nrows=nrows, engine="c")
         except Exception:
             pass
 

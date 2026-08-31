@@ -246,6 +246,63 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(sample[0], 550.0)
         self.assertEqual(sample[1], 50.0)
 
+    def test_tracking_dots_label_collision_avoidance_stacking(self):
+        """Validates that value labels for overlapping laps stack vertically below each other instead of colliding."""
+        s = Session(id="s_overlap", name="overlap.csv", file_path="/tmp/ov.csv", channels=["speed"])
+        for lap_i in (1, 2):
+            s.laps.append(Lap(session_id="s_overlap", lap_number=lap_i, duration=10.0, distance=100.0, data={
+                "lap_time": np.array([0.0, 1.0, 2.0]),
+                "speed": np.array([50.0, 50.0, 50.0])
+            }))
+        widget = GraphViewWidget()
+        widget.set_sessions({"s_overlap": s})
+        widget.set_selected_channels({"speed"})
+        widget.set_selected_laps([("s_overlap", 1, "#00E676"), ("s_overlap", 2, "#FF5252")])
+        widget.x_axis_slug = STD_CH_LAP_TIME_SLUG
+        widget.rebuild_plots()
+
+        first_plot = widget.plot_widgets["speed"]
+        scene_pos = first_plot.vb.mapViewToScene(QPointF(1.0, 50.0))
+        widget._on_mouse_moved(scene_pos)
+
+        labels = [lbl for _, lbl, _, _, _ in widget.tracking_dots]
+        self.assertEqual(len(labels), 2)
+        y_pos1 = labels[0].pos().y()
+        y_pos2 = labels[1].pos().y()
+
+        # Labels should not have the exact same Y position; second label should be stacked below the first
+        self.assertNotEqual(y_pos1, y_pos2)
+        self.assertTrue(y_pos2 < y_pos1)
+
+    def test_tracking_dots_label_edge_collision_and_flip(self):
+        """Validates that labels flip anchor near right edge and stay within plot vertical boundaries."""
+        s = Session(id="s_edge", name="edge.csv", file_path="/tmp/edge.csv", channels=["speed"])
+        s.laps.append(Lap(session_id="s_edge", lap_number=1, duration=10.0, distance=100.0, data={
+            "lap_time": np.array([0.0, 5.0, 10.0]),
+            "speed": np.array([10.0, 50.0, 90.0])
+        }))
+        widget = GraphViewWidget()
+        widget.set_sessions({"s_edge": s})
+        widget.set_selected_channels({"speed"})
+        widget.set_selected_laps([("s_edge", 1, "#00E676")])
+        widget.x_axis_slug = STD_CH_LAP_TIME_SLUG
+        widget.rebuild_plots()
+
+        plot = widget.plot_widgets["speed"]
+        plot.setXRange(0.0, 10.0, padding=0)
+        plot.setYRange(0.0, 100.0, padding=0)
+
+        # Test at right edge (X=9.9s) -> anchor should flip so text renders on the left side
+        scene_pos_right = plot.vb.mapViewToScene(QPointF(9.9, 89.0))
+        widget._on_mouse_moved(scene_pos_right)
+        lbl = widget.tracking_dots[0][1]
+        self.assertEqual(lbl.anchor[0], 1.3)  # Flipped to left side of cursor
+
+        # Test at middle (X=5.0s) -> anchor should be default right side
+        scene_pos_mid = plot.vb.mapViewToScene(QPointF(5.0, 50.0))
+        widget._on_mouse_moved(scene_pos_mid)
+        self.assertEqual(lbl.anchor[0], -0.3)  # Normal right side
+
     def test_import_wizard_defaults_to_skip_without_preset(self):
         """Validates that without an explicit preset or mapping, all channels default to '-- Skip --' and preset combo defaults to 'None'."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
