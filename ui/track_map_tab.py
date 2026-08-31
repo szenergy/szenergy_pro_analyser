@@ -4,17 +4,18 @@ Provides UI controls for selecting and rotating track maps with a central canvas
 """
 
 import math
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QSlider, QLabel, QFrame
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 import pyqtgraph as pg
 import numpy as np
 
 from utils.theme import is_system_dark_theme
 from utils.constants import LAP_COLORS
 from core.state_manager import StateManager
+from core.map_parser import compute_start_line_coords
 
 
 class TrackMapTabWidget(QWidget):
@@ -24,11 +25,19 @@ class TrackMapTabWidget(QWidget):
         super().__init__(parent)
         self.state_manager = state_manager or StateManager()
 
+        self._current_map_name: str = ""
         self._raw_x: Optional[np.ndarray] = None
         self._raw_y: Optional[np.ndarray] = None
+        self._raw_dist: Optional[np.ndarray] = None
+        self._cached_cursor_positions: List[Tuple[float, str]] = []
         self._current_angle_deg: float = 0.0
         self._current_color: str = LAP_COLORS[1]
         self.is_dark: bool = is_system_dark_theme()
+
+        self._rotation_save_timer = QTimer(self)
+        self._rotation_save_timer.setSingleShot(True)
+        self._rotation_save_timer.setInterval(500)
+        self._rotation_save_timer.timeout.connect(self._flush_rotation_save)
 
         self._init_ui()
         self.refresh_map_list()
@@ -87,6 +96,11 @@ class TrackMapTabWidget(QWidget):
         if hasattr(self.plot_item, "vb") and hasattr(self.plot_item.vb, "setMenuEnabled"):
             self.plot_item.vb.setMenuEnabled(False)
         self.map_curve = self.plot_widget.plot([], [], pen=pg.mkPen(color="#00E676", width=4))
+        self.start_line_curve = self.plot_widget.plot([], [], pen=pg.mkPen(color="#FF1744" if self.is_dark else "#D50000", width=4))
+
+        # Tracking dots scatter item for active cursor distance position(s)
+        self.tracking_dots_scatter = pg.ScatterPlotItem(size=14, pxMode=True)
+        self.plot_widget.addItem(self.tracking_dots_scatter)
 
         # Compatibility aliases
         self.map_canvas = self.plot_widget
@@ -102,6 +116,9 @@ class TrackMapTabWidget(QWidget):
         self.plot_widget.setBackground(bg_color)
         pen_color = self._current_color if self._current_color else ("#00E676" if is_dark else "#00A844")
         self.map_curve.setPen(pg.mkPen(color=pen_color, width=4))
+        start_line_color = "#FF1744" if is_dark else "#D50000"
+        self.start_line_curve.setPen(pg.mkPen(color=start_line_color, width=4))
+        self._update_tracking_dots()
 
     def refresh_map_list(self, select_name: Optional[str] = None):
         """Reloads available maps from state manager into the map dropdown."""
@@ -129,24 +146,44 @@ class TrackMapTabWidget(QWidget):
         else:
             self._raw_x = None
             self._raw_y = None
+            self._raw_dist = None
             self.map_curve.setData([], [])
+            self.start_line_curve.setData([], [])
+            self.tracking_dots_scatter.setData([])
 
     def _on_map_selection_changed(self, map_name: str):
         """Loads and displays track map geometry when selected from dropdown."""
+        if self._rotation_save_timer.isActive():
+            self._rotation_save_timer.stop()
+            self._flush_rotation_save()
+
         if not map_name or map_name == "-- No Maps Available --":
+            self._current_map_name = ""
             self._raw_x = None
             self._raw_y = None
+            self._raw_dist = None
             self.map_curve.setData([], [])
+            self.start_line_curve.setData([], [])
+            self.tracking_dots_scatter.setData([])
             return
 
         self._load_and_render_map(map_name)
 
     def _load_and_render_map(self, map_name: str):
-        """Loads coordinates, saved rotation, and color for the given map name and renders."""
+        """Loads coordinates, saved rotation, color, and distance for the given map name and renders."""
+        self._current_map_name = map_name
         map_data = self.state_manager.get_map(map_name)
         if map_data and "x" in map_data and "y" in map_data:
             self._raw_x = np.asarray(map_data["x"], dtype=np.float64)
             self._raw_y = np.asarray(map_data["y"], dtype=np.float64)
+            dist_data = map_data.get("distance")
+            if dist_data is not None and len(dist_data) == len(self._raw_x):
+                self._raw_dist = np.asarray(dist_data, dtype=np.float64)
+            else:
+                # Calculate cumulative Euclidean path distance if explicit distance column is missing
+                diffs = np.sqrt(np.diff(self._raw_x, prepend=self._raw_x[0])**2 + np.diff(self._raw_y, prepend=self._raw_y[0])**2)
+                self._raw_dist = np.cumsum(diffs)
+
             rot = float(map_data.get("rotation", 0.0))
             self._current_angle_deg = rot
             self.rotation_slider.blockSignals(True)
@@ -159,23 +196,85 @@ class TrackMapTabWidget(QWidget):
         else:
             self._raw_x = None
             self._raw_y = None
+            self._raw_dist = None
 
         self._apply_rotation_and_render()
 
+    def set_cursor_positions(self, points: List[Tuple[float, str]]):
+        """Receives active cursor positions as (distance, color) tuples and updates tracking dots."""
+        self._cached_cursor_positions = points or []
+        self._update_tracking_dots()
+
+    def _update_tracking_dots(self):
+        """Positions and renders tracking dots on the rotated track map canvas."""
+        if not self._cached_cursor_positions or self._raw_x is None or self._raw_y is None or self._raw_dist is None or len(self._raw_x) == 0:
+            self.tracking_dots_scatter.setData([])
+            return
+
+        rad = math.radians(self._current_angle_deg)
+        cos_theta = math.cos(rad)
+        sin_theta = math.sin(rad)
+
+        cx = float(np.mean(self._raw_x))
+        cy = float(np.mean(self._raw_y))
+
+        dist_min = float(self._raw_dist.min())
+        dist_max = float(self._raw_dist.max())
+        dist_span = dist_max - dist_min
+
+        spots = []
+        border_color = "#FFFFFF" if self.is_dark else "#000000"
+
+        for dist_val, hex_color in self._cached_cursor_positions:
+            if dist_span <= 0:
+                target_d = dist_min
+            else:
+                if dist_val < dist_min:
+                    target_d = dist_min
+                elif dist_val > dist_max:
+                    target_d = dist_min + ((dist_val - dist_min) % dist_span)
+                else:
+                    target_d = dist_val
+
+            # Interpolate coordinates along the polyline path
+            interp_x = float(np.interp(target_d, self._raw_dist, self._raw_x))
+            interp_y = float(np.interp(target_d, self._raw_dist, self._raw_y))
+
+            # Apply rotation around centroid
+            dx = interp_x - cx
+            dy = interp_y - cy
+            rot_x = (dx * cos_theta) - (dy * sin_theta) + cx
+            rot_y = (dx * sin_theta) + (dy * cos_theta) + cy
+
+            spots.append({
+                "pos": (rot_x, rot_y),
+                "size": 14,
+                "brush": pg.mkBrush(hex_color),
+                "pen": pg.mkPen(color=border_color, width=2)
+            })
+
+        self.tracking_dots_scatter.setData(spots)
+
     def _on_rotation_changed(self, val: int):
-        """Updates rotation angle, saves it for the current map, and re-renders."""
+        """Updates rotation angle, renders transformed coordinates, and starts debounce save timer."""
         self._current_angle_deg = float(val)
         self.rotation_value_label.setText(f"{val}°")
         self._apply_rotation_and_render()
 
-        current_map = self.map_combo.currentText()
-        if current_map and current_map != "-- No Maps Available --":
-            self.state_manager.save_map_rotation(current_map, float(val))
+        if self._current_map_name and self._current_map_name != "-- No Maps Available --":
+            self._rotation_save_timer.start()
+
+    def _flush_rotation_save(self):
+        """Persists rotation angle to disk after debounce delay."""
+        if self._current_map_name and self._current_map_name != "-- No Maps Available --":
+            self.state_manager.save_map_rotation(self._current_map_name, self._current_angle_deg)
 
     def _apply_rotation_and_render(self):
-        """Rotates raw coordinates around their centroid and updates the plot curve."""
+        """Rotates raw coordinates around their centroid and updates the plot curve and start line."""
         if self._raw_x is None or self._raw_y is None or len(self._raw_x) == 0:
             self.map_curve.setData([], [])
+            self.start_line_curve.setData([], [])
+            self.tracking_dots_scatter.setData([])
             return
 
         rad = math.radians(self._current_angle_deg)
@@ -192,4 +291,7 @@ class TrackMapTabWidget(QWidget):
         y_rot = (dx * sin_theta) + (dy * cos_theta) + cy
 
         self.map_curve.setData(x_rot, y_rot)
+        sl_x, sl_y = compute_start_line_coords(self._raw_x, self._raw_y, self._current_angle_deg)
+        self.start_line_curve.setData(sl_x, sl_y)
+        self._update_tracking_dots()
         self.plot_widget.autoRange()

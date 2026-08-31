@@ -13,7 +13,7 @@ import pyqtgraph as pg
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QFrame, QPushButton, QMessageBox
 )
-from PySide6.QtCore import Qt, QSize, QPointF, QTimer, QEvent
+from PySide6.QtCore import Qt, QSize, QPointF, QTimer, QEvent, Signal
 from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF, QFont
 
 from core.data_models import Session, Lap
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 class GraphViewWidget(QWidget):
     """Main plotting area with vertically stacked charts, toolbar toggles, and on-graph value readouts."""
+
+    cursor_positions_changed = Signal(list)  # List[Tuple[float, str]] of (distance, color)
 
     def __init__(self, parent=None, state_manager=None):
         super().__init__(parent)
@@ -377,6 +379,8 @@ class GraphViewWidget(QWidget):
 
     def _toggle_cursor_values(self, checked: bool):
         self.show_cursor_values = checked
+        if not self.show_cursor_values:
+            self.cursor_positions_changed.emit([])
         for v_line in self.v_lines:
             v_line.setVisible(self.show_cursor_values)
         for dot, value_label, _, _, _ in self.tracking_dots:
@@ -455,6 +459,7 @@ class GraphViewWidget(QWidget):
                     size="12pt", color="#808080"
                 )
                 self.glw.addItem(label, row=0, col=0)
+                self.cursor_positions_changed.emit([])
                 return
 
             first_plot: Optional[pg.PlotItem] = None
@@ -681,6 +686,32 @@ class GraphViewWidget(QWidget):
                     value_label.setVisible(False)
             except Exception:
                 pass
+
+        # Collect cursor distance positions for track map tracking dots
+        cursor_map_dots: List[Tuple[float, str]] = []
+        if self.show_cursor_values:
+            for session_id, lap_num, color in self.selected_laps_info:
+                session = self.sessions.get(session_id)
+                if not session:
+                    continue
+                lap = session.get_lap(lap_num)
+                if not lap:
+                    continue
+
+                if self.x_axis_slug == STD_CH_LAP_DIST_SLUG:
+                    dist_arr = lap.get_channel(STD_CH_LAP_DIST_SLUG)
+                    if dist_arr is not None and len(dist_arr) > 0:
+                        if dist_arr.min() <= x_val <= dist_arr.max():
+                            cursor_map_dots.append((float(x_val), color))
+                else:
+                    time_arr = lap.get_channel(self.x_axis_slug)
+                    dist_arr = lap.get_channel(STD_CH_LAP_DIST_SLUG)
+                    sample = _get_nearest_channel_sample(time_arr, dist_arr, x_val)
+                    if sample is not None:
+                        _, lap_dist = sample
+                        cursor_map_dots.append((float(lap_dist), color))
+
+        self.cursor_positions_changed.emit(cursor_map_dots)
 
         # Position and vertically stack value labels per plot, avoiding collisions and graph edges
         for channel_name, samples in channel_samples.items():

@@ -17,7 +17,7 @@ import pyqtgraph as pg
 import numpy as np
 
 from core.state_manager import StateManager
-from core.map_parser import get_map_file_columns, load_map_file_data
+from core.map_parser import get_map_file_columns, load_map_file_data, compute_start_line_coords
 from ui.import_map_dialog import ImportMapDialog
 from ui.color_picker_popup import LapColorPickerPopup
 from utils.constants import LAP_COLORS
@@ -138,6 +138,7 @@ class MapManagerDialog(QDialog):
         if hasattr(self.plot_item, "vb") and hasattr(self.plot_item.vb, "setMenuEnabled"):
             self.plot_item.vb.setMenuEnabled(False)
         self.map_curve = self.plot_widget.plot([], [], pen=pg.mkPen(color=self._current_color, width=4))
+        self.start_line_curve = self.plot_widget.plot([], [], pen=pg.mkPen(color="#FF1744" if self.is_dark else "#D50000", width=4))
         self.map_canvas = self.plot_widget  # Backwards compatibility alias
 
         right_layout.addWidget(self.plot_widget, 1)
@@ -166,6 +167,8 @@ class MapManagerDialog(QDialog):
         self.plot_widget.setBackground(bg_color)
         pen_color = self._current_color if self._current_color else ("#00E676" if is_dark else "#00A844")
         self.map_curve.setPen(pg.mkPen(color=pen_color, width=4))
+        start_line_color = "#FF1744" if is_dark else "#D50000"
+        self.start_line_curve.setPen(pg.mkPen(color=start_line_color, width=4))
         self._update_color_button()
 
     def _update_color_button(self):
@@ -236,9 +239,10 @@ class MapManagerDialog(QDialog):
         self._apply_rotation_and_render()
 
     def _apply_rotation_and_render(self):
-        """Rotates raw coordinates around their centroid and updates the plot curve."""
+        """Rotates raw coordinates around their centroid and updates the plot curve and start line."""
         if self._raw_x is None or self._raw_y is None or len(self._raw_x) == 0:
             self.map_curve.setData([], [])
+            self.start_line_curve.setData([], [])
             return
 
         rad = math.radians(self._current_angle_deg)
@@ -255,6 +259,8 @@ class MapManagerDialog(QDialog):
         y_rot = (dx * sin_theta) + (dy * cos_theta) + cy
 
         self.map_curve.setData(x_rot, y_rot)
+        sl_x, sl_y = compute_start_line_coords(self._raw_x, self._raw_y, self._current_angle_deg)
+        self.start_line_curve.setData(sl_x, sl_y)
         self.plot_widget.autoRange()
 
     def _render_selected_map(self, map_name: str):
@@ -284,6 +290,7 @@ class MapManagerDialog(QDialog):
             self._current_color = LAP_COLORS[1]
             self._update_color_button()
             self.map_curve.setData([], [])
+            self.start_line_curve.setData([], [])
 
     def _on_map_selection_changed(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem] = None):
         """Updates the name input and preview when a map item is selected."""
@@ -297,6 +304,7 @@ class MapManagerDialog(QDialog):
             self._current_color = LAP_COLORS[1]
             self._update_color_button()
             self.map_curve.setData([], [])
+            self.start_line_curve.setData([], [])
 
     def _on_add_map(self):
         """Prompts user to select an .xlsx or .csv track file and import it."""

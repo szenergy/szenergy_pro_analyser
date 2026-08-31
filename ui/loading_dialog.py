@@ -279,18 +279,14 @@ class LoadingDialog(QDialog):
         self.progress.setRange(0, 1)
         if self.worker and self.worker.isRunning():
             self.worker.requestInterruption()
-            self.worker.wait(1000)
         super().closeEvent(event)
 
     def reject(self):
         self.progress.setRange(0, 1)
         if self.worker and self.worker.isRunning():
             self.worker.requestInterruption()
-            self.worker.wait(1000)
         super().reject()
 
     def accept(self):
         self.progress.setRange(0, 1)
-        if self.worker and self.worker.isRunning():
-            self.worker.wait(2000)
         super().accept()

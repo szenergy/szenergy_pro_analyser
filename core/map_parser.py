@@ -4,6 +4,7 @@ Supports extracting coordinate columns and numeric arrays for track layout rende
 """
 
 import os
+import math
 import logging
 from typing import List, Tuple, Optional
 import numpy as np
@@ -164,3 +165,67 @@ def load_map_file_data(
             dist_arr = dist_arr[valid_mask]
 
     return x_arr, y_arr, dist_arr
+
+
+def compute_start_line_coords(
+    raw_x: Optional[np.ndarray],
+    raw_y: Optional[np.ndarray],
+    angle_deg: float = 0.0
+) -> Tuple[List[float], List[float]]:
+    """
+    Computes rotated 2D line endpoints ([x1, x2], [y1, y2]) for a perpendicular start/finish line
+    across the track at the starting point (index 0).
+    """
+    if raw_x is None or raw_y is None or len(raw_x) < 2 or len(raw_y) < 2:
+        return [], []
+
+    x0 = float(raw_x[0])
+    y0 = float(raw_y[0])
+
+    # Find forward direction vector from start
+    dx, dy = 1.0, 0.0
+    for i in range(1, min(len(raw_x), len(raw_y))):
+        d_x = float(raw_x[i]) - x0
+        d_y = float(raw_y[i]) - y0
+        if (d_x * d_x + d_y * d_y) > 1e-8:
+            dx, dy = d_x, d_y
+            break
+
+    length = math.sqrt(dx * dx + dy * dy)
+    if length > 0:
+        tx, ty = dx / length, dy / length
+    else:
+        tx, ty = 1.0, 0.0
+
+    # Normal vector perpendicular to track direction
+    nx, ny = -ty, tx
+
+    # Sizing relative to track bounding box
+    span_x = float(np.ptp(raw_x))
+    span_y = float(np.ptp(raw_y))
+    track_span = max(span_x, span_y)
+    half_width = max(0.03 * track_span, 1.0)
+
+    p1x = x0 - half_width * nx
+    p1y = y0 - half_width * ny
+    p2x = x0 + half_width * nx
+    p2y = y0 + half_width * ny
+
+    # Rotate around centroid
+    cx = float(np.mean(raw_x))
+    cy = float(np.mean(raw_y))
+    rad = math.radians(angle_deg)
+    cos_theta = math.cos(rad)
+    sin_theta = math.sin(rad)
+
+    def _rot(px: float, py: float) -> Tuple[float, float]:
+        ox = px - cx
+        oy = py - cy
+        rx = (ox * cos_theta) - (oy * sin_theta) + cx
+        ry = (ox * sin_theta) + (oy * cos_theta) + cy
+        return rx, ry
+
+    r1x, r1y = _rot(p1x, p1y)
+    r2x, r2y = _rot(p2x, p2y)
+
+    return [r1x, r2x], [r1y, r2y]

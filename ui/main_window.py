@@ -207,6 +207,8 @@ class MainWindow(QMainWindow):
 
         # Right Graph View
         self.graph_view = GraphViewWidget(state_manager=self.state_manager)
+        if hasattr(self.sidebar, "track_map_tab") and self.sidebar.track_map_tab is not None:
+            self.graph_view.cursor_positions_changed.connect(self.sidebar.track_map_tab.set_cursor_positions)
         self.main_splitter.addWidget(self.graph_view)
 
         self.main_splitter.setSizes([300, 900])
