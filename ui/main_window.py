@@ -167,6 +167,12 @@ class MainWindow(QMainWindow):
         self.cursor_above_graph_action.toggled.connect(self._on_toggle_cursor_above_graph)
         cursor_values_menu.addAction(self.cursor_above_graph_action)
 
+        # Anti-Aliasing (Smooth Curves) Action
+        self.antialias_action = QAction("Anti-Aliasing (Smooth Curves)", self, checkable=True)
+        self.antialias_action.setChecked(self.graph_view.antialias if hasattr(self, "graph_view") else True)
+        self.antialias_action.toggled.connect(self._on_toggle_antialias)
+        view_menu.addAction(self.antialias_action)
+
     def set_theme_mode(self, mode: str):
         """Sets active theme mode ('auto', 'dark', 'light') and applies stylesheets and widget themes."""
         if mode not in ("auto", "dark", "light"):
@@ -218,6 +224,20 @@ class MainWindow(QMainWindow):
             self.graph_view.set_cursor_values_above_graph(checked)
         self._save_settings()
 
+    def _on_toggle_antialias(self, checked: bool):
+        """Handles toggling of anti-aliasing / curve smoothing from View menu."""
+        if hasattr(self, "graph_view"):
+            self.graph_view.btn_antialias.setChecked(checked)
+        self._save_settings()
+
+    def _on_graph_antialias_toggled(self, checked: bool):
+        """Syncs View menu action when anti-aliasing toolbar button is toggled."""
+        if hasattr(self, "antialias_action"):
+            self.antialias_action.blockSignals(True)
+            self.antialias_action.setChecked(checked)
+            self.antialias_action.blockSignals(False)
+        self._save_settings()
+
     def _init_ui(self):
         self.main_splitter = QSplitter(Qt.Horizontal)
 
@@ -233,6 +253,8 @@ class MainWindow(QMainWindow):
         self.graph_view = GraphViewWidget(state_manager=self.state_manager)
         if hasattr(self.sidebar, "track_map_tab") and self.sidebar.track_map_tab is not None:
             self.graph_view.cursor_positions_changed.connect(self.sidebar.track_map_tab.set_cursor_positions)
+        if hasattr(self.graph_view, "btn_antialias"):
+            self.graph_view.btn_antialias.toggled.connect(self._on_graph_antialias_toggled)
         self.main_splitter.addWidget(self.graph_view)
 
         self.main_splitter.setSizes([300, 900])
@@ -612,6 +634,7 @@ class MainWindow(QMainWindow):
                     "show_cursor_values_on_graph": self.graph_view.show_cursor_values_on_graph,
                     "show_cursor_values_above_graph": self.graph_view.show_cursor_values_above_graph,
                     "show_legend": self.graph_view.show_legend,
+                    "antialias": self.graph_view.antialias,
                     "x_axis_slug": self.graph_view.x_axis_slug,
                 }
 
@@ -738,6 +761,8 @@ class MainWindow(QMainWindow):
                         self.cursor_on_graph_action.setChecked(self.graph_view.show_cursor_values_on_graph)
                     if hasattr(self, "cursor_above_graph_action"):
                         self.cursor_above_graph_action.setChecked(self.graph_view.show_cursor_values_above_graph)
+                    if hasattr(self, "antialias_action"):
+                        self.antialias_action.setChecked(self.graph_view.antialias)
 
                 sidebar_settings = settings.get("sidebar", {})
                 if hasattr(self, "sidebar") and sidebar_settings:

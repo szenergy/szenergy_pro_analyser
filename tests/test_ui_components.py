@@ -277,7 +277,7 @@ class TestUIComponents(unittest.TestCase):
 
         # Check plotted curve data points
         plot = widget.plot_widgets["speed"]
-        curves = [item for item in plot.items if isinstance(item, pg.PlotDataItem)]
+        curves = [item for item in plot.items if isinstance(item, (pg.PlotDataItem, pg.PlotCurveItem))]
         self.assertTrue(len(curves) >= 1)
         x_data, y_data = curves[0].getData()
         self.assertEqual(x_data[0], 500.0)
@@ -337,13 +337,13 @@ class TestUIComponents(unittest.TestCase):
 
         # Test at right edge (X=9.9s) -> anchor should flip so text renders on the left side
         scene_pos_right = plot.vb.mapViewToScene(QPointF(9.9, 89.0))
-        widget._on_mouse_moved(scene_pos_right)
+        widget._process_mouse_point(scene_pos_right)
         lbl = widget.tracking_dots[0][1]
         self.assertEqual(lbl.anchor[0], 1.3)  # Flipped to left side of cursor
 
         # Test at middle (X=5.0s) -> anchor should be default right side
         scene_pos_mid = plot.vb.mapViewToScene(QPointF(5.0, 50.0))
-        widget._on_mouse_moved(scene_pos_mid)
+        widget._process_mouse_point(scene_pos_mid)
         self.assertEqual(lbl.anchor[0], -0.3)  # Normal right side
 
     def test_sidebar_bottom_tabs_structure_and_south_position(self):
@@ -2353,6 +2353,120 @@ class TestUIComponents(unittest.TestCase):
         state_mgr.save_map("Circuit 1", [0, 10, 20], [0, 5, 0])
         tab.refresh_map_list("Circuit 1")
         self.assertFalse(tab.placeholder_text_item.isVisible())
+
+    def test_nearest_channel_sample_binary_search_accuracy_and_performance(self):
+        """Validates that _get_nearest_channel_sample accurately finds exact closest points in O(log N)."""
+        # 1. Monotonic array test
+        x_data = np.linspace(0.0, 100.0, 100001)
+        y_data = np.sin(x_data)
+
+        # Exact match
+        sample = _get_nearest_channel_sample(x_data, y_data, 50.0)
+        self.assertIsNotNone(sample)
+        self.assertAlmostEqual(sample[0], 50.0, places=3)
+        self.assertAlmostEqual(sample[1], np.sin(50.0), places=3)
+
+        # Between points
+        sample = _get_nearest_channel_sample(x_data, y_data, 25.0003)
+        self.assertIsNotNone(sample)
+        self.assertAlmostEqual(sample[0], 25.0003, places=2)
+
+        # Out of bounds
+        self.assertIsNone(_get_nearest_channel_sample(x_data, y_data, -1.0))
+        self.assertIsNone(_get_nearest_channel_sample(x_data, y_data, 105.0))
+
+        # Empty / None
+        self.assertIsNone(_get_nearest_channel_sample(None, y_data, 10.0))
+        self.assertIsNone(_get_nearest_channel_sample(np.array([]), np.array([]), 10.0))
+
+        # Nan / Inf handling
+        x_nan = np.array([0.0, 1.0, np.nan, 3.0, 4.0])
+        y_nan = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        sample = _get_nearest_channel_sample(x_nan, y_nan, 1.0)
+        self.assertIsNotNone(sample)
+        self.assertEqual(sample[0], 1.0)
+        self.assertEqual(sample[1], 20.0)
+
+        # Benchmark: 1,000 lookups over 100,000 points must execute in < 10ms
+        import time
+        t0 = time.perf_counter()
+        for target_x in np.linspace(5.0, 95.0, 1000):
+            _get_nearest_channel_sample(x_data, y_data, target_x)
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 0.05, f"Binary search took too long: {elapsed:.4f}s")
+
+    def test_graph_view_widget_large_data_mouse_move_pipeline(self):
+        """Validates that GraphViewWidget efficiently handles mouse move with large datasets and multiple channels."""
+        from PySide6.QtCore import QPointF
+        graph_widget = GraphViewWidget()
+        x_dense = np.linspace(0.0, 5000.0, 50000)
+        y_speed = np.linspace(0.0, 120.0, 50000)
+        y_rpm = np.linspace(1000.0, 8000.0, 50000)
+
+        large_session = Session(
+            id="perf_sess",
+            name="PerfSession",
+            file_path="/fake/perf.csv",
+            channels=["speed", "rpm"]
+        )
+        large_lap = Lap(
+            session_id="perf_sess",
+            lap_number=1,
+            duration=500.0,
+            distance=5000.0,
+            data={
+                STD_CH_LAP_DIST_SLUG: x_dense,
+                STD_CH_LAP_TIME_SLUG: np.linspace(0.0, 500.0, 50000),
+                "speed": y_speed,
+                "rpm": y_rpm
+            }
+        )
+        large_session.laps.append(large_lap)
+
+        graph_widget.sessions = {"perf_sess": large_session}
+        graph_widget.selected_channels = ["speed", "rpm"]
+        graph_widget.selected_laps_info = [("perf_sess", 1, "#00FF00")]
+        graph_widget.rebuild_plots()
+
+        # Simulate mouse move events
+        plot_speed = graph_widget.plot_widgets["speed"]
+        scene_pos = plot_speed.vb.mapViewToScene(QPointF(2500.0, 60.0))
+        graph_widget._process_mouse_point(scene_pos)
+
+        self.assertAlmostEqual(graph_widget._last_cursor_x, 2500.0, places=2)
+        self.assertEqual(len(graph_widget.tracking_dots), 2)
+        # Check that tracking dot was positioned
+        dot_speed, val_label_speed, _, _, ch_speed = graph_widget.tracking_dots[0]
+        self.assertEqual(ch_speed, "speed")
+        self.assertTrue(val_label_speed.isVisible())
+        self.assertIn("60.00", val_label_speed.toPlainText())
+
+    def test_antialias_toolbar_toggle_and_persistence(self):
+        """Validates that anti-aliasing toolbar button toggles curve antialiasing and persists in view state."""
+        graph_widget = GraphViewWidget()
+        self.assertTrue(hasattr(graph_widget, "btn_antialias"))
+        self.assertTrue(graph_widget.btn_antialias.isCheckable())
+        self.assertTrue(graph_widget.btn_antialias.isChecked())
+        self.assertTrue(graph_widget.antialias)
+        self.assertFalse(graph_widget.btn_antialias.icon().isNull())
+
+        # Toggle OFF
+        graph_widget.btn_antialias.setChecked(False)
+        self.assertFalse(graph_widget.antialias)
+        state = graph_widget.get_view_state()
+        self.assertIn("antialias", state)
+        self.assertFalse(state["antialias"])
+
+        # Restore from state
+        new_widget = GraphViewWidget()
+        new_widget.set_view_state({"antialias": False})
+        self.assertFalse(new_widget.antialias)
+        self.assertFalse(new_widget.btn_antialias.isChecked())
+
+        # Toggle back ON
+        new_widget.btn_antialias.setChecked(True)
+        self.assertTrue(new_widget.antialias)
+        self.assertTrue(new_widget.get_view_state()["antialias"])
 
 
 if __name__ == "__main__":

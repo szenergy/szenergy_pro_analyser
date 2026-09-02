@@ -7,6 +7,7 @@ Ensures equal viewbox heights across all stacked plots and full X-axis grid supp
 """
 
 import logging
+import time
 from typing import Dict, List, Set, Tuple, Optional
 import numpy as np
 import pyqtgraph as pg
@@ -25,7 +26,7 @@ from utils.constants import (
 from ui.graph_icons import (
     create_icon_x_grid, create_icon_y_grid, create_icon_cursor,
     create_icon_legend, create_icon_rename_legend, create_icon_autorange,
-    create_icon_export
+    create_icon_export, create_icon_antialias
 )
 from ui.graph_viewbox import XZoomViewBox, _get_nearest_channel_sample
 
@@ -61,6 +62,7 @@ class GraphViewWidget(QWidget):
         self.show_cursor_values_on_graph: bool = True
         self.show_cursor_values_above_graph: bool = True
         self.show_legend: bool = False
+        self.antialias: bool = True
         self._is_rebuilding: bool = False
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
@@ -70,7 +72,15 @@ class GraphViewWidget(QWidget):
         self.x_cursor_label: Optional[pg.TextItem] = None
         self._last_cursor_x: Optional[float] = None
 
+        # Mouse-move event coalescing/throttling (60 FPS)
+        self._pending_mouse_evt = None
+        self._last_mouse_process_time: float = 0.0
+        self._mouse_throttle_timer = QTimer(self)
+        self._mouse_throttle_timer.setSingleShot(True)
+        self._mouse_throttle_timer.timeout.connect(self._on_mouse_throttle_timeout)
+
         self._init_ui()
+        self.apply_theme(self.is_dark)
 
     @property
     def x_axis_channel(self) -> str:
@@ -116,7 +126,17 @@ class GraphViewWidget(QWidget):
         self.btn_y_grid.toggled.connect(self._toggle_y_grid)
         c_layout.addWidget(self.btn_y_grid)
 
-        # 4. Toggle Cursor Values Display Button
+        # 4. Toggle Anti-Aliasing (Smooth Curves) Button
+        self.btn_antialias = QPushButton()
+        self.btn_antialias.setCheckable(True)
+        self.btn_antialias.setChecked(self.antialias)
+        self.btn_antialias.setToolTip("Toggle Anti-Aliasing (Smooth Curves)")
+        self.btn_antialias.setFixedSize(32, 28)
+        self.btn_antialias.setIconSize(QSize(18, 18))
+        self.btn_antialias.toggled.connect(self._toggle_antialias)
+        c_layout.addWidget(self.btn_antialias)
+
+        # 5. Toggle Cursor Values Display Button
         self.btn_cursor = QPushButton()
         self.btn_cursor.setCheckable(True)
         self.btn_cursor.setChecked(self.show_cursor_values)
@@ -126,7 +146,7 @@ class GraphViewWidget(QWidget):
         self.btn_cursor.toggled.connect(self._toggle_cursor_values)
         c_layout.addWidget(self.btn_cursor)
 
-        # 5. Toggle Legend / Label Button
+        # 6. Toggle Legend / Label Button
         self.btn_legend = QPushButton()
         self.btn_legend.setCheckable(True)
         self.btn_legend.setChecked(self.show_legend)
@@ -231,13 +251,14 @@ class GraphViewWidget(QWidget):
             "background-color: #E8ECEF; color: #212529; border-bottom: 1px solid #DEE2E6;"
         )
 
-        pg.setConfigOptions(background=bg_color, foreground=fg_color, antialias=True)
+        pg.setConfigOptions(background=bg_color, foreground=fg_color, antialias=self.antialias)
         self.glw.setBackground(bg_color)
         self.control_bar.setStyleSheet(bar_style)
 
         # Refresh icons with current theme colors
         self.btn_x_grid.setIcon(create_icon_x_grid(is_dark))
         self.btn_y_grid.setIcon(create_icon_y_grid(is_dark))
+        self.btn_antialias.setIcon(create_icon_antialias(is_dark))
         self.btn_cursor.setIcon(create_icon_cursor(is_dark))
         self.btn_legend.setIcon(create_icon_legend(is_dark))
         self.btn_rename_legend.setIcon(create_icon_rename_legend(is_dark))
@@ -248,7 +269,8 @@ class GraphViewWidget(QWidget):
             if hasattr(plot, "vb") and hasattr(plot.vb, "update_theme"):
                 plot.vb.update_theme(is_dark)
 
-        self.rebuild_plots()
+        if self.plot_widgets:
+            self.rebuild_plots()
 
     def show_drag_selection(self, x_min_data: float, x_max_data: float):
         """Displays the synchronized X-axis selection box on all stacked plots."""
@@ -379,6 +401,12 @@ class GraphViewWidget(QWidget):
         for plot in self.plot_widgets.values():
             plot.showGrid(x=self.show_x_grid, y=self.show_y_grid, alpha=0.3)
 
+    def _toggle_antialias(self, checked: bool):
+        """Toggles anti-aliasing (smooth curve rendering vs high-performance integer rasterization)."""
+        self.antialias = checked
+        pg.setConfigOptions(antialias=checked)
+        self.rebuild_plots()
+
     def _toggle_cursor_values(self, checked: bool):
         self.show_cursor_values = checked
         if not self.show_cursor_values:
@@ -431,7 +459,11 @@ class GraphViewWidget(QWidget):
             title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"
             plot.setTitle(title_html, justify='left')
 
-    def _update_title_cursor_values(self, x_val: float):
+    def _update_title_cursor_values(
+        self,
+        x_val: float,
+        precomputed_samples: Optional[Dict[Tuple[str, int, str], Tuple[float, float]]] = None
+    ):
         """Updates plot titles with cursor values for each selected lap with colored bars."""
         title_color = "#E0E0E0" if self.is_dark else "#202020"
         val_text_color = "#E0E0E0" if self.is_dark else "#000000"
@@ -445,17 +477,22 @@ class GraphViewWidget(QWidget):
 
             if self.show_cursor_values and self.show_cursor_values_above_graph:
                 for session_id, lap_num, color in self.selected_laps_info:
-                    session = self.sessions.get(session_id)
-                    if not session:
-                        continue
-                    lap = session.get_lap(lap_num)
-                    if not lap:
-                        continue
+                    key = (session_id, lap_num, channel_name)
+                    sample = None
+                    if precomputed_samples is not None and key in precomputed_samples:
+                        sample = precomputed_samples[key]
+                    else:
+                        session = self.sessions.get(session_id)
+                        if not session:
+                            continue
+                        lap = session.get_lap(lap_num)
+                        if not lap:
+                            continue
 
-                    raw_x = lap.get_channel(self.x_axis_slug)
-                    raw_y = lap.get_channel(channel_name)
+                        raw_x = lap.get_channel(self.x_axis_slug)
+                        raw_y = lap.get_channel(channel_name)
+                        sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
 
-                    sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
                     if sample is not None:
                         _, actual_y = sample
                         title_parts.append(
@@ -636,7 +673,15 @@ class GraphViewWidget(QWidget):
                         y_data = raw_y[:min_len]
                         pen = pg.mkPen(color=color, width=1.8)
 
-                        curve = plot.plot(x_data, y_data, pen=pen)
+                        curve = pg.PlotCurveItem(
+                            x_data, y_data,
+                            pen=pen,
+                            clipToView=True,
+                            autoDownsample=True,
+                            downsampleMethod='peak',
+                            antialias=self.antialias
+                        )
+                        plot.addItem(curve)
 
                         # Create tracking dot for this curve
                         dot_pen = pg.mkPen("#FFFFFF" if self.is_dark else "#000000", width=1.2)
@@ -693,6 +738,23 @@ class GraphViewWidget(QWidget):
         if getattr(self, "_is_rebuilding", False) or not self.plot_widgets or not self.show_cursor_values:
             return
 
+        self._pending_mouse_evt = evt
+        now = time.monotonic()
+        if now - self._last_mouse_process_time >= 0.015:
+            self._last_mouse_process_time = now
+            self._process_mouse_point(evt)
+        elif not self._mouse_throttle_timer.isActive():
+            self._mouse_throttle_timer.start(16)
+
+    def _on_mouse_throttle_timeout(self):
+        if self._pending_mouse_evt is not None:
+            self._last_mouse_process_time = time.monotonic()
+            self._process_mouse_point(self._pending_mouse_evt)
+
+    def _process_mouse_point(self, evt):
+        if getattr(self, "_is_rebuilding", False) or not self.plot_widgets or not self.show_cursor_values:
+            return
+
         try:
             first_plot = list(self.plot_widgets.values())[0]
             if not first_plot or not hasattr(first_plot, "vb") or first_plot.vb is None:
@@ -710,10 +772,6 @@ class GraphViewWidget(QWidget):
                 v_line.setPos(x_val)
             except Exception:
                 pass
-
-        # Update plot titles with cursor values if above-graph values are enabled
-        if self.show_cursor_values and self.show_cursor_values_above_graph:
-            self._update_title_cursor_values(x_val)
 
         # Update X-axis tracking label at the bottom of the cursor
         if hasattr(self, "x_cursor_label") and self.x_cursor_label is not None:
@@ -737,7 +795,8 @@ class GraphViewWidget(QWidget):
             else:
                 self.x_cursor_label.setVisible(False)
 
-        # Collect active samples per channel for collision-free label stacking
+        # Single-pass sample resolution for all channels & laps
+        resolved_samples: Dict[Tuple[str, int, str], Tuple[float, float]] = {}
         channel_samples: Dict[str, List[Tuple[float, float, pg.ScatterPlotItem, pg.TextItem]]] = {}
 
         for dot, value_label, session_id, lap_num, channel_name in self.tracking_dots:
@@ -757,7 +816,9 @@ class GraphViewWidget(QWidget):
                 raw_y = lap.get_channel(channel_name)
 
                 sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
+                key = (session_id, lap_num, channel_name)
                 if sample is not None:
+                    resolved_samples[key] = sample
                     actual_x, actual_y = sample
                     dot.setData(x=[actual_x], y=[actual_y])
                     dot.setVisible(True)
@@ -769,6 +830,10 @@ class GraphViewWidget(QWidget):
                     value_label.setVisible(False)
             except Exception:
                 pass
+
+        # Update plot titles with cursor values using precomputed samples
+        if self.show_cursor_values and self.show_cursor_values_above_graph:
+            self._update_title_cursor_values(x_val, precomputed_samples=resolved_samples)
 
         # Collect cursor distance positions for track map tracking dots
         cursor_map_dots: List[Tuple[float, str]] = []
@@ -784,7 +849,7 @@ class GraphViewWidget(QWidget):
                 if self.x_axis_slug == STD_CH_LAP_DIST_SLUG:
                     dist_arr = lap.get_channel(STD_CH_LAP_DIST_SLUG)
                     if dist_arr is not None and len(dist_arr) > 0:
-                        if dist_arr.min() <= x_val <= dist_arr.max():
+                        if dist_arr[0] <= x_val <= dist_arr[-1] or dist_arr.min() <= x_val <= dist_arr.max():
                             cursor_map_dots.append((float(x_val), color))
                 else:
                     time_arr = lap.get_channel(self.x_axis_slug)
@@ -874,6 +939,7 @@ class GraphViewWidget(QWidget):
             "show_cursor_values_on_graph": self.show_cursor_values_on_graph,
             "show_cursor_values_above_graph": self.show_cursor_values_above_graph,
             "show_legend": self.show_legend,
+            "antialias": self.antialias,
             "x_axis_slug": self.x_axis_slug,
             "has_manual_zoom_or_pan": self.has_manual_zoom_or_pan,
             "saved_x_range": self.saved_x_range,
@@ -892,6 +958,10 @@ class GraphViewWidget(QWidget):
         if "show_y_grid" in state:
             self.show_y_grid = bool(state["show_y_grid"])
             self.btn_y_grid.setChecked(self.show_y_grid)
+
+        if "antialias" in state:
+            self.antialias = bool(state["antialias"])
+            self.btn_antialias.setChecked(self.antialias)
 
         if "show_cursor_values" in state:
             self.show_cursor_values = bool(state["show_cursor_values"])

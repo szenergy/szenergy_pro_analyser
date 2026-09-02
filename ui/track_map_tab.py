@@ -35,6 +35,12 @@ class TrackMapTabWidget(QWidget):
         self._current_color: str = LAP_COLORS[1]
         self.is_dark: bool = is_system_dark_theme()
 
+        self._centroid_x: float = 0.0
+        self._centroid_y: float = 0.0
+        self._dist_min: float = 0.0
+        self._dist_max: float = 0.0
+        self._dist_span: float = 0.0
+
         self._rotation_save_timer = QTimer(self)
         self._rotation_save_timer.setSingleShot(True)
         self._rotation_save_timer.setInterval(500)
@@ -235,6 +241,19 @@ class TrackMapTabWidget(QWidget):
                 diffs = np.sqrt(np.diff(self._raw_x, prepend=self._raw_x[0])**2 + np.diff(self._raw_y, prepend=self._raw_y[0])**2)
                 self._raw_dist = np.cumsum(diffs)
 
+            if len(self._raw_x) > 0:
+                self._centroid_x = float(np.mean(self._raw_x))
+                self._centroid_y = float(np.mean(self._raw_y))
+                self._dist_min = float(self._raw_dist.min())
+                self._dist_max = float(self._raw_dist.max())
+                self._dist_span = self._dist_max - self._dist_min
+            else:
+                self._centroid_x = 0.0
+                self._centroid_y = 0.0
+                self._dist_min = 0.0
+                self._dist_max = 0.0
+                self._dist_span = 0.0
+
             rot = float(map_data.get("rotation", 0.0))
             self._current_angle_deg = rot
             self.rotation_slider.blockSignals(True)
@@ -248,6 +267,11 @@ class TrackMapTabWidget(QWidget):
             self._raw_x = None
             self._raw_y = None
             self._raw_dist = None
+            self._centroid_x = 0.0
+            self._centroid_y = 0.0
+            self._dist_min = 0.0
+            self._dist_max = 0.0
+            self._dist_span = 0.0
 
         self._apply_rotation_and_render()
 
@@ -266,12 +290,12 @@ class TrackMapTabWidget(QWidget):
         cos_theta = math.cos(rad)
         sin_theta = math.sin(rad)
 
-        cx = float(np.mean(self._raw_x))
-        cy = float(np.mean(self._raw_y))
+        cx = self._centroid_x
+        cy = self._centroid_y
 
-        dist_min = float(self._raw_dist.min())
-        dist_max = float(self._raw_dist.max())
-        dist_span = dist_max - dist_min
+        dist_min = self._dist_min
+        dist_max = self._dist_max
+        dist_span = self._dist_span
 
         spots = []
         border_color = "#FFFFFF" if self.is_dark else "#000000"
@@ -332,8 +356,8 @@ class TrackMapTabWidget(QWidget):
         cos_theta = math.cos(rad)
         sin_theta = math.sin(rad)
 
-        cx = float(np.mean(self._raw_x))
-        cy = float(np.mean(self._raw_y))
+        cx = self._centroid_x
+        cy = self._centroid_y
 
         dx = self._raw_x - cx
         dy = self._raw_y - cy

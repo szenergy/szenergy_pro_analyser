@@ -16,28 +16,70 @@ def _get_nearest_channel_sample(
     """
     Finds the exact nearest recorded data point (actual_x, actual_y) on the plotted curve
     closest to x_val without any linear interpolation.
+    Uses high-performance O(log N) binary search for monotonic telemetry X-axis arrays.
     """
     if raw_x is None or raw_y is None or len(raw_x) == 0 or len(raw_y) == 0:
         return None
 
     min_len = min(len(raw_x), len(raw_y))
+    if min_len == 0:
+        return None
+
     x_arr = np.asarray(raw_x[:min_len], dtype=float)
     y_arr = np.asarray(raw_y[:min_len], dtype=float)
 
-    valid_mask = ~(np.isnan(x_arr) | np.isnan(y_arr) | np.isinf(x_arr) | np.isinf(y_arr))
-    if not np.any(valid_mask):
-        return None
+    x_first = x_arr[0]
+    x_last = x_arr[-1]
 
-    valid_x = x_arr[valid_mask]
-    valid_y = y_arr[valid_mask]
+    # Fast path: Monotonically increasing X data (standard lap time or distance)
+    if x_last >= x_first:
+        if x_val < x_first or x_val > x_last:
+            return None
 
-    # Bounds check: ensure cursor is within the lap's actual range
-    if x_val < valid_x.min() or x_val > valid_x.max():
-        return None
+        idx = int(np.searchsorted(x_arr, x_val))
+        if idx <= 0:
+            best_idx = 0
+        elif idx >= min_len:
+            best_idx = min_len - 1
+        else:
+            if abs(x_arr[idx] - x_val) < abs(x_arr[idx - 1] - x_val):
+                best_idx = idx
+            else:
+                best_idx = idx - 1
 
-    # Snap to nearest actual recorded telemetry point on the curve
-    nearest_idx = int(np.argmin(np.abs(valid_x - x_val)))
-    return float(valid_x[nearest_idx]), float(valid_y[nearest_idx])
+        val_x = float(x_arr[best_idx])
+        val_y = float(y_arr[best_idx])
+
+        # Validate non-nan/inf
+        if np.isnan(val_x) or np.isnan(val_y) or np.isinf(val_x) or np.isinf(val_y):
+            valid_mask = ~(np.isnan(x_arr) | np.isnan(y_arr) | np.isinf(x_arr) | np.isinf(y_arr))
+            if not np.any(valid_mask):
+                return None
+            valid_x = x_arr[valid_mask]
+            valid_y = y_arr[valid_mask]
+            if len(valid_x) == 0 or x_val < valid_x[0] or x_val > valid_x[-1]:
+                return None
+            idx_v = int(np.searchsorted(valid_x, x_val))
+            if idx_v <= 0:
+                b_idx = 0
+            elif idx_v >= len(valid_x):
+                b_idx = len(valid_x) - 1
+            else:
+                b_idx = idx_v if abs(valid_x[idx_v] - x_val) < abs(valid_x[idx_v - 1] - x_val) else idx_v - 1
+            return float(valid_x[b_idx]), float(valid_y[b_idx])
+
+        return val_x, val_y
+    else:
+        # Fallback for non-monotonic or inverted series
+        valid_mask = ~(np.isnan(x_arr) | np.isnan(y_arr) | np.isinf(x_arr) | np.isinf(y_arr))
+        if not np.any(valid_mask):
+            return None
+        valid_x = x_arr[valid_mask]
+        valid_y = y_arr[valid_mask]
+        if len(valid_x) == 0 or x_val < valid_x.min() or x_val > valid_x.max():
+            return None
+        nearest_idx = int(np.argmin(np.abs(valid_x - x_val)))
+        return float(valid_x[nearest_idx]), float(valid_y[nearest_idx])
 
 
 class XZoomViewBox(pg.ViewBox):

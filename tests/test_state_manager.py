@@ -211,6 +211,7 @@ class TestStateManager(unittest.TestCase):
                 "show_cursor_values": True,
                 "show_cursor_values_on_graph": True,
                 "show_cursor_values_above_graph": False,
+                "antialias": True,
                 "x_axis_slug": "lap_dist"
             },
             "theme_mode": "dark",
@@ -229,6 +230,7 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(loaded_settings["graph"]["show_x_grid"], True)
         self.assertEqual(loaded_settings["graph"]["show_cursor_values_on_graph"], True)
         self.assertEqual(loaded_settings["graph"]["show_cursor_values_above_graph"], False)
+        self.assertEqual(loaded_settings["graph"]["antialias"], True)
         self.assertEqual(loaded_settings["theme_mode"], "dark")
         self.assertEqual(loaded_settings["sidebar"]["bottom_tab_index"], 1)
         self.assertEqual(loaded_settings["sidebar"]["selected_map"], "Test Track")

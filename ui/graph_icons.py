@@ -1,7 +1,7 @@
 import math
 
 from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF
+from PySide6.QtGui import QColor, QPixmap, QPainter, QIcon, QPen, QPolygonF, QPainterPath
 
 
 def create_icon_x_grid(is_dark: bool) -> QIcon:
@@ -175,5 +175,25 @@ def create_icon_settings(is_dark: bool) -> QIcon:
         painter.setPen(pen)
         painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
+    painter.end()
+    return QIcon(pixmap)
+
+
+def create_icon_antialias(is_dark: bool) -> QIcon:
+    """Draws a vector smooth S-curve icon representing anti-aliasing / curve smoothing."""
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    fg = QColor("#E0E0E0" if is_dark else "#2A2E33")
+    pen = QPen(fg, 1.8)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+
+    path = QPainterPath()
+    path.moveTo(3, 16)
+    path.cubicTo(8, 16, 8, 8, 12, 8)
+    path.cubicTo(16, 8, 16, 16, 21, 16)
+    painter.drawPath(path)
     painter.end()
     return QIcon(pixmap)
