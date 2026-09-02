@@ -247,6 +247,7 @@ class MainWindow(QMainWindow):
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
         self.sidebar.session_removed.connect(self._on_session_removed)
         self.sidebar.session_edit_mapping_requested.connect(self._on_edit_session_mapping)
+        self.sidebar.channel_manager_closed.connect(self._sync_x_axis_labels)
         self.main_splitter.addWidget(self.sidebar)
 
         # Right Graph View

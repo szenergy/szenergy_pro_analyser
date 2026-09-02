@@ -8,7 +8,7 @@ from typing import Dict, List, Set, Tuple, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
     QHeaderView, QAbstractItemView, QMessageBox, QLineEdit, QMenu, QMenuBar, QFrame,
-    QTabWidget
+    QTabWidget, QPushButton
 )
 from PySide6.QtCore import Signal, Qt, QPoint, QTimer, QEvent
 from PySide6.QtGui import QColor, QPixmap, QIcon, QAction
@@ -18,6 +18,7 @@ from utils.constants import LAP_COLORS, MAX_SELECTED_CHANNELS
 from ui.color_picker_popup import (
     LapColorPickerPopup, create_color_icon, create_empty_icon, format_lap_time
 )
+from ui.graph_icons import create_icon_settings
 from ui.track_map_tab import TrackMapTabWidget
 
 
@@ -32,6 +33,8 @@ class SidebarWidget(QWidget):
     session_removed = Signal(str)
     # Signal (session_id string)
     session_edit_mapping_requested = Signal(str)
+    # Signal emitted when channel manager dialog is closed
+    channel_manager_closed = Signal()
 
     def __init__(self, parent=None, state_manager=None):
         super().__init__(parent)
@@ -55,6 +58,7 @@ class SidebarWidget(QWidget):
         self._selection_debounce_timer.timeout.connect(self._flush_pending_selections)
 
         self._init_ui()
+        self.apply_theme(self.is_dark)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -110,11 +114,25 @@ class SidebarWidget(QWidget):
         ch_tab_layout.setContentsMargins(2, 4, 2, 2)
         ch_tab_layout.setSpacing(4)
 
+        # Filter row with Manage Channels button
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(4)
+
         self.channel_search_input = QLineEdit()
         self.channel_search_input.setPlaceholderText("Filter channels...")
         self.channel_search_input.setClearButtonEnabled(True)
         self.channel_search_input.textChanged.connect(self._filter_channels)
-        ch_tab_layout.addWidget(self.channel_search_input)
+        search_row.addWidget(self.channel_search_input, 1)
+
+        self.btn_manage_channels = QPushButton()
+        self.btn_manage_channels.setToolTip("Manage Channels")
+        self.btn_manage_channels.setFixedSize(28, 24)
+        self.btn_manage_channels.setCursor(Qt.PointingHandCursor)
+        self.btn_manage_channels.clicked.connect(self._on_open_channel_manager)
+        search_row.addWidget(self.btn_manage_channels)
+
+        ch_tab_layout.addLayout(search_row)
 
         self.channel_tree = QTreeWidget()
         self.channel_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -240,8 +258,19 @@ class SidebarWidget(QWidget):
         if hasattr(self, "import_hint_label"):
             self.import_hint_label.setStyleSheet(hint_style)
 
+        if hasattr(self, "btn_manage_channels"):
+            self.btn_manage_channels.setIcon(create_icon_settings(is_dark))
+
         if hasattr(self, "track_map_tab") and hasattr(self.track_map_tab, "apply_theme"):
             self.track_map_tab.apply_theme(is_dark)
+
+    def _on_open_channel_manager(self):
+        """Opens the ChannelManagerDialog to manage and rename channels."""
+        from ui.channel_manager_dialog import ChannelManagerDialog
+        dialog = ChannelManagerDialog(state_manager=self.state_manager, parent=self)
+        if dialog.exec():
+            self.update_available_channels()
+            self.channel_manager_closed.emit()
 
     def _update_import_hint(self):
         """Updates visibility of the import telemetry hint based on whether sessions are loaded."""

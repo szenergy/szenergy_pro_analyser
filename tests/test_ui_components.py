@@ -355,9 +355,11 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(sidebar.bottom_tabs.tabText(0), "Channels")
         self.assertEqual(sidebar.bottom_tabs.tabText(1), "Track Map")
 
-        # Verify channels tab contains search input and channel tree
+        # Verify channels tab contains search input, manage channels button, and channel tree
         self.assertEqual(sidebar.bottom_tabs.widget(0), sidebar.channel_tab)
         self.assertIsNotNone(sidebar.channel_search_input)
+        self.assertIsNotNone(sidebar.btn_manage_channels)
+        self.assertFalse(sidebar.btn_manage_channels.icon().isNull())
         self.assertIsNotNone(sidebar.channel_tree)
         self.assertEqual(sidebar.channel_tree.parentWidget(), sidebar.channel_tab)
 
@@ -376,6 +378,36 @@ class TestUIComponents(unittest.TestCase):
         # Verify canvas placeholder
         self.assertIsNotNone(sidebar.track_map_tab.map_canvas)
         self.assertIsNotNone(sidebar.track_map_tab.placeholder_canvas_label)
+
+    def test_sidebar_manage_channels_button_and_dialog(self):
+        """Validates that clicking the settings button next to the filter channels box opens channel manager and refreshes available channels."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        sidebar = SidebarWidget(state_manager=state_mgr)
+
+        # Add a dummy session with custom channel
+        s = Session(id="s_test", name="test.csv", file_path="/tmp/test.csv", channels=["speed", "custom_ch"])
+        sidebar.add_session(s)
+
+        signal_emitted = []
+        sidebar.channel_manager_closed.connect(lambda: signal_emitted.append(True))
+
+        with patch("ui.channel_manager_dialog.ChannelManagerDialog.exec", return_value=1):
+            # Rename custom_ch via state manager during dialog simulation
+            defs = state_mgr.get_channel_defs()
+            defs.append({"slug": "custom_ch", "label": "Custom Renamed Sensor"})
+            state_mgr.save_channel_defs(defs)
+            sidebar.btn_manage_channels.click()
+
+        self.assertEqual(len(signal_emitted), 1)
+        # Check that tree was refreshed with updated label
+        found = False
+        for i in range(sidebar.channel_tree.topLevelItemCount()):
+            item = sidebar.channel_tree.topLevelItem(i)
+            if item.data(0, Qt.UserRole) == "custom_ch":
+                self.assertEqual(item.text(0), "Custom Renamed Sensor")
+                found = True
+                break
+        self.assertTrue(found)
 
     def test_import_wizard_defaults_to_skip_without_preset(self):
         """Validates that without an explicit preset or mapping, all channels default to '-- Skip --' and preset combo defaults to 'None'."""
