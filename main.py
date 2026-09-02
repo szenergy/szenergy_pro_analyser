@@ -1,11 +1,32 @@
-"""
-Entry point for SZenergy Pro Analyser desktop application.
-Includes modern stylesheet with smooth, thin scrollbars, startup splash screen,
-and system OS theme adaptation.
-"""
+import io
+import os
+import sys
+import argparse
+import logging
 
-import faulthandler
-faulthandler.enable()
+# Ensure stdout and stderr are non-None streams on Windows without console (--windowed / --noconsole)
+class NullWriter:
+    """Fallback dummy stream for GUI environments where stdout/stderr are None."""
+    def write(self, text):
+        pass
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+
+if sys.stdout is None:
+    sys.stdout = NullWriter()
+if sys.stderr is None:
+    sys.stderr = NullWriter()
+
+# Safely initialize faulthandler only if a real stderr stream is available
+try:
+    if hasattr(sys.stderr, "fileno"):
+        sys.stderr.fileno()
+        import faulthandler
+        faulthandler.enable()
+except Exception:
+    pass
 
 from utils.constants import APP_NAME
 
@@ -16,10 +37,6 @@ try:
 except ImportError:
     pyi_splash = None
 
-import argparse
-import os
-import sys
-import logging
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 

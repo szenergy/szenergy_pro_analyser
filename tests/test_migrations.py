@@ -71,10 +71,10 @@ class TestMigrations(unittest.TestCase):
         legacy_channels = ["Lap", "Time", "Distance", "Custom Pressure"]
         migrated = _migrate_channels_v0_to_v1(legacy_channels, self.state_mgr)
         self.assertEqual(len(migrated), 4)
-        self.assertEqual(migrated[0], {"label": "Lap", "slug": "lap"})
-        self.assertEqual(migrated[1], {"label": "Time", "slug": "time"})
-        self.assertEqual(migrated[2], {"label": "Distance", "slug": "distance"})
-        self.assertEqual(migrated[3], {"label": "Custom Pressure", "slug": "custom_pressure"})
+        self.assertEqual(migrated[0], {"label": "Lap", "slug": "lap", "type": "normal", "unit": ""})
+        self.assertEqual(migrated[1], {"label": "Time", "slug": "time", "type": "normal", "unit": ""})
+        self.assertEqual(migrated[2], {"label": "Distance", "slug": "distance", "type": "normal", "unit": ""})
+        self.assertEqual(migrated[3], {"label": "Custom Pressure", "slug": "custom_pressure", "type": "normal", "unit": ""})
 
     def test_migrate_file_mappings_to_slugs(self):
         """Validates that file_mappings with display names or dicts are converted to preset slugs."""

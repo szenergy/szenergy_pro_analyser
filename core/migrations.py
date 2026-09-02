@@ -113,22 +113,36 @@ PRESET_MIGRATIONS: List[Tuple[int, int, Callable]] = [
 # Channel Definitions Migrations
 # ---------------------------------------------------------------------------
 
-def _migrate_channels_v0_to_v1(data: Any, state_manager: StateManager) -> List[Dict[str, str]]:
+def _migrate_channels_v0_to_v1(data: Any, state_manager: StateManager) -> List[Dict[str, Any]]:
     """
-    v0 -> v1: Wrap legacy channel defs list in versioned envelope.
+    v0 -> v1: Wrap legacy channel defs list in versioned envelope and ensure type & unit fields exist.
     Content transformation is handled by StateManager.get_channel_defs() which already
-    handles legacy string-only and missing-slug formats. This migration just ensures
-    the versioned envelope is written.
+    handles legacy string-only and missing-slug formats. This migration ensures
+    the versioned envelope is written with normalized keys.
     """
+    from utils.constants import (
+        STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
+    )
+    system_slugs = (STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG)
+
     if isinstance(data, list):
         converted = []
         for item in data:
             if isinstance(item, dict) and "label" in item and "slug" in item:
-                converted.append(item)
+                d = dict(item)
+                if "type" not in d:
+                    d["type"] = "system" if d["slug"] in system_slugs else "normal"
+                if "unit" not in d:
+                    d["unit"] = ""
+                converted.append(d)
             elif isinstance(item, str):
-                converted.append({"label": item, "slug": generate_slug(item)})
+                slug = generate_slug(item)
+                ch_type = "system" if slug in system_slugs else "normal"
+                converted.append({"label": item, "slug": slug, "type": ch_type, "unit": ""})
             elif isinstance(item, dict) and "label" in item:
-                converted.append({"label": item["label"], "slug": generate_slug(item["label"])})
+                slug = generate_slug(item["label"])
+                ch_type = "system" if slug in system_slugs else "normal"
+                converted.append({"label": item["label"], "slug": slug, "type": ch_type, "unit": item.get("unit", "")})
         return converted if converted else []
     return []
 

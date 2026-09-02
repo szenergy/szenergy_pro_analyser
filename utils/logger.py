@@ -28,10 +28,14 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    target_stream = sys.stdout if sys.stdout is not None else sys.stderr
+    if target_stream is not None:
+        console_handler = logging.StreamHandler(target_stream)
+        console_handler.setLevel(level)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+    else:
+        root_logger.addHandler(logging.NullHandler())
 
     # Suppress verbose noisy third-party loggers
     logging.getLogger("nptdms").setLevel(logging.WARNING)
