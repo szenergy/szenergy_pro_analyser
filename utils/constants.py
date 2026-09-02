@@ -5,7 +5,7 @@ Global constants and configuration defaults for the app.
 # Application Metadata
 APP_NAME = "SZenergy Pro Analyser"
 ORGANIZATION_NAME = "SZenergy"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 APP_LOGO_FILENAME = "szenergy_logo.png"
 
 # Default Channel Labels
