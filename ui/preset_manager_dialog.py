@@ -153,7 +153,7 @@ class PresetManagerDialog(QDialog):
         self.preset_name_input.setText(preset["name"])
         mapping = preset.get("mapping", {})
 
-        target_options = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        target_options = ["-- Skip --"] + self.state_manager.get_channel_display_names()
         self.table.setRowCount(len(mapping))
 
         for row, (raw_col, slug_val) in enumerate(mapping.items()):
@@ -165,7 +165,7 @@ class PresetManagerDialog(QDialog):
             combo.addItems(target_options)
 
             # Resolve slug to display label for combo display
-            display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
+            display_label = self.state_manager.get_display_name_by_slug(slug_val, slug_val)
             idx = combo.findText(display_label)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
@@ -181,7 +181,7 @@ class PresetManagerDialog(QDialog):
         raw_item = QTableWidgetItem(f"NewChannel_{row + 1}")
         self.table.setItem(row, 0, raw_item)
 
-        target_options = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        target_options = ["-- Skip --"] + self.state_manager.get_channel_display_names()
         combo = QComboBox()
         combo.setEditable(True)
         combo.addItems(target_options)

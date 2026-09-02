@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtWidgets import (
-    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog, QTabWidget
+    QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog, QTabWidget, QPushButton, QWidget
 )
 from PySide6.QtCore import QPointF, QPoint, Qt, QEvent
 from PySide6.QtGui import QKeyEvent
@@ -578,27 +578,91 @@ class TestUIComponents(unittest.TestCase):
             {"label": "Lap Number", "slug": "lap_num"},
             {"label": "Lap Time", "slug": "lap_time"},
             {"label": "Lap Distance", "slug": "lap_dist"},
-            {"label": "Old Sensor", "slug": "old_sensor"}
+            {"label": "Old Sensor", "slug": "old_sensor", "unit": "deg"}
         ]
         state_mgr.save_channel_defs(custom_defs)
 
         dlg = ChannelManagerDialog(state_mgr)
 
-        # 1. Rename custom non-system channel
-        dlg.table.selectRow(3)
-        with patch("PySide6.QtWidgets.QInputDialog.getText", return_value=("Suspension Travel [mm]", True)):
-            dlg._on_rename_channel()
+        # 1. Edit custom non-system channel in-place (Label & Unit)
+        dlg.table.item(3, 1).setText("Suspension Travel [mm]")
+        dlg.table.item(3, 2).setText("mm")
 
         self.assertEqual(dlg.channels[3]["label"], "Suspension Travel [mm]")
         self.assertEqual(dlg.channels[3]["slug"], "suspension_travel_mm")
+        self.assertEqual(dlg.channels[3]["unit"], "mm")
 
-        # 2. Rename system required channel
-        dlg.table.selectRow(0)
-        with patch("PySide6.QtWidgets.QInputDialog.getText", return_value=("Kör", True)):
-            dlg._on_rename_channel()
+        # 2. Edit system required channel in-place
+        dlg.table.item(0, 1).setText("Kör")
+        dlg.table.item(0, 2).setText("#")
 
         self.assertEqual(dlg.channels[0]["label"], "Kör")
         self.assertEqual(dlg.channels[0]["slug"], "lap_num")  # System slug must be preserved
+        self.assertEqual(dlg.channels[0]["unit"], "#")
+
+    def test_channel_manager_columns_and_calculated_button(self):
+        """Validates that ChannelManagerDialog has Type, Label, Unit, empty header icon column, in-table editing, and Add Calculated button."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        # Add a custom calculated channel definition for testing configure button state
+        custom_defs = [
+            {"label": "Lap Number", "slug": "lap_num", "type": "system", "unit": ""},
+            {"label": "Lap Time", "slug": "lap_time", "type": "system", "unit": "s"},
+            {"label": "Lap Distance", "slug": "lap_dist", "type": "system", "unit": "m"},
+            {"label": "Speed", "slug": "speed", "type": "normal", "unit": "km/h"},
+            {"label": "Power", "slug": "power", "type": "calculated", "unit": "kW"},
+        ]
+        state_mgr.save_channel_defs(custom_defs)
+
+        dlg = ChannelManagerDialog(state_mgr)
+        self.assertEqual(dlg.table.columnCount(), 4)
+        headers = [dlg.table.horizontalHeaderItem(i).text() for i in range(4)]
+        self.assertEqual(headers, ["Type", "Label", "Unit", ""])
+
+        # Check column widths
+        self.assertEqual(dlg.table.columnWidth(0), 110)
+        self.assertEqual(dlg.table.columnWidth(2), 110)
+        self.assertAlmostEqual(dlg.table.columnWidth(3), 40, delta=2)
+
+        # Check rows
+        self.assertEqual(dlg.table.rowCount(), 5)
+        # Row 0: System (No configure button)
+        self.assertEqual(dlg.table.item(0, 0).text(), "System")
+        self.assertEqual(dlg.table.item(0, 1).text(), "Lap Number")
+        self.assertIsNone(dlg.table.cellWidget(0, 3))
+
+        # Row 3: Normal (No configure button)
+        self.assertEqual(dlg.table.item(3, 0).text(), "Normal")
+        self.assertEqual(dlg.table.item(3, 1).text(), "Speed")
+        self.assertEqual(dlg.table.item(3, 2).text(), "km/h")
+        self.assertIsNone(dlg.table.cellWidget(3, 3))
+
+        # Row 4: Calculated (Has configure icon button container)
+        self.assertEqual(dlg.table.item(4, 0).text(), "Calculated")
+        self.assertEqual(dlg.table.item(4, 1).text(), "Power")
+        self.assertEqual(dlg.table.item(4, 2).text(), "kW")
+        cfg_widget = dlg.table.cellWidget(4, 3)
+        self.assertIsNotNone(cfg_widget)
+        btn = cfg_widget.findChild(QPushButton)
+        self.assertIsNotNone(btn)
+        self.assertFalse(btn.icon().isNull())
+
+        # Verify Edit Selected button is removed from bottom
+        self.assertFalse(hasattr(dlg, "btn_edit"))
+
+        # Verify Add Calculated button exists next to Add Channel
+        self.assertTrue(hasattr(dlg, "btn_add_calculated"))
+        self.assertEqual(dlg.btn_add_calculated.text(), "Add Calculated")
+        # Click should execute cleanly without error
+        dlg.btn_add_calculated.click()
+
+        # Add new normal channel with unit
+        dlg.label_input.setText("Brake Temp")
+        dlg.unit_input.setText("°C")
+        dlg.btn_add_channel.click()
+
+        self.assertEqual(dlg.channels[-1]["label"], "Brake Temp")
+        self.assertEqual(dlg.channels[-1]["unit"], "°C")
+        self.assertEqual(dlg.channels[-1]["type"], "normal")
 
     def test_sidebar_lap_multi_selection_limit_clamping(self):
         """Validates that selecting >12 laps at once clamps selection to 12 and updates state cleanly."""
@@ -941,7 +1005,7 @@ class TestUIComponents(unittest.TestCase):
         self.assertIn("Edit Channel Mapping", wizard.windowTitle())
         self.assertEqual(wizard.submit_btn.text(), "Apply Changes")
         self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap Number")
-        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time")
+        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time [s]")
         self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
         self.assertEqual(wizard.preset_combo.currentText(), "MyCarPreset")
 
@@ -1098,7 +1162,7 @@ class TestUIComponents(unittest.TestCase):
         wizard._on_load_preset()
 
         self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap Number")
-        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time")
+        self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time [s]")
         self.assertEqual(wizard.combos["Raw_Spd"].currentText(), "Speed")
         self.assertEqual(wizard.combos["Raw_Extra"].currentText(), "-- Skip --")
         self.assertEqual(wizard.status_items["Raw_Lap"].text(), "✓")
@@ -2499,6 +2563,45 @@ class TestUIComponents(unittest.TestCase):
         new_widget.btn_antialias.setChecked(True)
         self.assertTrue(new_widget.antialias)
         self.assertTrue(new_widget.get_view_state()["antialias"])
+
+    def test_channel_units_display_in_sidebar_and_graph_view(self):
+        """Validates that channel display text in sidebar and graph titles includes units in brackets like 'Speed [km/h]'."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        defs = [
+            {"label": "Lap Number", "slug": "lap_num", "type": "system", "unit": ""},
+            {"label": "Lap Time", "slug": "lap_time", "type": "system", "unit": "s"},
+            {"label": "Lap Distance", "slug": "lap_dist", "type": "system", "unit": "m"},
+            {"label": "Speed", "slug": "speed", "type": "normal", "unit": "km/h"},
+        ]
+        state_mgr.save_channel_defs(defs)
+
+        # 1. Sidebar Tree display
+        sidebar = SidebarWidget(state_manager=state_mgr)
+        s = Session(id="s1", name="log.csv", file_path="/tmp/log.csv", channels=["speed", "lap_dist", "lap_num"])
+        sidebar.add_session(s)
+
+        items_text = {}
+        for i in range(sidebar.channel_tree.topLevelItemCount()):
+            item = sidebar.channel_tree.topLevelItem(i)
+            slug = item.data(0, Qt.UserRole)
+            items_text[slug] = item.text(0)
+
+        self.assertEqual(items_text.get("speed"), "Speed [km/h]")
+        self.assertEqual(items_text.get("lap_dist"), "Lap Distance [m]")
+        self.assertEqual(items_text.get("lap_num"), "Lap Number")
+
+        # 2. Graph View titles
+        graph_view = GraphViewWidget(state_manager=state_mgr)
+        lap1 = Lap(session_id="s1", lap_number=1, duration=10.0, distance=100.0,
+                   data={"lap_dist": np.array([0.0, 100.0]), "speed": np.array([50.0, 60.0])})
+        s.laps = [lap1]
+        graph_view.set_sessions({"s1": s})
+        graph_view.set_selected_channels(["speed"])
+        graph_view.set_selected_laps([("s1", 1, "#FF0000")])
+
+        self.assertIn("speed", graph_view.plot_widgets)
+        plot = graph_view.plot_widgets["speed"]
+        self.assertIn("Speed [km/h]", plot.titleLabel.text)
 
 
 if __name__ == "__main__":

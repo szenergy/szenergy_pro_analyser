@@ -60,7 +60,7 @@ class ImportWizardDialog(QDialog):
         self.result_preset_slug: Optional[str] = None
         self.result_preset_name: Optional[str] = None
 
-        self.channel_targets = ["-- Skip --"] + self.state_manager.get_channel_labels()
+        self.channel_targets = ["-- Skip --"] + self.state_manager.get_channel_display_names()
         logger.debug("ImportWizardDialog opened for '%s' (initial_preset: %s, is_remapping: %s, raw_cols: %d)",
                      filename, initial_preset, is_remapping, len(self.raw_columns))
         self._init_ui(initial_preset, initial_mapping)
@@ -181,7 +181,7 @@ class ImportWizardDialog(QDialog):
 
             mapped_val = mapping_source.get(raw_col)
             if mapped_val:
-                mapped_val = self.state_manager.get_label_by_slug(mapped_val, mapped_val)
+                mapped_val = self.state_manager.get_display_name_by_slug(mapped_val, mapped_val)
                 idx = combo.findText(mapped_val)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
@@ -282,7 +282,7 @@ class ImportWizardDialog(QDialog):
             slug_val = preset_map.get(missing_col, "")
             display_label = slug_val
             if self.state_manager and slug_val:
-                display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
+                display_label = self.state_manager.get_display_name_by_slug(slug_val, slug_val)
             target_item = QTableWidgetItem(display_label)
             target_item.setForeground(QColor("#808080"))
             target_item.setFlags(Qt.ItemIsEnabled)
@@ -364,7 +364,7 @@ class ImportWizardDialog(QDialog):
             combo.blockSignals(True)
             if raw_col in preset_map:
                 slug_val = preset_map[raw_col]
-                display_label = self.state_manager.get_label_by_slug(slug_val, slug_val)
+                display_label = self.state_manager.get_display_name_by_slug(slug_val, slug_val)
                 c_idx = combo.findText(display_label)
                 if c_idx >= 0:
                     combo.setCurrentIndex(c_idx)

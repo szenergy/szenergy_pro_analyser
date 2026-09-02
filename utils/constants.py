@@ -20,9 +20,9 @@ STD_CH_LAP_DIST_SLUG = "lap_dist"
 
 # Default Channel Definitions
 DEFAULT_CHANNEL_DEFS = [
-    {"label": STD_CH_LAP_NUM, "slug": STD_CH_LAP_NUM_SLUG},
-    {"label": STD_CH_LAP_TIME, "slug": STD_CH_LAP_TIME_SLUG},
-    {"label": STD_CH_LAP_DIST, "slug": STD_CH_LAP_DIST_SLUG},
+    {"label": STD_CH_LAP_NUM, "slug": STD_CH_LAP_NUM_SLUG, "type": "system", "unit": ""},
+    {"label": STD_CH_LAP_TIME, "slug": STD_CH_LAP_TIME_SLUG, "type": "system", "unit": "s"},
+    {"label": STD_CH_LAP_DIST, "slug": STD_CH_LAP_DIST_SLUG, "type": "system", "unit": "m"},
 ]
 
 # Application Limits

@@ -136,6 +136,25 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(mapping["Lap Number"], "lap_num")
         self.assertEqual(mapping["Lap Time"], "lap_time")
         self.assertEqual(mapping["Lap Distance"], "lap_dist")
+        # Should also map bracketed unit forms
+        self.assertEqual(mapping["Lap Time [s]"], "lap_time")
+        self.assertEqual(mapping["Lap Distance [m]"], "lap_dist")
+
+    def test_channel_display_name_with_units(self):
+        """Validates that get_display_name_by_slug formats labels with [unit] when units are present."""
+        self.assertEqual(self.state_manager.get_display_name_by_slug("lap_num"), "Lap Number")
+        self.assertEqual(self.state_manager.get_display_name_by_slug("lap_time"), "Lap Time [s]")
+        self.assertEqual(self.state_manager.get_display_name_by_slug("lap_dist"), "Lap Distance [m]")
+
+        # Add channel with custom unit
+        defs = self.state_manager.get_channel_defs()
+        defs.append({"label": "Speed", "slug": "speed", "type": "normal", "unit": "km/h"})
+        defs.append({"label": "Temperature [degC]", "slug": "temperature", "type": "normal", "unit": "degC"})
+        self.state_manager.save_channel_defs(defs)
+
+        self.assertEqual(self.state_manager.get_display_name_by_slug("speed"), "Speed [km/h]")
+        # Should avoid duplicating bracketed units if already in label
+        self.assertEqual(self.state_manager.get_display_name_by_slug("temperature"), "Temperature [degC]")
 
     def test_legacy_channel_defs_migration(self):
         """Validates that legacy string-only channel definitions are migrated to dicts and persisted once."""
@@ -150,9 +169,9 @@ class TestStateManager(unittest.TestCase):
         # Loading should migrate and save to disk
         migrated_defs = self.state_manager.get_channel_defs()
         self.assertEqual(len(migrated_defs), 3)
-        self.assertEqual(migrated_defs[0], {"label": "Lap", "slug": "lap"})
-        self.assertEqual(migrated_defs[1], {"label": "Time", "slug": "time"})
-        self.assertEqual(migrated_defs[2], {"label": "Custom_Sensor", "slug": "custom_sensor"})
+        self.assertEqual(migrated_defs[0], {"label": "Lap", "slug": "lap", "type": "normal", "unit": ""})
+        self.assertEqual(migrated_defs[1], {"label": "Time", "slug": "time", "type": "normal", "unit": ""})
+        self.assertEqual(migrated_defs[2], {"label": "Custom_Sensor", "slug": "custom_sensor", "type": "normal", "unit": ""})
 
         # Verify disk content is now modern format (versioned envelope)
         with open(self.state_manager.channels_file, "r", encoding="utf-8") as f:

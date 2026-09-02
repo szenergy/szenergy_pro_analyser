@@ -455,7 +455,7 @@ class GraphViewWidget(QWidget):
         for channel_name, plot in self.plot_widgets.items():
             display_label = channel_name
             if self.state_manager:
-                display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+                display_label = self.state_manager.get_display_name_by_slug(channel_name, channel_name)
             title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"
             plot.setTitle(title_html, justify='left')
 
@@ -471,7 +471,7 @@ class GraphViewWidget(QWidget):
         for channel_name, plot in self.plot_widgets.items():
             display_label = channel_name
             if self.state_manager:
-                display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+                display_label = self.state_manager.get_display_name_by_slug(channel_name, channel_name)
 
             title_parts = [f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"]
 
@@ -588,7 +588,7 @@ class GraphViewWidget(QWidget):
 
                 display_label = channel_name
                 if self.state_manager:
-                    display_label = self.state_manager.get_label_by_slug(channel_name, channel_name)
+                    display_label = self.state_manager.get_display_name_by_slug(channel_name, channel_name)
 
                 title_html = f"<span style='color:{title_color}; font-weight:bold; font-size:10pt;'>{display_label}</span>"
                 plot.setTitle(title_html, justify='left')

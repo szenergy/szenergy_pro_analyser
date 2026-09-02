@@ -463,7 +463,7 @@ class SidebarWidget(QWidget):
             item = QTreeWidgetItem(self.channel_tree)
             display_label = channel_slug
             if self.state_manager:
-                display_label = self.state_manager.get_label_by_slug(channel_slug, channel_slug)
+                display_label = self.state_manager.get_display_name_by_slug(channel_slug, channel_slug)
             item.setText(0, display_label)
             item.setData(0, Qt.UserRole, channel_slug)
             if channel_slug in self.selected_channels:

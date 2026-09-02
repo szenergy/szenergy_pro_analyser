@@ -27,6 +27,18 @@ from core.json_utils import (
 logger = logging.getLogger(__name__)
 
 
+def format_channel_display(label: str, unit: Optional[str] = "") -> str:
+    """Formats channel display string as 'Label [Unit]' when unit is present, avoiding duplicate bracketed units."""
+    if not label:
+        return ""
+    unit_str = (unit or "").strip()
+    if not unit_str:
+        return label
+    if label.endswith(f"[{unit_str}]") or label.endswith(f"({unit_str})"):
+        return label
+    return f"{label} [{unit_str}]"
+
+
 class StateManager:
     """Manages persistent application state, settings, channel presets, and standard channel definitions."""
 
@@ -384,8 +396,8 @@ class StateManager:
 
         return best_preset_slug
 
-    def get_channel_defs(self) -> List[Dict[str, str]]:
-        """Returns the list of channel dicts [{'label': ..., 'slug': ...}]."""
+    def get_channel_defs(self) -> List[Dict[str, Any]]:
+        """Returns the list of channel dicts [{'label': ..., 'slug': ..., 'type': ..., 'unit': ...}]."""
         version, data = _read_versioned_json(self.channels_file)
 
         if data is None:
@@ -397,12 +409,23 @@ class StateManager:
             migrated = False
             for item in data:
                 if isinstance(item, dict) and "label" in item and "slug" in item:
-                    converted.append(item)
+                    d = dict(item)
+                    if "type" not in d:
+                        d["type"] = "system" if d["slug"] in (STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG) else "normal"
+                        migrated = True
+                    if "unit" not in d:
+                        d["unit"] = ""
+                        migrated = True
+                    converted.append(d)
                 elif isinstance(item, str):
-                    converted.append({"label": item, "slug": generate_slug(item)})
+                    slug = generate_slug(item)
+                    ch_type = "system" if slug in (STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG) else "normal"
+                    converted.append({"label": item, "slug": slug, "type": ch_type, "unit": ""})
                     migrated = True
                 elif isinstance(item, dict) and "label" in item:
-                    converted.append({"label": item["label"], "slug": generate_slug(item["label"])})
+                    slug = generate_slug(item["label"])
+                    ch_type = "system" if slug in (STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG) else "normal"
+                    converted.append({"label": item["label"], "slug": slug, "type": ch_type, "unit": item.get("unit", "")})
                     migrated = True
                 else:
                     migrated = True
@@ -413,7 +436,7 @@ class StateManager:
 
         return [dict(d) for d in DEFAULT_CHANNEL_DEFS]
 
-    def save_channel_defs(self, channels: List[Dict[str, str]]) -> None:
+    def save_channel_defs(self, channels: List[Dict[str, Any]]) -> None:
         """Persists the channel definitions list to JSON in versioned format."""
         _write_versioned_json(self.channels_file, 1, channels)
 
@@ -436,14 +459,18 @@ class StateManager:
         """
         existing_defs = self.get_channel_defs()
         existing_labels = set(ch["label"] for ch in existing_defs)
+        for ch in existing_defs:
+            existing_labels.add(format_channel_display(ch["label"], ch.get("unit", "")))
         existing_slugs = [ch["slug"] for ch in existing_defs]
 
         updated = False
         for label in labels:
             label_clean = label.strip()
             if label_clean and label_clean != "-- Skip --" and label_clean not in existing_labels:
+                if self.get_slug_by_label(label_clean) is not None:
+                    continue
                 slug = self.generate_unique_slug(label_clean, existing_slugs)
-                existing_defs.append({"label": label_clean, "slug": slug})
+                existing_defs.append({"label": label_clean, "slug": slug, "type": "normal", "unit": ""})
                 existing_labels.add(label_clean)
                 existing_slugs.append(slug)
                 updated = True
@@ -456,15 +483,30 @@ class StateManager:
         """Returns just the display labels of all defined channels."""
         return [ch["label"] for ch in self.get_channel_defs()]
 
+    def get_channel_display_names(self) -> List[str]:
+        """Returns the display names of all defined channels including unit brackets (e.g. ['Lap Time [s]', 'Speed [km/h]'])."""
+        return [format_channel_display(ch["label"], ch.get("unit", "")) for ch in self.get_channel_defs()]
+
     def get_slug_by_label(self, label: str) -> Optional[str]:
-        """Finds internal slug for a given display label."""
-        for ch in self.get_channel_defs():
-            if ch.get("label") == label:
-                return ch.get("slug")
+        """Finds internal slug for a given display label or bracketed display name."""
+        mapping = self.label_to_slug_mapping()
+        if label in mapping:
+            return mapping[label]
+        label_lower = label.strip().lower()
+        for k, v in mapping.items():
+            if k.lower() == label_lower:
+                return v
         return None
 
+    def get_unit_by_slug(self, slug: str, default: str = "") -> str:
+        """Finds unit string for a given channel slug."""
+        for ch in self.get_channel_defs():
+            if ch.get("slug") == slug:
+                return ch.get("unit", default)
+        return default
+
     def get_label_by_slug(self, slug: str, default: Optional[str] = None) -> str:
-        """Finds display label for a specific system slug (e.g. 'lap_num', 'lap_time', 'lap_dist')."""
+        """Finds raw display label for a specific system slug (e.g. 'lap_num', 'lap_time', 'lap_dist')."""
         for ch in self.get_channel_defs():
             if ch.get("slug") == slug:
                 return ch["label"]
@@ -478,9 +520,28 @@ class StateManager:
             return STD_CH_LAP_DIST
         return slug
 
+    def get_display_name_by_slug(self, slug: str, default: Optional[str] = None) -> str:
+        """Returns the channel label formatted with its unit in brackets if available (e.g. 'Speed [km/h]')."""
+        for ch in self.get_channel_defs():
+            if ch.get("slug") == slug:
+                return format_channel_display(ch.get("label", slug), ch.get("unit", ""))
+        label = self.get_label_by_slug(slug, default=default)
+        unit = self.get_unit_by_slug(slug, default="")
+        return format_channel_display(label, unit)
+
     def label_to_slug_mapping(self) -> Dict[str, str]:
-        """Returns a {label: slug} dictionary for all defined channels. Used by migrations and import logic."""
-        return {ch["label"]: ch["slug"] for ch in self.get_channel_defs()}
+        """Returns a {label: slug} dictionary for all defined channels, including bracketed unit variations."""
+        res: Dict[str, str] = {}
+        for ch in self.get_channel_defs():
+            label = ch.get("label", "")
+            slug = ch.get("slug", "")
+            unit = ch.get("unit", "")
+            if label and slug:
+                res[label] = slug
+                disp = format_channel_display(label, unit)
+                if disp:
+                    res[disp] = slug
+        return res
 
     def get_lap_label(self) -> str:
         return self.get_label_by_slug(STD_CH_LAP_NUM_SLUG, STD_CH_LAP_NUM)

@@ -262,8 +262,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.main_splitter)
 
     def _sync_x_axis_labels(self):
-        time_label = self.state_manager.get_time_label()
-        dist_label = self.state_manager.get_distance_label()
+        time_label = self.state_manager.get_display_name_by_slug(STD_CH_LAP_TIME_SLUG, "Lap Time")
+        dist_label = self.state_manager.get_display_name_by_slug(STD_CH_LAP_DIST_SLUG, "Lap Distance")
         self.graph_view.set_x_axis_labels(time_label, dist_label)
         if hasattr(self, "x_axis_dist_action"):
             self.x_axis_dist_action.setText(dist_label)
