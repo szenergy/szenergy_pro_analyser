@@ -21,9 +21,14 @@ class Lap:
     # Storage for channel arrays specific to this lap, keyed by slug: {channel_slug: np.ndarray}
     data: Dict[str, np.ndarray] = field(default_factory=dict)
 
-    def get_channel(self, slug: str) -> Optional[np.ndarray]:
+    def get_channel(
+        self,
+        slug: str,
+        calculated_defs: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Optional[np.ndarray]:
         """
         Retrieves channel data array by channel slug (e.g. 'time', 'distance', 'speed').
+        If not directly present in data, evaluates calculated channel definition if provided.
         """
         if not slug:
             return None
@@ -34,7 +39,25 @@ class Lap:
         for key, arr in self.data.items():
             if key.strip().lower() == target or key.replace(' ', '_').lower() == target:
                 return arr
+
+        # If slug is a calculated channel, compute it on-the-fly and cache
+        if calculated_defs and slug in calculated_defs:
+            calc_def = calculated_defs[slug]
+            if calc_def.get("type") == "calculated":
+                from core.channel_calculator import calculate_lap_channel
+                result = calculate_lap_channel(self, calc_def, calculated_defs)
+                if result is not None:
+                    self.data[slug] = result
+                    return result
+
         return None
+
+    def clear_calculated_cache(self, calculated_slugs: Optional[Set[str]] = None) -> None:
+        """Purges cached calculated channel data from this lap."""
+        if calculated_slugs is None:
+            return
+        for slug in calculated_slugs:
+            self.data.pop(slug, None)
 
 
 @dataclass

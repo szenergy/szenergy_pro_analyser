@@ -247,7 +247,7 @@ class MainWindow(QMainWindow):
         self.sidebar.channels_selection_changed.connect(self._on_channels_selection_changed)
         self.sidebar.session_removed.connect(self._on_session_removed)
         self.sidebar.session_edit_mapping_requested.connect(self._on_edit_session_mapping)
-        self.sidebar.channel_manager_closed.connect(self._sync_x_axis_labels)
+        self.sidebar.channel_manager_closed.connect(self._on_channel_manager_closed)
         self.main_splitter.addWidget(self.sidebar)
 
         # Right Graph View
@@ -269,6 +269,16 @@ class MainWindow(QMainWindow):
             self.x_axis_dist_action.setText(dist_label)
         if hasattr(self, "x_axis_time_action"):
             self.x_axis_time_action.setText(time_label)
+
+    def _on_channel_manager_closed(self):
+        self._sync_x_axis_labels()
+        calc_slugs = self.state_manager.get_calculated_channel_slugs() if self.state_manager else set()
+        for session in getattr(self.sidebar, "sessions", {}).values():
+            for lap in session.laps:
+                lap.clear_calculated_cache(calc_slugs)
+        self.sidebar.update_available_channels()
+        if hasattr(self, "graph_view") and self.graph_view is not None:
+            self.graph_view.rebuild_plots()
 
     def _on_open_config_folder(self):
         config_dir = self.state_manager.config_dir

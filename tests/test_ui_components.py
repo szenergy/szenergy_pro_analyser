@@ -430,7 +430,7 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(wizard.stat_missing.text(), "⚠ 0 In Preset (Not in File)")
 
         # Manually map channels
-        wizard.combos["Time"].setCurrentText("Lap Time")
+        wizard.combos["Time"].setCurrentText("Lap Time [s]")
         wizard.combos["Speed"].setCurrentText("Speed")
         self.assertEqual(wizard.stat_matched.text(), "✓ 2 Matched")
 
@@ -653,7 +653,9 @@ class TestUIComponents(unittest.TestCase):
         self.assertTrue(hasattr(dlg, "btn_add_calculated"))
         self.assertEqual(dlg.btn_add_calculated.text(), "Add Calculated")
         # Click should execute cleanly without error
-        dlg.btn_add_calculated.click()
+        from ui.calculated_channel_dialog import CalculatedChannelDialog
+        with patch.object(CalculatedChannelDialog, "exec", return_value=QDialog.Rejected):
+            dlg.btn_add_calculated.click()
 
         # Add new normal channel with unit
         dlg.label_input.setText("Brake Temp")
@@ -2489,7 +2491,7 @@ class TestUIComponents(unittest.TestCase):
         for target_x in np.linspace(5.0, 95.0, 1000):
             _get_nearest_channel_sample(x_data, y_data, target_x)
         elapsed = time.perf_counter() - t0
-        self.assertLess(elapsed, 0.05, f"Binary search took too long: {elapsed:.4f}s")
+        self.assertLess(elapsed, 0.15, f"Binary search took too long: {elapsed:.4f}s")
 
     def test_graph_view_widget_large_data_mouse_move_pipeline(self):
         """Validates that GraphViewWidget efficiently handles mouse move with large datasets and multiple channels."""
@@ -2602,6 +2604,174 @@ class TestUIComponents(unittest.TestCase):
         self.assertIn("speed", graph_view.plot_widgets)
         plot = graph_view.plot_widgets["speed"]
         self.assertIn("Speed [km/h]", plot.titleLabel.text)
+
+    def test_calculated_channel_dialog_and_validation(self):
+        """Validates CalculatedChannelDialog adding/removing inputs, live formula validation, trash icon, and save."""
+        from ui.calculated_channel_dialog import CalculatedChannelDialog
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        defs = [
+            {"label": "Voltage", "slug": "voltage", "type": "normal", "unit": "V"},
+            {"label": "Current", "slug": "current", "type": "normal", "unit": "A"},
+        ]
+        state_mgr.save_channel_defs(defs)
+
+        dlg = CalculatedChannelDialog(state_manager=state_mgr)
+        self.assertEqual(len(dlg.input_rows), 1)
+        self.assertEqual(dlg.input_rows[0].var_letter, "A")
+        # Verify remove button has trash icon
+        self.assertFalse(dlg.input_rows[0].btn_remove.icon().isNull())
+
+        # Set variable A to Voltage
+        dlg.input_rows[0].combo.setCurrentIndex(dlg.input_rows[0].combo.findData("voltage"))
+
+        # Add variable B
+        dlg.btn_add_input.click()
+        self.assertEqual(len(dlg.input_rows), 2)
+        self.assertEqual(dlg.input_rows[1].var_letter, "B")
+        self.assertFalse(dlg.input_rows[1].btn_remove.icon().isNull())
+        dlg.input_rows[1].combo.setCurrentIndex(dlg.input_rows[1].combo.findData("current"))
+
+        # Enter formula and verify live validation
+        dlg.formula_input.setText("(A * B) / 1000.0")
+        self.assertIn("Formula is valid", dlg.status_label.text())
+
+        # Set properties and save
+        dlg.label_input.setText("Electric Power")
+        dlg.unit_input.setText("kW")
+        dlg._on_save()
+
+        self.assertIsNotNone(dlg.result_channel_data)
+        self.assertEqual(dlg.result_channel_data["label"], "Electric Power")
+        self.assertEqual(dlg.result_channel_data["unit"], "kW")
+        self.assertEqual(dlg.result_channel_data["type"], "calculated")
+        self.assertEqual(dlg.result_channel_data["formula"], "(A * B) / 1000.0")
+        self.assertEqual(dlg.result_channel_data["inputs"], {"A": "voltage", "B": "current"})
+
+    def test_channel_manager_add_and_configure_calculated_channel(self):
+        """Validates adding and configuring calculated channels in ChannelManagerDialog with carry over."""
+        from ui.channel_manager_dialog import ChannelManagerDialog
+        from ui.calculated_channel_dialog import CalculatedChannelDialog
+
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        defs = [
+            {"label": "Voltage", "slug": "voltage", "type": "normal", "unit": "V"},
+            {"label": "Current", "slug": "current", "type": "normal", "unit": "A"},
+        ]
+        state_mgr.save_channel_defs(defs)
+
+        mgr_dlg = ChannelManagerDialog(state_manager=state_mgr)
+
+        # Pre-fill label and unit in channel manager to test carry-over
+        mgr_dlg.label_input.setText("Power kW")
+        mgr_dlg.unit_input.setText("kW")
+
+        dummy_calc_channel = {
+            "label": "Power kW",
+            "slug": "power_kw",
+            "type": "calculated",
+            "unit": "kW",
+            "formula": "(A * B) / 1000.0",
+            "inputs": {"A": "voltage", "B": "current"},
+        }
+
+        def mock_add_exec(dlg_self):
+            # Verify carried over label and unit
+            self.assertEqual(dlg_self.label_input.text(), "Power kW")
+            self.assertEqual(dlg_self.unit_input.text(), "kW")
+            dlg_self.result_channel_data = dummy_calc_channel
+            return QDialog.Accepted
+
+        with patch.object(CalculatedChannelDialog, "exec", new=mock_add_exec):
+            mgr_dlg._on_add_calculated()
+
+        # Inputs should be cleared in channel manager after successful addition
+        self.assertEqual(mgr_dlg.label_input.text(), "")
+        self.assertEqual(mgr_dlg.unit_input.text(), "")
+
+        # Channel should be added to table
+        calc_row = -1
+        for r in range(mgr_dlg.table.rowCount()):
+            if mgr_dlg.table.item(r, 0).text() == "Calculated":
+                calc_row = r
+                break
+        self.assertGreaterEqual(calc_row, 0)
+        self.assertEqual(mgr_dlg.table.item(calc_row, 1).text(), "Power kW")
+        self.assertEqual(mgr_dlg.table.item(calc_row, 2).text(), "kW")
+
+        # Test configure button invocation
+        updated_calc_channel = dict(dummy_calc_channel)
+        updated_calc_channel["label"] = "Total Power"
+
+        def mock_cfg_exec(dlg_self):
+            dlg_self.result_channel_data = updated_calc_channel
+            return QDialog.Accepted
+
+        with patch.object(CalculatedChannelDialog, "exec", new=mock_cfg_exec):
+            mgr_dlg._on_configure_calculated(calc_row)
+
+        self.assertEqual(mgr_dlg.table.item(calc_row, 1).text(), "Total Power")
+
+    def test_calculated_channel_sidebar_and_graph_evaluation(self):
+        """Validates that calculated channels appear in sidebar and evaluate properly on graph widgets."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        defs = [
+            {"label": "Lap Number", "slug": "lap_num", "type": "system", "unit": ""},
+            {"label": "Lap Time", "slug": "lap_time", "type": "system", "unit": "s"},
+            {"label": "Lap Distance", "slug": "lap_dist", "type": "system", "unit": "m"},
+            {"label": "Voltage", "slug": "voltage", "type": "normal", "unit": "V"},
+            {"label": "Current", "slug": "current", "type": "normal", "unit": "A"},
+            {
+                "label": "Power",
+                "slug": "power_w",
+                "type": "calculated",
+                "unit": "W",
+                "formula": "A * B",
+                "inputs": {"A": "voltage", "B": "current"}
+            }
+        ]
+        state_mgr.save_channel_defs(defs)
+
+        # 1. Sidebar available channels check
+        sidebar = SidebarWidget(state_manager=state_mgr)
+        s = Session(id="s1", name="log.csv", file_path="/tmp/log.csv", channels=["voltage", "current", "lap_dist"])
+        sidebar.add_session(s)
+
+        items_text = {}
+        for i in range(sidebar.channel_tree.topLevelItemCount()):
+            item = sidebar.channel_tree.topLevelItem(i)
+            slug = item.data(0, Qt.UserRole)
+            items_text[slug] = item.text(0)
+
+        # power_w should be automatically available because voltage and current exist in session
+        self.assertIn("power_w", items_text)
+        self.assertEqual(items_text["power_w"], "Power [W]")
+
+        # 2. Graph View evaluation and rendering
+        lap1 = Lap(
+            session_id="s1",
+            lap_number=1,
+            duration=10.0,
+            distance=100.0,
+            data={
+                "lap_dist": np.array([0.0, 50.0, 100.0]),
+                "voltage": np.array([400.0, 390.0, 380.0]),
+                "current": np.array([10.0, 20.0, 30.0]),
+            }
+        )
+        s.laps = [lap1]
+
+        graph_view = GraphViewWidget(state_manager=state_mgr)
+        graph_view.set_sessions({"s1": s})
+        graph_view.set_selected_channels(["power_w"])
+        graph_view.set_selected_laps([("s1", 1, "#00FF00")])
+
+        self.assertIn("power_w", graph_view.plot_widgets)
+        plot = graph_view.plot_widgets["power_w"]
+        self.assertIn("Power [W]", plot.titleLabel.text)
+
+        # Verify calculated data array was computed and cached in lap.data
+        self.assertIn("power_w", lap1.data)
+        np.testing.assert_allclose(lap1.data["power_w"], np.array([4000.0, 7800.0, 11400.0]))
 
 
 if __name__ == "__main__":

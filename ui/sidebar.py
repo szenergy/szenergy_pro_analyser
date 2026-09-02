@@ -456,6 +456,20 @@ class SidebarWidget(QWidget):
         for session in self.sessions.values():
             all_channels.update(session.channels)
 
+        # Include calculated channels whose required input channels are present in loaded sessions
+        if self.state_manager and all_channels:
+            calc_defs = self.state_manager.get_calculated_channel_defs()
+            added = True
+            while added:
+                added = False
+                for c_def in calc_defs:
+                    c_slug = c_def.get("slug")
+                    inputs = c_def.get("inputs", {})
+                    if c_slug and c_slug not in all_channels and inputs:
+                        if all(in_slug in all_channels for in_slug in inputs.values()):
+                            all_channels.add(c_slug)
+                            added = True
+
         # Retain valid previously selected channels
         self.selected_channels = self.selected_channels.intersection(all_channels)
 

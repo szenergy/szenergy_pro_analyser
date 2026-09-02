@@ -197,3 +197,31 @@ def create_icon_antialias(is_dark: bool) -> QIcon:
     painter.drawPath(path)
     painter.end()
     return QIcon(pixmap)
+
+
+def create_icon_trash(is_dark: bool) -> QIcon:
+    """Draws a crisp vector trash can icon for deleting/removing items."""
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    fg = QColor("#FF5252" if is_dark else "#D32F2F")
+    pen = QPen(fg, 1.5)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+
+    # Lid handle and lid horizontal bar
+    painter.drawLine(9, 4, 15, 4)
+    painter.drawLine(4, 7, 20, 7)
+
+    # Can body
+    painter.drawLine(6, 7, 7, 20)
+    painter.drawLine(7, 20, 17, 20)
+    painter.drawLine(17, 20, 18, 7)
+
+    # Vertical ribs
+    painter.drawLine(10, 10, 10, 17)
+    painter.drawLine(14, 10, 14, 17)
+
+    painter.end()
+    return QIcon(pixmap)

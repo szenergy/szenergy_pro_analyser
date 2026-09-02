@@ -247,12 +247,56 @@ class ChannelManagerDialog(QDialog):
         self.table.selectRow(len(self.channels) - 1)
 
     def _on_add_calculated(self):
-        """Placeholder hook for adding calculated channels (feature coming soon)."""
-        pass
+        """Opens dialog to configure and add a new calculated channel."""
+        from ui.calculated_channel_dialog import CalculatedChannelDialog
+
+        initial_data = {}
+        entered_label = self.label_input.text().strip()
+        entered_unit = self.unit_input.text().strip()
+        if entered_label:
+            initial_data["label"] = entered_label
+        if entered_unit:
+            initial_data["unit"] = entered_unit
+
+        dialog = CalculatedChannelDialog(
+            parent=self,
+            channel_data=initial_data if initial_data else None,
+            state_manager=self.state_manager,
+            is_dark=self.is_dark
+        )
+        if dialog.exec() == QDialog.Accepted and dialog.result_channel_data:
+            new_label = dialog.result_channel_data["label"]
+            if self._is_label_exists(new_label):
+                QMessageBox.warning(self, "Duplicate Label", f"A channel with label '{new_label}' already exists.")
+                return
+            self.channels.append(dialog.result_channel_data)
+            self.label_input.clear()
+            self.unit_input.clear()
+            self.refresh_table()
+            self.table.selectRow(len(self.channels) - 1)
 
     def _on_configure_calculated(self, row: int):
-        """Placeholder hook for configuring calculated channel formulas."""
-        pass
+        """Opens dialog to edit an existing calculated channel."""
+        if row < 0 or row >= len(self.channels):
+            return
+        ch = self.channels[row]
+        if ch.get("type") != "calculated":
+            return
+        from ui.calculated_channel_dialog import CalculatedChannelDialog
+        dialog = CalculatedChannelDialog(
+            parent=self,
+            channel_data=ch,
+            state_manager=self.state_manager,
+            is_dark=self.is_dark
+        )
+        if dialog.exec() == QDialog.Accepted and dialog.result_channel_data:
+            new_data = dialog.result_channel_data
+            if new_data["label"] != ch.get("label") and self._is_label_exists(new_data["label"]):
+                QMessageBox.warning(self, "Duplicate Label", f"A channel with label '{new_data['label']}' already exists.")
+                return
+            self.channels[row] = new_data
+            self.refresh_table()
+            self.table.selectRow(row)
 
     def _on_remove_channel(self):
         current_row = self.table.currentRow()

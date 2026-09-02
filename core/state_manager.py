@@ -483,6 +483,18 @@ class StateManager:
         """Returns just the display labels of all defined channels."""
         return [ch["label"] for ch in self.get_channel_defs()]
 
+    def get_channel_defs_by_slug(self) -> Dict[str, Dict[str, Any]]:
+        """Returns a mapping of channel slugs to their full definition dictionaries."""
+        return {ch["slug"]: ch for ch in self.get_channel_defs()}
+
+    def get_calculated_channel_defs(self) -> List[Dict[str, Any]]:
+        """Returns only definitions for calculated channels."""
+        return [ch for ch in self.get_channel_defs() if ch.get("type") == "calculated"]
+
+    def get_calculated_channel_slugs(self) -> Set[str]:
+        """Returns a set of all calculated channel slugs."""
+        return {ch["slug"] for ch in self.get_channel_defs() if ch.get("type") == "calculated"}
+
     def get_channel_display_names(self) -> List[str]:
         """Returns the display names of all defined channels including unit brackets (e.g. ['Lap Time [s]', 'Speed [km/h]'])."""
         return [format_channel_display(ch["label"], ch.get("unit", "")) for ch in self.get_channel_defs()]

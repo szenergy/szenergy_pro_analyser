@@ -489,8 +489,9 @@ class GraphViewWidget(QWidget):
                         if not lap:
                             continue
 
-                        raw_x = lap.get_channel(self.x_axis_slug)
-                        raw_y = lap.get_channel(channel_name)
+                        calc_defs = self.state_manager.get_channel_defs_by_slug() if self.state_manager else None
+                        raw_x = lap.get_channel(self.x_axis_slug, calculated_defs=calc_defs)
+                        raw_y = lap.get_channel(channel_name, calculated_defs=calc_defs)
                         sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
 
                     if sample is not None:
@@ -664,8 +665,9 @@ class GraphViewWidget(QWidget):
                     if not lap:
                         continue
 
-                    raw_x = lap.get_channel(self.x_axis_slug)
-                    raw_y = lap.get_channel(channel_name)
+                    calc_defs = self.state_manager.get_channel_defs_by_slug() if self.state_manager else None
+                    raw_x = lap.get_channel(self.x_axis_slug, calculated_defs=calc_defs)
+                    raw_y = lap.get_channel(channel_name, calculated_defs=calc_defs)
 
                     if raw_x is not None and raw_y is not None and len(raw_x) > 0 and len(raw_y) > 0:
                         min_len = min(len(raw_x), len(raw_y))
@@ -812,8 +814,9 @@ class GraphViewWidget(QWidget):
                     value_label.setVisible(False)
                     continue
 
-                raw_x = lap.get_channel(self.x_axis_slug)
-                raw_y = lap.get_channel(channel_name)
+                calc_defs = self.state_manager.get_channel_defs_by_slug() if self.state_manager else None
+                raw_x = lap.get_channel(self.x_axis_slug, calculated_defs=calc_defs)
+                raw_y = lap.get_channel(channel_name, calculated_defs=calc_defs)
 
                 sample = _get_nearest_channel_sample(raw_x, raw_y, x_val)
                 key = (session_id, lap_num, channel_name)
