@@ -154,17 +154,17 @@ class SidebarWidget(QWidget):
 
         layout.addWidget(content_widget, 1)
 
-        # Install event filters after all widgets are initialized
-        self.session_tree.viewport().installEventFilter(self)
-        self.channel_tree.viewport().installEventFilter(self)
+        # Cache viewports and install event filters after all widgets are initialized
+        self._session_vp = self.session_tree.viewport()
+        self._channel_vp = self.channel_tree.viewport()
+        self._session_vp.installEventFilter(self)
+        self._channel_vp.installEventFilter(self)
 
     def eventFilter(self, watched, event):
-        session_vp = getattr(self, "session_tree", None)
-        channel_vp = getattr(self, "channel_tree", None)
-        session_vp = session_vp.viewport() if session_vp is not None else None
-        channel_vp = channel_vp.viewport() if channel_vp is not None else None
+        session_vp = getattr(self, "_session_vp", None)
+        channel_vp = getattr(self, "_channel_vp", None)
 
-        if watched is not None and watched == session_vp:
+        if watched is not None and watched is session_vp:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
                 item = self.session_tree.itemAt(pos)
@@ -180,7 +180,7 @@ class SidebarWidget(QWidget):
                                 self._show_color_picker_for_lap(session_id, lap_num, item_rect)
                                 return True
 
-        if watched is not None and watched in (session_vp, channel_vp):
+        if watched is not None and (watched is session_vp or watched is channel_vp):
             if event.type() == QEvent.MouseButtonPress:
                 self._is_mouse_selecting = True
             elif event.type() == QEvent.MouseButtonRelease:

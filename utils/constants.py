@@ -31,6 +31,10 @@ MAX_SELECTED_CHANNELS = 6
 # UI Colors
 CROSSHAIR_LINE_COLOR = "#FFD740"
 
+# Line Gap Filtering Defaults
+DEFAULT_GAP_TIME_THRESHOLD = 1.0  # seconds
+DEFAULT_GAP_DIST_THRESHOLD = 50.0  # meters
+
 # The number of selectable laps depends on the length of this list
 LAP_COLORS = [
     "#FF0000",

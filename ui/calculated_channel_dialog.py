@@ -161,29 +161,23 @@ class CalculatedChannelDialog(QDialog):
         prop_layout.setSpacing(12)
 
         self.label_input = QLineEdit()
-        self.label_input.setPlaceholderText("e.g. Power, Slip Ratio, Roll Angle")
+        self.label_input.setPlaceholderText("e.g. Power, Acceleration, Steering Angle")
         self.label_input.setMinimumHeight(28)
-        prop_layout.addRow("<b>Channel Label:</b>", self.label_input)
+        prop_layout.addRow("<b>Label:</b>", self.label_input)
 
         self.unit_input = QLineEdit()
-        self.unit_input.setPlaceholderText("e.g. kW, %, deg, bar")
+        self.unit_input.setPlaceholderText("e.g. W, m/s2, deg, bar")
         self.unit_input.setMinimumHeight(28)
         self.unit_input.setMaximumWidth(160)
-        prop_layout.addRow("<b>Engineering Unit:</b>", self.unit_input)
+        prop_layout.addRow("<b>Unit:</b>", self.unit_input)
 
         main_layout.addWidget(prop_group)
 
         # 2. Input Channels Group
-        inputs_group = QGroupBox("Input Channel Variables")
+        inputs_group = QGroupBox("Formula Input Variables")
         inputs_vbox = QVBoxLayout(inputs_group)
         inputs_vbox.setContentsMargins(14, 14, 14, 14)
         inputs_vbox.setSpacing(10)
-
-        hint_label = QLabel(
-            "<span style='color: #888;'>Assign letters to channels. Use these letters in your equation below:</span>"
-        )
-        hint_label.setWordWrap(True)
-        inputs_vbox.addWidget(hint_label)
 
         # Scroll area for input variable rows
         self.inputs_container = QWidget()
@@ -209,13 +203,13 @@ class CalculatedChannelDialog(QDialog):
         main_layout.addWidget(inputs_group)
 
         # 3. Formula Group
-        formula_group = QGroupBox("Formula / Equation")
+        formula_group = QGroupBox("Formula")
         formula_layout = QVBoxLayout(formula_group)
         formula_layout.setContentsMargins(14, 14, 14, 14)
         formula_layout.setSpacing(10)
 
         self.formula_input = QLineEdit()
-        self.formula_input.setPlaceholderText("e.g. (A * B) / 1000.0   or   sqrt(A**2 + B**2)")
+        self.formula_input.setPlaceholderText("e.g. (A * sqrt(B)) / 1000.0")
         self.formula_input.setMinimumHeight(32)
         mono_font = QFont("Monospace", 10)
         mono_font.setStyleHint(QFont.Monospace)

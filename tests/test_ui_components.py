@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QApplication, QMessageBox, QDialog, QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QHeaderView, QMenu, QFileDialog, QTabWidget, QPushButton, QWidget
 )
 from PySide6.QtCore import QPointF, QPoint, Qt, QEvent
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QPixmap, QPainter
 
 from core.data_models import Session, Lap
 from core.state_manager import StateManager
@@ -1060,8 +1060,8 @@ class TestUIComponents(unittest.TestCase):
         from ui.main_window import MainWindow
         from ui.import_wizard import ImportWizardDialog
 
-        win = MainWindow()
-        win.state_manager.config_dir = self.temp_dir.name
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        win = MainWindow(state_manager=state_mgr)
 
         # Create two CSV files
         csv1 = os.path.join(self.temp_dir.name, "log1.csv")
@@ -1103,6 +1103,8 @@ class TestUIComponents(unittest.TestCase):
 
             # Move mouse again
             win.graph_view._on_mouse_moved(scene_pos)
+
+        win.close()
 
     def test_preset_preview_dialog_preset_switching_and_stats(self):
         """Validates that ImportWizardDialog / PresetPreviewDialog displays match stats and allows switching presets."""
@@ -2007,17 +2009,51 @@ class TestUIComponents(unittest.TestCase):
             dist_label="Dist"
         )
 
-        loaded_sessions = []
-        def _on_session_loaded(session, selected_laps, custom_labels):
-            loaded_sessions.append((session, selected_laps, custom_labels))
-
-        worker.session_loaded.connect(_on_session_loaded)
         worker.run()
 
-        self.assertEqual(len(loaded_sessions), 2)
-        self.assertEqual(loaded_sessions[0][1], [1])
-        self.assertEqual(loaded_sessions[0][2], {1: "P1"})
-        self.assertEqual(loaded_sessions[1][1], [2])
+        self.assertEqual(len(worker.loaded_sessions), 2)
+        self.assertEqual(worker.loaded_sessions[0][1], [1])
+        self.assertEqual(worker.loaded_sessions[0][2], {1: "P1"})
+        self.assertEqual(worker.loaded_sessions[1][1], [2])
+
+    def test_loading_dialog_file_workers(self):
+        """Validates FilePreviewWorker and FileParseWorker background execution in LoadingDialog."""
+        from ui.loading_dialog import LoadingDialog, FilePreviewWorker, FileParseWorker
+
+        csv_file = os.path.join(self.temp_dir.name, "worker_test.csv")
+        df = pd.DataFrame({
+            "Lap": [1, 1, 2, 2],
+            "Time": [0.0, 1.0, 0.0, 1.0],
+            "Distance": [0.0, 10.0, 0.0, 10.0],
+            "Speed": [50.0, 60.0, 55.0, 65.0]
+        })
+        df.to_csv(csv_file, index=False)
+
+        # 1. FilePreviewWorker
+        preview_worker = FilePreviewWorker(file_path=csv_file)
+        preview_dialog = LoadingDialog("Previewing...", worker=preview_worker)
+        success = preview_dialog.exec_worker()
+        self.assertTrue(success)
+        self.assertIsNotNone(preview_dialog.result_data)
+        cols, preview_df = preview_dialog.result_data
+        self.assertEqual(len(cols), 4)
+
+        # 2. FileParseWorker
+        parse_worker = FileParseWorker(
+            file_path=csv_file,
+            mapping={"Lap": "lap_num", "Time": "lap_time", "Distance": "lap_dist", "Speed": "speed"},
+            session_id="test_worker_sess",
+            lap_label="Lap",
+            time_label="Time",
+            dist_label="Distance"
+        )
+        parse_dialog = LoadingDialog("Parsing...", worker=parse_worker)
+        success = parse_dialog.exec_worker()
+        self.assertTrue(success)
+        self.assertIsNotNone(parse_dialog.result_data)
+        session = parse_dialog.result_data
+        self.assertEqual(len(session.laps), 2)
+        self.assertIn("speed", session.channels)
 
     def test_export_and_import_config_actions(self):
         """Validates Export and Import Configuration actions in MainWindow."""
@@ -2773,7 +2809,206 @@ class TestUIComponents(unittest.TestCase):
         self.assertIn("power_w", lap1.data)
         np.testing.assert_allclose(lap1.data["power_w"], np.array([4000.0, 7800.0, 11400.0]))
 
+    def test_gap_threshold_dialog(self):
+        """Validates GapThresholdDialog initialization, user input, and properties."""
+        from ui.gap_threshold_dialog import GapThresholdDialog
+
+        dlg = GapThresholdDialog(current_time_threshold=2.5, current_dist_threshold=75.0)
+        self.assertEqual(dlg.time_threshold, 2.5)
+        self.assertEqual(dlg.dist_threshold, 75.0)
+        self.assertEqual(dlg.spin_time.value(), 2.5)
+        self.assertEqual(dlg.spin_dist.value(), 75.0)
+
+        # Modify values and save
+        dlg.spin_time.setValue(0.8)
+        dlg.spin_dist.setValue(30.0)
+        dlg._on_save()
+        self.assertEqual(dlg.time_threshold, 0.8)
+        self.assertEqual(dlg.dist_threshold, 30.0)
+
+    def test_graph_view_gap_filter_toggle_and_rendering(self):
+        """Validates that GraphViewWidget enforces BOTH time and distance gap filters regardless of active X-axis."""
+        from PySide6.QtGui import QPainterPath
+
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        graph_view = GraphViewWidget(state_manager=state_mgr)
+
+        # 1. Time gap (5.0s > 1.0s) with NO distance gap (2.0m <= 50.0m) breaks curve when X-axis is Distance
+        lap_time_gap = Lap(
+            session_id="s_time_gap",
+            lap_number=1,
+            duration=10.0,
+            distance=20.0,
+            data={
+                "lap_time": np.array([0.0, 0.5, 1.0, 6.0, 6.5, 7.0]),  # 5s time gap between 1.0 and 6.0
+                "lap_dist": np.array([0.0, 2.0, 4.0, 6.0, 8.0, 10.0]),  # Distance increments by only 2m (<= 50m)
+                "speed": np.array([30.0, 35.0, 40.0, 50.0, 55.0, 60.0]),
+            }
+        )
+        session_time_gap = Session(id="s_time_gap", name="time_gap.csv", file_path="/tmp/tg.csv", channels=["speed", "lap_dist", "lap_time"])
+        session_time_gap.laps = [lap_time_gap]
+
+        graph_view.set_sessions({"s_time_gap": session_time_gap})
+        graph_view.set_selected_channels(["speed"])
+        graph_view.set_selected_laps([("s_time_gap", 1, "#FF0000")])
+        graph_view.x_axis_slug = "lap_dist"
+        graph_view.set_gap_thresholds(time_threshold=1.0, dist_threshold=50.0)
+        graph_view.btn_gap_filter.setChecked(True)
+
+        plot = graph_view.plot_widgets["speed"]
+        curves = [item for item in plot.items if isinstance(item, pg.PlotCurveItem)]
+        self.assertEqual(len(curves), 1)
+        path = curves[0].getPath()
+        move_tos = [i for i in range(path.elementCount()) if path.elementAt(i).type == QPainterPath.ElementType.MoveToElement]
+        self.assertEqual(len(move_tos), 2)  # Disconnected across the 5s time gap on Distance X-axis
+        self.assertEqual(path.elementAt(move_tos[0]).x, 0.0)
+        self.assertEqual(path.elementAt(move_tos[1]).x, 6.0)
+
+        # 2. Distance gap (130.0m > 50.0m) with NO time gap (0.2s <= 1.0s) breaks curve when X-axis is Time
+        lap_dist_gap = Lap(
+            session_id="s_dist_gap",
+            lap_number=1,
+            duration=5.0,
+            distance=200.0,
+            data={
+                "lap_time": np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]),  # Time increments by 0.2s (<= 1.0s)
+                "lap_dist": np.array([0.0, 10.0, 20.0, 150.0, 160.0, 170.0]),  # 130m distance gap between 20.0 and 150.0
+                "speed": np.array([30.0, 35.0, 40.0, 50.0, 55.0, 60.0]),
+            }
+        )
+        session_dist_gap = Session(id="s_dist_gap", name="dist_gap.csv", file_path="/tmp/dg.csv", channels=["speed", "lap_dist", "lap_time"])
+        session_dist_gap.laps = [lap_dist_gap]
+
+        graph_view.set_sessions({"s_dist_gap": session_dist_gap})
+        graph_view.set_selected_channels(["speed"])
+        graph_view.set_selected_laps([("s_dist_gap", 1, "#00FF00")])
+        graph_view.x_axis_slug = "lap_time"
+        graph_view.rebuild_plots()
+
+        plot = graph_view.plot_widgets["speed"]
+        curves = [item for item in plot.items if isinstance(item, pg.PlotCurveItem)]
+        path_dist = curves[0].getPath()
+        move_tos_dist = [i for i in range(path_dist.elementCount()) if path_dist.elementAt(i).type == QPainterPath.ElementType.MoveToElement]
+        self.assertEqual(len(move_tos_dist), 2)  # Disconnected across the 130m distance gap on Time X-axis
+        self.assertEqual(path_dist.elementAt(move_tos_dist[0]).x, 0.0)
+        self.assertEqual(path_dist.elementAt(move_tos_dist[1]).x, 0.6)
+
+        # 3. Disable filter_gaps -> single contiguous curve
+        graph_view.btn_gap_filter.setChecked(False)
+        self.assertFalse(graph_view.filter_gaps)
+        plot = graph_view.plot_widgets["speed"]
+        curves = [item for item in plot.items if isinstance(item, pg.PlotCurveItem)]
+        path_conn = curves[0].getPath()
+        move_tos_conn = [i for i in range(path_conn.elementCount()) if path_conn.elementAt(i).type == QPainterPath.ElementType.MoveToElement]
+        self.assertEqual(len(move_tos_conn), 1)
+
+    def test_main_window_gap_filter_sync_and_persistence(self):
+        """Validates View menu action syncing and persistent save/restore of gap filter settings."""
+        from unittest.mock import PropertyMock
+        from ui.main_window import MainWindow
+        from ui.gap_threshold_dialog import GapThresholdDialog
+
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        win = MainWindow(state_manager=state_mgr)
+
+        self.assertFalse(win.gap_filter_action.isChecked())
+        self.assertFalse(win.graph_view.btn_gap_filter.isChecked())
+
+        # 1. Toggle via View Menu action
+        win.gap_filter_action.setChecked(True)
+        self.assertTrue(win.graph_view.btn_gap_filter.isChecked())
+        self.assertTrue(win.graph_view.filter_gaps)
+
+        # 2. Toggle via Graph Toolbar button
+        win.graph_view.btn_gap_filter.setChecked(False)
+        self.assertFalse(win.gap_filter_action.isChecked())
+        self.assertFalse(win.graph_view.filter_gaps)
+
+        # 3. Configure thresholds via dialog mock
+        with patch.object(GapThresholdDialog, "exec", return_value=QDialog.Accepted):
+            with patch.object(GapThresholdDialog, "time_threshold", new_callable=PropertyMock) as mock_time:
+                with patch.object(GapThresholdDialog, "dist_threshold", new_callable=PropertyMock) as mock_dist:
+                    mock_time.return_value = 1.5
+                    mock_dist.return_value = 35.0
+                    win._on_configure_gap_thresholds()
+
+        self.assertEqual(win.graph_view.gap_time_threshold, 1.5)
+        self.assertEqual(win.graph_view.gap_dist_threshold, 35.0)
+
+        # Save and verify persistent settings
+        win.gap_filter_action.setChecked(True)
+        win._save_settings()
+        win.close()
+
+        # Reopen MainWindow and verify restoration
+        win2 = MainWindow(state_manager=state_mgr)
+        self.assertTrue(win2.gap_filter_action.isChecked())
+        self.assertTrue(win2.graph_view.btn_gap_filter.isChecked())
+        self.assertTrue(win2.graph_view.filter_gaps)
+        self.assertEqual(win2.graph_view.gap_time_threshold, 1.5)
+        self.assertEqual(win2.graph_view.gap_dist_threshold, 35.0)
+        win2.close()
+
+    def test_x_axis_switch_multiple_laps_paint_stability(self):
+        """Validates that switching X-axis back and forth with multiple laps, channels, and cursor movements is stable."""
+        widget = GraphViewWidget()
+        s1 = self.session
+        s2 = Session(
+            id="session_2",
+            name="Session 2",
+            file_path="/tmp/fake2.csv",
+            channels=["speed", "lap_dist", "lap_time"],
+            laps=[
+                Lap(session_id="session_2", lap_number=1, duration=3.0, distance=40.0, data={"lap_time": np.array([0, 1, 2, 3]), "lap_dist": np.array([0, 10, 25, 40]), "speed": np.array([10, 15, 20, 25])}),
+                Lap(session_id="session_2", lap_number=2, duration=6.0, distance=45.0, data={"lap_time": np.array([0, 2, 4, 6]), "lap_dist": np.array([0, 15, 30, 45]), "speed": np.array([12, 18, 22, 28])}),
+            ]
+        )
+        widget.set_sessions({s1.id: s1, s2.id: s2})
+        laps_info = [
+            (s1.id, 1, "#00E676"),
+            (s2.id, 1, "#2979FF"),
+            (s2.id, 2, "#FFD740")
+        ]
+        widget.filter_gaps = True
+        widget.set_selected_channels({"speed", "lap_dist"})
+        widget.set_selected_laps(laps_info)
+
+        # Trigger simulated paint / render
+        pix = QPixmap(400, 300)
+        p = QPainter(pix)
+        widget.glw.render(p)
+        p.end()
+
+        # Simulate mouse move over graph
+        widget._on_mouse_moved(QPointF(50, 50))
+        self.assertIsNotNone(widget._last_cursor_x)
+
+        # Switch X-axis to Time
+        time_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == STD_CH_LAP_TIME_SLUG][0]
+        widget.x_axis_combo.setCurrentIndex(time_idx)
+        self.assertEqual(widget.x_axis_slug, STD_CH_LAP_TIME_SLUG)
+        self.assertIsNone(widget._last_cursor_x)
+
+        # Render again with new X-axis
+        p2 = QPainter(pix)
+        widget.glw.render(p2)
+        p2.end()
+
+        # Switch X-axis back to Distance
+        dist_idx = [i for i in range(widget.x_axis_combo.count()) if widget.x_axis_combo.itemData(i) == STD_CH_LAP_DIST_SLUG][0]
+        widget.x_axis_combo.setCurrentIndex(dist_idx)
+        self.assertEqual(widget.x_axis_slug, STD_CH_LAP_DIST_SLUG)
+
+        # Render once more
+        p3 = QPainter(pix)
+        widget.glw.render(p3)
+        p3.end()
+
+        self.assertEqual(len(widget.plot_widgets), 2)
+        widget.close()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -21,12 +21,13 @@ from core.data_models import Session, Lap
 from utils.constants import (
     STD_CH_LAP_TIME, STD_CH_LAP_DIST,
     STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG,
-    CROSSHAIR_LINE_COLOR
+    CROSSHAIR_LINE_COLOR,
+    DEFAULT_GAP_TIME_THRESHOLD, DEFAULT_GAP_DIST_THRESHOLD
 )
 from ui.graph_icons import (
     create_icon_x_grid, create_icon_y_grid, create_icon_cursor,
     create_icon_legend, create_icon_rename_legend, create_icon_autorange,
-    create_icon_export, create_icon_antialias
+    create_icon_export, create_icon_antialias, create_icon_gap_filter
 )
 from ui.graph_viewbox import XZoomViewBox, _get_nearest_channel_sample
 
@@ -63,6 +64,9 @@ class GraphViewWidget(QWidget):
         self.show_cursor_values_above_graph: bool = True
         self.show_legend: bool = False
         self.antialias: bool = True
+        self.filter_gaps: bool = False
+        self.gap_time_threshold: float = DEFAULT_GAP_TIME_THRESHOLD
+        self.gap_dist_threshold: float = DEFAULT_GAP_DIST_THRESHOLD
         self._is_rebuilding: bool = False
 
         self.plot_widgets: Dict[str, pg.PlotItem] = {}
@@ -136,7 +140,17 @@ class GraphViewWidget(QWidget):
         self.btn_antialias.toggled.connect(self._toggle_antialias)
         c_layout.addWidget(self.btn_antialias)
 
-        # 5. Toggle Cursor Values Display Button
+        # 5. Toggle Line Gap Disconnection Button
+        self.btn_gap_filter = QPushButton()
+        self.btn_gap_filter.setCheckable(True)
+        self.btn_gap_filter.setChecked(self.filter_gaps)
+        self.btn_gap_filter.setToolTip("Toggle Line Gap Disconnection")
+        self.btn_gap_filter.setFixedSize(32, 28)
+        self.btn_gap_filter.setIconSize(QSize(18, 18))
+        self.btn_gap_filter.toggled.connect(self._toggle_gap_filter)
+        c_layout.addWidget(self.btn_gap_filter)
+
+        # 6. Toggle Cursor Values Display Button
         self.btn_cursor = QPushButton()
         self.btn_cursor.setCheckable(True)
         self.btn_cursor.setChecked(self.show_cursor_values)
@@ -190,9 +204,8 @@ class GraphViewWidget(QWidget):
         self.glw.setContextMenuPolicy(Qt.NoContextMenu)
         layout.addWidget(self.glw)
 
-        # Install event filters to capture Escape key during drag operations
+        # Install event filter on GraphicsLayoutWidget to capture Escape key during drag operations
         self.glw.installEventFilter(self)
-        self.glw.scene().installEventFilter(self)
 
         # Connect scene mouse-move signal ONCE globally on initialization
         self.glw.scene().sigMouseMoved.connect(self._on_mouse_moved)
@@ -259,6 +272,7 @@ class GraphViewWidget(QWidget):
         self.btn_x_grid.setIcon(create_icon_x_grid(is_dark))
         self.btn_y_grid.setIcon(create_icon_y_grid(is_dark))
         self.btn_antialias.setIcon(create_icon_antialias(is_dark))
+        self.btn_gap_filter.setIcon(create_icon_gap_filter(is_dark))
         self.btn_cursor.setIcon(create_icon_cursor(is_dark))
         self.btn_legend.setIcon(create_icon_legend(is_dark))
         self.btn_rename_legend.setIcon(create_icon_rename_legend(is_dark))
@@ -389,6 +403,7 @@ class GraphViewWidget(QWidget):
             self.has_manual_zoom_or_pan = False
             self.saved_x_range = None
             self.saved_y_ranges.clear()
+            self._last_cursor_x = None
             self.rebuild_plots()
 
     def _toggle_x_grid(self, checked: bool):
@@ -406,6 +421,18 @@ class GraphViewWidget(QWidget):
         self.antialias = checked
         pg.setConfigOptions(antialias=checked)
         self.rebuild_plots()
+
+    def _toggle_gap_filter(self, checked: bool):
+        """Toggles data gap filtering / line disconnection across large sample separation."""
+        self.filter_gaps = checked
+        self.rebuild_plots()
+
+    def set_gap_thresholds(self, time_threshold: float, dist_threshold: float):
+        """Configures time (seconds) and distance (meters) gap thresholds for line disconnection."""
+        self.gap_time_threshold = max(0.01, float(time_threshold))
+        self.gap_dist_threshold = max(0.1, float(dist_threshold))
+        if self.filter_gaps:
+            self.rebuild_plots()
 
     def _toggle_cursor_values(self, checked: bool):
         self.show_cursor_values = checked
@@ -554,18 +581,48 @@ class GraphViewWidget(QWidget):
 
     def rebuild_plots(self):
         self._is_rebuilding = True
+        if hasattr(self, "_mouse_throttle_timer") and self._mouse_throttle_timer is not None:
+            self._mouse_throttle_timer.stop()
+        self._pending_mouse_evt = None
+        self.glw.setUpdatesEnabled(False)
         try:
             logger.debug("Rebuilding plots (channels: %s, selected laps: %d, X-axis slug: '%s')",
                          self.selected_channels, len(self.selected_laps_info), self.x_axis_slug)
             if self.has_manual_zoom_or_pan and self.plot_widgets:
                 self._record_current_view_ranges()
 
-            self.glw.scene().blockSignals(True)
-            self.glw.clear()
-            self.plot_widgets.clear()
-            self.v_lines.clear()
+            # Safely unparent child items and clear existing plots before glw layout reset
+            if self.x_cursor_label is not None:
+                try:
+                    self.x_cursor_label.setParentItem(None)
+                except Exception:
+                    pass
+                self.x_cursor_label = None
+
+            if self.legend is not None:
+                try:
+                    self.legend.setParentItem(None)
+                except Exception:
+                    pass
+                self.legend = None
+
             self.tracking_dots.clear()
-            self.legend = None
+            self.v_lines.clear()
+
+            for plot in list(self.plot_widgets.values()):
+                try:
+                    if hasattr(plot, "vb") and plot.vb is not None:
+                        try:
+                            plot.vb.sigRangeChangedManually.disconnect(self._on_manual_range_change)
+                        except (RuntimeError, TypeError):
+                            pass
+                    plot.setXLink(None)
+                    plot.clear()
+                except Exception:
+                    pass
+            self.plot_widgets.clear()
+
+            self.glw.clear()
 
             if not self.selected_channels or not self.selected_laps_info:
                 label = pg.LabelItem(
@@ -675,9 +732,38 @@ class GraphViewWidget(QWidget):
                         y_data = raw_y[:min_len]
                         pen = pg.mkPen(color=color, width=1.8)
 
+                        # Disconnect line segments if data points are separated by more than configured threshold (time or distance)
+                        connect_arg = 'finite'
+                        if self.filter_gaps and len(x_data) > 1:
+                            dx = np.diff(x_data)
+                            valid_finite = np.isfinite(y_data[:-1]) & np.isfinite(y_data[1:]) & np.isfinite(dx) & (dx >= 0)
+
+                            # 1. Check time gap threshold regardless of X-axis
+                            raw_time = lap.get_channel(STD_CH_LAP_TIME_SLUG, calculated_defs=calc_defs)
+                            if raw_time is not None and len(raw_time) > 1:
+                                dt = np.diff(raw_time[:min_len])
+                                k = len(dt)
+                                valid_finite[:k] &= np.isfinite(dt) & (dt >= 0) & (dt <= self.gap_time_threshold)
+                            elif self.x_axis_slug == STD_CH_LAP_TIME_SLUG:
+                                valid_finite &= (dx <= self.gap_time_threshold)
+
+                            # 2. Check distance gap threshold regardless of X-axis
+                            raw_dist = lap.get_channel(STD_CH_LAP_DIST_SLUG, calculated_defs=calc_defs)
+                            if raw_dist is not None and len(raw_dist) > 1:
+                                dd = np.diff(raw_dist[:min_len])
+                                k = len(dd)
+                                valid_finite[:k] &= np.isfinite(dd) & (dd >= 0) & (dd <= self.gap_dist_threshold)
+                            elif self.x_axis_slug == STD_CH_LAP_DIST_SLUG:
+                                valid_finite &= (dx <= self.gap_dist_threshold)
+
+                            connect_mask = np.zeros(len(x_data), dtype=np.ubyte)
+                            connect_mask[:-1] = np.where(valid_finite, 1, 0)
+                            connect_arg = connect_mask
+
                         curve = pg.PlotCurveItem(
                             x_data, y_data,
                             pen=pen,
+                            connect=connect_arg,
                             clipToView=True,
                             autoDownsample=True,
                             downsampleMethod='peak',
@@ -733,7 +819,7 @@ class GraphViewWidget(QWidget):
             if getattr(self, "_last_cursor_x", None) is not None and self.show_cursor_values and self.show_cursor_values_above_graph:
                 self._update_title_cursor_values(self._last_cursor_x)
         finally:
-            self.glw.scene().blockSignals(False)
+            self.glw.setUpdatesEnabled(True)
             self._is_rebuilding = False
 
     def _on_mouse_moved(self, evt):
@@ -749,6 +835,8 @@ class GraphViewWidget(QWidget):
             self._mouse_throttle_timer.start(16)
 
     def _on_mouse_throttle_timeout(self):
+        if getattr(self, "_is_rebuilding", False) or not self.plot_widgets or not self.show_cursor_values:
+            return
         if self._pending_mouse_evt is not None:
             self._last_mouse_process_time = time.monotonic()
             self._process_mouse_point(self._pending_mouse_evt)
@@ -782,16 +870,19 @@ class GraphViewWidget(QWidget):
                 bottom_plot = self.plot_widgets.get(bottom_channel)
                 if bottom_plot and hasattr(bottom_plot, "vb") and bottom_plot.vb is not None:
                     bottom_axis = bottom_plot.getAxis("bottom")
-                    view_pt = bottom_plot.vb.mapViewToScene(QPointF(x_val, 0))
-                    axis_pt = bottom_axis.mapFromScene(view_pt)
-                    x_min, x_max = bottom_plot.vb.viewRange()[0]
-                    if x_min <= x_val <= x_max:
-                        self.x_cursor_label.setText(f" {x_val:.2f} ")
-                        axis_w = bottom_axis.boundingRect().width()
-                        label_half_w = max(20.0, self.x_cursor_label.boundingRect().width() / 2.0)
-                        clamped_x = max(label_half_w, min(axis_w - label_half_w, axis_pt.x()))
-                        self.x_cursor_label.setPos(clamped_x, 2)
-                        self.x_cursor_label.setVisible(True)
+                    if bottom_axis is not None and bottom_axis.scene() is not None and bottom_plot.vb.scene() is not None:
+                        view_pt = bottom_plot.vb.mapViewToScene(QPointF(x_val, 0))
+                        axis_pt = bottom_axis.mapFromScene(view_pt)
+                        x_min, x_max = bottom_plot.vb.viewRange()[0]
+                        if x_min <= x_val <= x_max:
+                            self.x_cursor_label.setText(f" {x_val:.2f} ")
+                            axis_w = bottom_axis.boundingRect().width()
+                            label_half_w = max(20.0, self.x_cursor_label.boundingRect().width() / 2.0)
+                            clamped_x = max(label_half_w, min(axis_w - label_half_w, axis_pt.x()))
+                            self.x_cursor_label.setPos(clamped_x, 2)
+                            self.x_cursor_label.setVisible(True)
+                        else:
+                            self.x_cursor_label.setVisible(False)
                     else:
                         self.x_cursor_label.setVisible(False)
             else:
@@ -943,6 +1034,9 @@ class GraphViewWidget(QWidget):
             "show_cursor_values_above_graph": self.show_cursor_values_above_graph,
             "show_legend": self.show_legend,
             "antialias": self.antialias,
+            "filter_gaps": self.filter_gaps,
+            "gap_time_threshold": self.gap_time_threshold,
+            "gap_dist_threshold": self.gap_dist_threshold,
             "x_axis_slug": self.x_axis_slug,
             "has_manual_zoom_or_pan": self.has_manual_zoom_or_pan,
             "saved_x_range": self.saved_x_range,
@@ -965,6 +1059,16 @@ class GraphViewWidget(QWidget):
         if "antialias" in state:
             self.antialias = bool(state["antialias"])
             self.btn_antialias.setChecked(self.antialias)
+
+        if "gap_time_threshold" in state:
+            self.gap_time_threshold = float(state["gap_time_threshold"])
+
+        if "gap_dist_threshold" in state:
+            self.gap_dist_threshold = float(state["gap_dist_threshold"])
+
+        if "filter_gaps" in state:
+            self.filter_gaps = bool(state["filter_gaps"])
+            self.btn_gap_filter.setChecked(self.filter_gaps)
 
         if "show_cursor_values" in state:
             self.show_cursor_values = bool(state["show_cursor_values"])

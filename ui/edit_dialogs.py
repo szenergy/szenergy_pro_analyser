@@ -8,6 +8,7 @@ from ui.channel_manager_dialog import ChannelManagerDialog
 from ui.file_mapping_dialog import FileMappingManagerDialog, PathElideLeftDelegate
 from ui.rename_legend_dialog import RenameLegendLabelsDialog
 from ui.map_manager_dialog import MapManagerDialog
+from ui.gap_threshold_dialog import GapThresholdDialog
 
 __all__ = [
     "PresetManagerDialog",
@@ -16,4 +17,5 @@ __all__ = [
     "PathElideLeftDelegate",
     "RenameLegendLabelsDialog",
     "MapManagerDialog",
+    "GapThresholdDialog",
 ]

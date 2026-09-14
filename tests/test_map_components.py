@@ -8,6 +8,10 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
+
+# Ensure Qt runs in headless offscreen mode during unit tests
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import numpy as np
 import pandas as pd
 

@@ -225,3 +225,35 @@ def create_icon_trash(is_dark: bool) -> QIcon:
 
     painter.end()
     return QIcon(pixmap)
+
+
+def create_icon_gap_filter(is_dark: bool) -> QIcon:
+    """Draws a vector icon representing broken lines / gap filtering across data gaps."""
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    fg = QColor("#E0E0E0" if is_dark else "#2A2E33")
+    pen = QPen(fg, 1.8)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+
+    # First line segment
+    painter.drawLine(3, 16, 8, 8)
+    # Endpoint dot 1
+    painter.setBrush(fg)
+    painter.drawEllipse(7, 7, 3, 3)
+
+    # Second line segment (after gap)
+    painter.drawEllipse(14, 13, 3, 3)
+    painter.drawLine(15, 14, 21, 6)
+
+    # Gap break indicator (small gap marker in center)
+    pen.setStyle(Qt.DotLine)
+    pen.setWidthF(1.0)
+    pen.setColor(QColor("#888888"))
+    painter.setPen(pen)
+    painter.drawLine(11, 6, 11, 18)
+
+    painter.end()
+    return QIcon(pixmap)

@@ -173,6 +173,16 @@ class MainWindow(QMainWindow):
         self.antialias_action.toggled.connect(self._on_toggle_antialias)
         view_menu.addAction(self.antialias_action)
 
+        # Line Gap Filtering Actions
+        self.gap_filter_action = QAction("Disconnect Data Gaps", self, checkable=True)
+        self.gap_filter_action.setChecked(self.graph_view.filter_gaps if hasattr(self, "graph_view") else False)
+        self.gap_filter_action.toggled.connect(self._on_toggle_gap_filter)
+        view_menu.addAction(self.gap_filter_action)
+
+        self.configure_gap_thresholds_action = QAction("Configure Data Gap Thresholds...", self)
+        self.configure_gap_thresholds_action.triggered.connect(self._on_configure_gap_thresholds)
+        view_menu.addAction(self.configure_gap_thresholds_action)
+
     def set_theme_mode(self, mode: str):
         """Sets active theme mode ('auto', 'dark', 'light') and applies stylesheets and widget themes."""
         if mode not in ("auto", "dark", "light"):
@@ -238,6 +248,32 @@ class MainWindow(QMainWindow):
             self.antialias_action.blockSignals(False)
         self._save_settings()
 
+    def _on_toggle_gap_filter(self, checked: bool):
+        """Handles toggling of gap filtering from View menu."""
+        if hasattr(self, "graph_view"):
+            self.graph_view.btn_gap_filter.setChecked(checked)
+        self._save_settings()
+
+    def _on_graph_gap_filter_toggled(self, checked: bool):
+        """Syncs View menu action when gap filter toolbar button is toggled."""
+        if hasattr(self, "gap_filter_action"):
+            self.gap_filter_action.blockSignals(True)
+            self.gap_filter_action.setChecked(checked)
+            self.gap_filter_action.blockSignals(False)
+        self._save_settings()
+
+    def _on_configure_gap_thresholds(self):
+        """Opens dialog to configure time (seconds) and distance (meters) gap thresholds."""
+        from ui.gap_threshold_dialog import GapThresholdDialog
+        from utils.constants import DEFAULT_GAP_TIME_THRESHOLD, DEFAULT_GAP_DIST_THRESHOLD
+        current_time = getattr(self.graph_view, "gap_time_threshold", DEFAULT_GAP_TIME_THRESHOLD) if hasattr(self, "graph_view") else DEFAULT_GAP_TIME_THRESHOLD
+        current_dist = getattr(self.graph_view, "gap_dist_threshold", DEFAULT_GAP_DIST_THRESHOLD) if hasattr(self, "graph_view") else DEFAULT_GAP_DIST_THRESHOLD
+        dialog = GapThresholdDialog(current_time_threshold=current_time, current_dist_threshold=current_dist, parent=self)
+        if dialog.exec():
+            if hasattr(self, "graph_view"):
+                self.graph_view.set_gap_thresholds(dialog.time_threshold, dialog.dist_threshold)
+            self._save_settings()
+
     def _init_ui(self):
         self.main_splitter = QSplitter(Qt.Horizontal)
 
@@ -256,6 +292,8 @@ class MainWindow(QMainWindow):
             self.graph_view.cursor_positions_changed.connect(self.sidebar.track_map_tab.set_cursor_positions)
         if hasattr(self.graph_view, "btn_antialias"):
             self.graph_view.btn_antialias.toggled.connect(self._on_graph_antialias_toggled)
+        if hasattr(self.graph_view, "btn_gap_filter"):
+            self.graph_view.btn_gap_filter.toggled.connect(self._on_graph_gap_filter_toggled)
         self.main_splitter.addWidget(self.graph_view)
 
         self.main_splitter.setSizes([300, 900])
@@ -415,8 +453,7 @@ class MainWindow(QMainWindow):
         preview_worker = FilePreviewWorker(file_path)
         preview_dialog = LoadingDialog(
             f"Inspecting headers for '{filename}'...\nPlease wait.",
-            worker=preview_worker,
-            parent=self
+            worker=preview_worker
         )
 
         if not preview_dialog.exec_worker():
@@ -522,8 +559,7 @@ class MainWindow(QMainWindow):
 
         parse_dialog = LoadingDialog(
             f"Parsing log data for '{filename}'...\nPlease wait.",
-            worker=parse_worker,
-            parent=self
+            worker=parse_worker
         )
 
         if not parse_dialog.exec_worker():
@@ -646,6 +682,9 @@ class MainWindow(QMainWindow):
                     "show_cursor_values_above_graph": self.graph_view.show_cursor_values_above_graph,
                     "show_legend": self.graph_view.show_legend,
                     "antialias": self.graph_view.antialias,
+                    "filter_gaps": self.graph_view.filter_gaps,
+                    "gap_time_threshold": self.graph_view.gap_time_threshold,
+                    "gap_dist_threshold": self.graph_view.gap_dist_threshold,
                     "x_axis_slug": self.graph_view.x_axis_slug,
                 }
 
@@ -774,6 +813,8 @@ class MainWindow(QMainWindow):
                         self.cursor_above_graph_action.setChecked(self.graph_view.show_cursor_values_above_graph)
                     if hasattr(self, "antialias_action"):
                         self.antialias_action.setChecked(self.graph_view.antialias)
+                    if hasattr(self, "gap_filter_action"):
+                        self.gap_filter_action.setChecked(self.graph_view.filter_gaps)
 
                 sidebar_settings = settings.get("sidebar", {})
                 if hasattr(self, "sidebar") and sidebar_settings:
@@ -803,16 +844,11 @@ class MainWindow(QMainWindow):
                     dist_label=self.state_manager.get_distance_label()
                 )
 
-                loaded_items = []
-                def _handle_loaded_session(session, selected_laps, session_custom_labels):
-                    loaded_items.append((session, selected_laps, session_custom_labels))
-
                 def _on_restore_progress(current, total, filename):
                     if splash is not None:
                         pct = 50 + int(45 * current / total)
                         splash.set_progress(pct, f"Restoring session {current} of {total}: {filename}")
 
-                restore_worker.session_loaded.connect(_handle_loaded_session, Qt.QueuedConnection)
                 restore_worker.progress.connect(_on_restore_progress, Qt.QueuedConnection)
 
                 loop = QEventLoop()
@@ -827,7 +863,7 @@ class MainWindow(QMainWindow):
                     app.processEvents()
 
                 # Process all loaded sessions cleanly AFTER thread is joined
-                for session, selected_laps, session_custom_labels in loaded_items:
+                for session, selected_laps, session_custom_labels in restore_worker.loaded_sessions:
                     self.sessions[session.id] = session
                     self.sidebar.add_session(session)
                     if session_custom_labels and hasattr(self, "graph_view"):
