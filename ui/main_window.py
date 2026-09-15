@@ -115,17 +115,17 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(manage_presets_action)
         self.addAction(manage_presets_action)
 
-        manage_channels_action = QAction("Manage &Channels...", self)
+        manage_channels_action = QAction("Manage Global &Channels...", self)
         manage_channels_action.triggered.connect(self._on_manage_channels)
         edit_menu.addAction(manage_channels_action)
         self.addAction(manage_channels_action)
 
-        manage_file_mappings_action = QAction("Manage File &Mappings...", self)
+        manage_file_mappings_action = QAction("Manage &Sessions...", self)
         manage_file_mappings_action.triggered.connect(self._on_manage_file_mappings)
         edit_menu.addAction(manage_file_mappings_action)
         self.addAction(manage_file_mappings_action)
 
-        manage_maps_action = QAction("Manage &Maps...", self)
+        manage_maps_action = QAction("Manage Track &Maps...", self)
         manage_maps_action.triggered.connect(self._on_manage_maps)
         edit_menu.addAction(manage_maps_action)
         self.addAction(manage_maps_action)
@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         view_menu = menu_bar.addMenu("&View")
 
         # Theme Submenu
-        theme_menu = view_menu.addMenu("Theme")
+        theme_menu = view_menu.addMenu("&Theme")
         self.theme_group = QActionGroup(self)
         self.theme_group.setExclusive(True)
 
@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         self._sync_theme_menu_checks()
 
         # Cursor Values Submenu
-        cursor_values_menu = view_menu.addMenu("Cursor Values")
+        cursor_values_menu = view_menu.addMenu("&Cursor Values")
         self.cursor_on_graph_action = QAction("On Graph", self, checkable=True)
         self.cursor_on_graph_action.setChecked(self.graph_view.show_cursor_values_on_graph if hasattr(self, "graph_view") else True)
         self.cursor_on_graph_action.toggled.connect(self._on_toggle_cursor_on_graph)
@@ -167,21 +167,6 @@ class MainWindow(QMainWindow):
         self.cursor_above_graph_action.toggled.connect(self._on_toggle_cursor_above_graph)
         cursor_values_menu.addAction(self.cursor_above_graph_action)
 
-        # Anti-Aliasing (Smooth Curves) Action
-        self.antialias_action = QAction("Anti-Aliasing (Smooth Curves)", self, checkable=True)
-        self.antialias_action.setChecked(self.graph_view.antialias if hasattr(self, "graph_view") else True)
-        self.antialias_action.toggled.connect(self._on_toggle_antialias)
-        view_menu.addAction(self.antialias_action)
-
-        # Line Gap Filtering Actions
-        self.gap_filter_action = QAction("Disconnect Data Gaps", self, checkable=True)
-        self.gap_filter_action.setChecked(self.graph_view.filter_gaps if hasattr(self, "graph_view") else False)
-        self.gap_filter_action.toggled.connect(self._on_toggle_gap_filter)
-        view_menu.addAction(self.gap_filter_action)
-
-        self.configure_gap_thresholds_action = QAction("Configure Data Gap Thresholds...", self)
-        self.configure_gap_thresholds_action.triggered.connect(self._on_configure_gap_thresholds)
-        view_menu.addAction(self.configure_gap_thresholds_action)
 
     def set_theme_mode(self, mode: str):
         """Sets active theme mode ('auto', 'dark', 'light') and applies stylesheets and widget themes."""
@@ -261,18 +246,6 @@ class MainWindow(QMainWindow):
             self.gap_filter_action.setChecked(checked)
             self.gap_filter_action.blockSignals(False)
         self._save_settings()
-
-    def _on_configure_gap_thresholds(self):
-        """Opens dialog to configure time (seconds) and distance (meters) gap thresholds."""
-        from ui.gap_threshold_dialog import GapThresholdDialog
-        from utils.constants import DEFAULT_GAP_TIME_THRESHOLD, DEFAULT_GAP_DIST_THRESHOLD
-        current_time = getattr(self.graph_view, "gap_time_threshold", DEFAULT_GAP_TIME_THRESHOLD) if hasattr(self, "graph_view") else DEFAULT_GAP_TIME_THRESHOLD
-        current_dist = getattr(self.graph_view, "gap_dist_threshold", DEFAULT_GAP_DIST_THRESHOLD) if hasattr(self, "graph_view") else DEFAULT_GAP_DIST_THRESHOLD
-        dialog = GapThresholdDialog(current_time_threshold=current_time, current_dist_threshold=current_dist, parent=self)
-        if dialog.exec():
-            if hasattr(self, "graph_view"):
-                self.graph_view.set_gap_thresholds(dialog.time_threshold, dialog.dist_threshold)
-            self._save_settings()
 
     def _init_ui(self):
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -468,6 +441,9 @@ class MainWindow(QMainWindow):
 
         remembered_slug = self.state_manager.get_file_preset(file_path)
         chosen_mapping = None
+        chosen_local_calcs = []
+        chosen_gap_time = None
+        chosen_gap_dist = None
         applied_preset_slug = None
         applied_preset_name = None
 
@@ -483,17 +459,23 @@ class MainWindow(QMainWindow):
                     "Please configure the channel mapping in the wizard."
                 )
                 matching_slug = self.state_manager.find_matching_preset(raw_columns)
+                matching_preset = self.state_manager.get_preset_by_slug(matching_slug) if matching_slug else None
                 wizard = ImportWizardDialog(
                     file_path=file_path,
                     raw_columns=raw_columns,
                     preview_df=preview_df,
                     state_manager=self.state_manager,
                     initial_preset=matching_slug,
+                    initial_gap_time_threshold=matching_preset.get("gap_time_threshold") if matching_preset else None,
+                    initial_gap_dist_threshold=matching_preset.get("gap_dist_threshold") if matching_preset else None,
                     parent=self
                 )
                 if wizard.exec() != ImportWizardDialog.Accepted:
                     return
                 chosen_mapping = wizard.result_mapping
+                chosen_local_calcs = wizard.result_local_calculated_channels
+                chosen_gap_time = wizard.result_gap_time_threshold
+                chosen_gap_dist = wizard.result_gap_dist_threshold
                 applied_preset_slug = wizard.result_preset_slug
                 applied_preset_name = wizard.result_preset_name
             else:
@@ -501,9 +483,26 @@ class MainWindow(QMainWindow):
                 file_cols_set = set(raw_columns)
                 mapped_channels = {col: slug for col, slug in preset_mapping.items() if col in file_cols_set}
                 mapped_slugs = set(mapped_channels.values())
+                preset_calcs = preset.get("local_calculated_channels", [])
+                mapped_slugs.update([c.get("target_slug") for c in preset_calcs if c.get("target_slug")])
+
+                # Check if all local calcs have their inputs available
+                avail = set(file_cols_set)
+                calcs_valid = True
+                for calc in preset_calcs:
+                    for raw_col in calc.get("inputs", {}).values():
+                        if raw_col not in avail:
+                            calcs_valid = False
+                            break
+                    if not calcs_valid:
+                        break
+                    target_slug = calc.get("target_slug")
+                    if target_slug:
+                        avail.add(target_slug)
 
                 if (STD_CH_LAP_NUM_SLUG not in mapped_slugs or
-                        (STD_CH_LAP_TIME_SLUG not in mapped_slugs and STD_CH_LAP_DIST_SLUG not in mapped_slugs)):
+                        (STD_CH_LAP_TIME_SLUG not in mapped_slugs and STD_CH_LAP_DIST_SLUG not in mapped_slugs) or
+                        not calcs_valid):
                     QMessageBox.warning(
                         self, "Mapping Error",
                         f"The remembered preset '{preset.get('name')}' is missing required channels for this file.\n"
@@ -515,35 +514,49 @@ class MainWindow(QMainWindow):
                         preview_df=preview_df,
                         state_manager=self.state_manager,
                         initial_preset=preset.get("slug"),
+                        initial_gap_time_threshold=preset.get("gap_time_threshold"),
+                        initial_gap_dist_threshold=preset.get("gap_dist_threshold"),
                         parent=self
                     )
                     if wizard.exec() != ImportWizardDialog.Accepted:
                         return
                     chosen_mapping = wizard.result_mapping
+                    chosen_local_calcs = wizard.result_local_calculated_channels
+                    chosen_gap_time = wizard.result_gap_time_threshold
+                    chosen_gap_dist = wizard.result_gap_dist_threshold
                     applied_preset_slug = wizard.result_preset_slug
                     applied_preset_name = wizard.result_preset_name
                 else:
                     # Valid remembered preset - skip the wizard!
                     chosen_mapping = mapped_channels
+                    chosen_local_calcs = preset_calcs
+                    chosen_gap_time = preset.get("gap_time_threshold")
+                    chosen_gap_dist = preset.get("gap_dist_threshold")
                     applied_preset_slug = preset.get("slug")
                     applied_preset_name = preset.get("name")
         else:
             matching_slug = self.state_manager.find_matching_preset(raw_columns)
+            matching_preset = self.state_manager.get_preset_by_slug(matching_slug) if matching_slug else None
             wizard = ImportWizardDialog(
                 file_path=file_path,
                 raw_columns=raw_columns,
                 preview_df=preview_df,
                 state_manager=self.state_manager,
                 initial_preset=matching_slug,
+                initial_gap_time_threshold=matching_preset.get("gap_time_threshold") if matching_preset else None,
+                initial_gap_dist_threshold=matching_preset.get("gap_dist_threshold") if matching_preset else None,
                 parent=self
             )
             if wizard.exec() != ImportWizardDialog.Accepted:
                 return
             chosen_mapping = wizard.result_mapping
+            chosen_local_calcs = wizard.result_local_calculated_channels
+            chosen_gap_time = wizard.result_gap_time_threshold
+            chosen_gap_dist = wizard.result_gap_dist_threshold
             applied_preset_slug = wizard.result_preset_slug
             applied_preset_name = wizard.result_preset_name
 
-        if not chosen_mapping:
+        if not chosen_mapping and not chosen_local_calcs:
             return
 
         # 2. Background Log Data Parsing (initial load from disk)
@@ -554,7 +567,10 @@ class MainWindow(QMainWindow):
             session_id=session_id,
             lap_label=self.state_manager.get_lap_label(),
             time_label=self.state_manager.get_time_label(),
-            dist_label=self.state_manager.get_distance_label()
+            dist_label=self.state_manager.get_distance_label(),
+            local_calculated_channels=chosen_local_calcs,
+            gap_time_threshold=chosen_gap_time,
+            gap_dist_threshold=chosen_gap_dist
         )
 
         parse_dialog = LoadingDialog(
@@ -573,6 +589,10 @@ class MainWindow(QMainWindow):
 
         session.preset_slug = applied_preset_slug
         session.preset_name = applied_preset_name
+        if session.gap_time_threshold is None and chosen_gap_time is not None:
+            session.gap_time_threshold = chosen_gap_time
+        if session.gap_dist_threshold is None and chosen_gap_dist is not None:
+            session.gap_dist_threshold = chosen_gap_dist
         self.sessions[session_id] = session
         self.sidebar.add_session(session)
         self.graph_view.set_sessions(self.sessions)
@@ -593,8 +613,28 @@ class MainWindow(QMainWindow):
                 return
             raw_columns, preview_df = get_file_columns_and_preview(session.file_path)
 
-        # Pre-fill preset name from session.preset_slug / session.preset_name or find best matching preset
-        initial_preset = session.preset_slug or session.preset_name or self.state_manager.find_matching_preset(raw_columns)
+        # Filter out any local calculated channel targets/names from raw_columns and initial_mapping
+        calc_targets = set()
+        for c in (session.local_calculated_channels or []):
+            if c.get("target_slug"):
+                calc_targets.add(c["target_slug"])
+            if c.get("name"):
+                calc_targets.add(c["name"])
+            if c.get("target_label"):
+                calc_targets.add(c["target_label"])
+
+        if calc_targets:
+            raw_columns = [col for col in raw_columns if col not in calc_targets]
+            if preview_df is not None and not preview_df.empty:
+                preview_df = preview_df.drop(columns=[c for c in calc_targets if c in preview_df.columns], errors="ignore")
+            if session.raw_df is not None and not session.raw_df.empty:
+                session.raw_df = session.raw_df.drop(columns=[c for c in calc_targets if c in session.raw_df.columns], errors="ignore")
+
+        clean_mapping = {k: v for k, v in session.mapping.items() if k not in calc_targets and k in raw_columns}
+
+        # Pre-fill preset name from session.preset_slug / session.preset_name or remembered file preset or find best matching preset
+        remembered_preset = self.state_manager.get_file_preset(session.file_path) if self.state_manager else None
+        initial_preset = session.preset_slug or session.preset_name or remembered_preset or self.state_manager.find_matching_preset(raw_columns)
 
         # 2. Open Wizard instantly
         wizard = ImportWizardDialog(
@@ -603,7 +643,10 @@ class MainWindow(QMainWindow):
             preview_df=preview_df,
             state_manager=self.state_manager,
             initial_preset=initial_preset,
-            initial_mapping=session.mapping,
+            initial_mapping=clean_mapping,
+            initial_local_calculated_channels=session.local_calculated_channels,
+            initial_gap_time_threshold=session.gap_time_threshold,
+            initial_gap_dist_threshold=session.gap_dist_threshold,
             is_remapping=True,
             parent=self
         )
@@ -612,7 +655,10 @@ class MainWindow(QMainWindow):
             return
 
         new_mapping = wizard.result_mapping
-        if not new_mapping:
+        new_local_calcs = wizard.result_local_calculated_channels
+        new_gap_time = wizard.result_gap_time_threshold
+        new_gap_dist = wizard.result_gap_dist_threshold
+        if not new_mapping and not new_local_calcs:
             return
 
         new_preset_slug = wizard.result_preset_slug
@@ -629,7 +675,10 @@ class MainWindow(QMainWindow):
                 time_label=self.state_manager.get_time_label(),
                 dist_label=self.state_manager.get_distance_label(),
                 preset_slug=new_preset_slug,
-                preset_name=new_preset_name
+                preset_name=new_preset_name,
+                local_calculated_channels=new_local_calcs,
+                gap_time_threshold=new_gap_time,
+                gap_dist_threshold=new_gap_dist
             )
         else:
             new_session = parse_session(
@@ -640,11 +689,16 @@ class MainWindow(QMainWindow):
                 time_label=self.state_manager.get_time_label(),
                 dist_label=self.state_manager.get_distance_label(),
                 preset_slug=new_preset_slug,
-                preset_name=new_preset_name
+                preset_name=new_preset_name,
+                local_calculated_channels=new_local_calcs,
+                gap_time_threshold=new_gap_time,
+                gap_dist_threshold=new_gap_dist
             )
 
         new_session.preset_slug = new_preset_slug
         new_session.preset_name = new_preset_name
+        new_session.gap_time_threshold = new_gap_time
+        new_session.gap_dist_threshold = new_gap_dist
         self.sessions[session_id] = new_session
         self.sidebar.update_session(new_session)
         self.graph_view.set_sessions(self.sessions)
@@ -733,8 +787,11 @@ class MainWindow(QMainWindow):
                 sessions_data.append({
                     "file_path": session.file_path,
                     "mapping": session.mapping,
+                    "local_calculated_channels": session.local_calculated_channels,
                     "preset_slug": session.preset_slug,
                     "preset_name": session.preset_name,
+                    "gap_time_threshold": session.gap_time_threshold,
+                    "gap_dist_threshold": session.gap_dist_threshold,
                     "selected_laps": session_laps
                 })
 

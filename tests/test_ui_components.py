@@ -464,7 +464,7 @@ class TestUIComponents(unittest.TestCase):
             state_manager=state_mgr,
             initial_preset="StandardLapPreset"
         )
-        self.assertFalse(wizard.remember_checkbox.isChecked())
+        self.assertTrue(wizard.remember_checkbox.isChecked())
 
         # Load StandardLapPreset without modifying it
         wizard._on_load_preset()
@@ -489,6 +489,88 @@ class TestUIComponents(unittest.TestCase):
         wizard2.remember_checkbox.setChecked(False)
         wizard2._on_submit()
         self.assertIsNone(state_mgr.get_file_preset(test_file))
+
+    def test_import_wizard_remember_for_file_with_fewer_channels_than_preset(self):
+        """Validates that a file with fewer channels than the preset still remembers the preset."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        test_file = "/tmp/fewer_channels_log.csv"
+
+        # Preset has 4 channels
+        preset_slug = state_mgr.save_preset("BigPreset", {
+            "Lap": "lap_num",
+            "Time": "lap_time",
+            "Speed": "speed",
+            "RPM": "rpm"
+        })
+
+        # File only has Lap and Time
+        wizard = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset=preset_slug
+        )
+        self.assertTrue(wizard.remember_checkbox.isChecked())
+        wizard._on_submit()
+
+        # Must be remembered in StateManager
+        remembered = state_mgr.get_file_preset(test_file)
+        self.assertEqual(remembered, preset_slug)
+
+    def test_import_wizard_remember_for_file_when_preset_chosen_from_combobox(self):
+        """Validates that choosing a preset from the combobox activates and remembers it."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        test_file = "/tmp/combo_choice_log.csv"
+
+        preset_slug = state_mgr.save_preset("TrackPreset", {
+            "Lap": "lap_num",
+            "Time": "lap_time"
+        })
+
+        wizard = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr
+        )
+        # Select preset in combobox and activate
+        idx = wizard.preset_combo.findText("TrackPreset")
+        self.assertGreaterEqual(idx, 0)
+        wizard.preset_combo.setCurrentIndex(idx)
+        wizard.preset_combo.activated.emit(idx)
+
+        # Confirm mapping was loaded into table
+        self.assertEqual(wizard.combos["Lap"].currentText(), state_mgr.get_display_name_by_slug("lap_num"))
+        self.assertEqual(wizard.combos["Time"].currentText(), state_mgr.get_display_name_by_slug("lap_time"))
+
+        # Submit with remember checked
+        self.assertTrue(wizard.remember_checkbox.isChecked())
+        wizard._on_submit()
+
+        self.assertEqual(state_mgr.get_file_preset(test_file), preset_slug)
+
+    def test_import_wizard_remember_for_file_without_preset(self):
+        """Validates that mapping a file without a preset auto-saves a file-specific preset when remembered."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        test_file = "/tmp/no_preset_file.csv"
+
+        wizard = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr
+        )
+        wizard.combos["Lap"].setCurrentText(state_mgr.get_display_name_by_slug("lap_num"))
+        wizard.combos["Time"].setCurrentText(state_mgr.get_display_name_by_slug("lap_time"))
+        self.assertTrue(wizard.remember_checkbox.isChecked())
+        wizard._on_submit()
+
+        remembered = state_mgr.get_file_preset(test_file)
+        self.assertIsNotNone(remembered)
+        saved_preset = state_mgr.get_preset_by_slug(remembered)
+        self.assertIsNotNone(saved_preset)
+        self.assertEqual(saved_preset["mapping"], {"Lap": "lap_num", "Time": "lap_time"})
 
     def test_file_mapping_manager_dialog(self):
         """Validates that FileMappingManagerDialog displays right-aligned paths and supports multi-select removal."""
@@ -978,10 +1060,10 @@ class TestUIComponents(unittest.TestCase):
         self.assertIsNotNone(menu)
 
         action_texts = [a.text() for a in menu.actions()]
-        self.assertIn("Edit Channel Mapping...", action_texts)
+        self.assertIn("Manage Session...", action_texts)
 
-        # Trigger Edit Channel Mapping action
-        edit_act = [a for a in menu.actions() if a.text() == "Edit Channel Mapping..."][0]
+        # Trigger Manage Session action
+        edit_act = [a for a in menu.actions() if a.text() == "Manage Session..."][0]
         edit_act.trigger()
 
         self.assertEqual(received_session_id, ["s1"])
@@ -1004,7 +1086,7 @@ class TestUIComponents(unittest.TestCase):
             is_remapping=True
         )
 
-        self.assertIn("Edit Channel Mapping", wizard.windowTitle())
+        self.assertIn("Manage Session", wizard.windowTitle())
         self.assertEqual(wizard.submit_btn.text(), "Apply Changes")
         self.assertEqual(wizard.combos["Raw_Lap"].currentText(), "Lap Number")
         self.assertEqual(wizard.combos["Raw_Time"].currentText(), "Lap Time [s]")
@@ -1736,7 +1818,7 @@ class TestUIComponents(unittest.TestCase):
         )
 
         # 1. Check title and header display
-        self.assertIn("Import Log Wizard - my_data_log.csv", wizard.windowTitle())
+        self.assertIn("Import Session - my_data_log.csv", wizard.windowTitle())
 
         # 2. Test duplicate validation
         wizard.combos["file_lap"].setCurrentText("Lap Number")
@@ -2911,38 +2993,29 @@ class TestUIComponents(unittest.TestCase):
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         win = MainWindow(state_manager=state_mgr)
 
-        self.assertFalse(win.gap_filter_action.isChecked())
+        # 1. Verify View menu actions were removed
+        self.assertFalse(hasattr(win, "gap_filter_action"))
+        self.assertFalse(hasattr(win, "configure_gap_thresholds_action"))
         self.assertFalse(win.graph_view.btn_gap_filter.isChecked())
+        self.assertFalse(win.graph_view.filter_gaps)
 
-        # 1. Toggle via View Menu action
-        win.gap_filter_action.setChecked(True)
+        # 2. Toggle via Graph Toolbar button
+        win.graph_view.btn_gap_filter.setChecked(True)
         self.assertTrue(win.graph_view.btn_gap_filter.isChecked())
         self.assertTrue(win.graph_view.filter_gaps)
 
-        # 2. Toggle via Graph Toolbar button
-        win.graph_view.btn_gap_filter.setChecked(False)
-        self.assertFalse(win.gap_filter_action.isChecked())
-        self.assertFalse(win.graph_view.filter_gaps)
-
-        # 3. Configure thresholds via dialog mock
-        with patch.object(GapThresholdDialog, "exec", return_value=QDialog.Accepted):
-            with patch.object(GapThresholdDialog, "time_threshold", new_callable=PropertyMock) as mock_time:
-                with patch.object(GapThresholdDialog, "dist_threshold", new_callable=PropertyMock) as mock_dist:
-                    mock_time.return_value = 1.5
-                    mock_dist.return_value = 35.0
-                    win._on_configure_gap_thresholds()
-
+        # Configure graph_view default thresholds directly
+        win.graph_view.set_gap_thresholds(1.5, 35.0)
         self.assertEqual(win.graph_view.gap_time_threshold, 1.5)
         self.assertEqual(win.graph_view.gap_dist_threshold, 35.0)
 
         # Save and verify persistent settings
-        win.gap_filter_action.setChecked(True)
         win._save_settings()
         win.close()
 
         # Reopen MainWindow and verify restoration
         win2 = MainWindow(state_manager=state_mgr)
-        self.assertTrue(win2.gap_filter_action.isChecked())
+        self.assertFalse(hasattr(win2, "gap_filter_action"))
         self.assertTrue(win2.graph_view.btn_gap_filter.isChecked())
         self.assertTrue(win2.graph_view.filter_gaps)
         self.assertEqual(win2.graph_view.gap_time_threshold, 1.5)
@@ -3005,6 +3078,103 @@ class TestUIComponents(unittest.TestCase):
         p3.end()
 
         self.assertEqual(len(widget.plot_widgets), 2)
+        widget.close()
+
+    def test_per_file_gap_thresholds_in_import_wizard_and_graph_view(self):
+        """Validates configuring per-file gap thresholds in ImportWizardDialog and plotting in GraphViewWidget."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        test_file = os.path.join(self.temp_dir.name, "gap_test.csv")
+
+        # 1. Open ImportWizardDialog with custom initial gap thresholds
+        wizard = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time", "Dist", "Speed"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_gap_time_threshold=3.5,
+            initial_gap_dist_threshold=75.0
+        )
+        self.assertEqual(wizard.spin_gap_time.value(), 3.5)
+        self.assertEqual(wizard.spin_gap_dist.value(), 75.0)
+        self.assertTrue(wizard.remember_checkbox.isChecked())
+
+        # Modify values in spinboxes
+        wizard.spin_gap_time.setValue(2.0)
+        wizard.spin_gap_dist.setValue(60.0)
+
+        # Map required channels
+        lap_disp = state_mgr.get_display_name_by_slug("lap_num")
+        time_disp = state_mgr.get_display_name_by_slug("lap_time")
+        dist_disp = state_mgr.get_display_name_by_slug("lap_dist")
+        wizard.combos["Lap"].setCurrentText(lap_disp)
+        wizard.combos["Time"].setCurrentText(time_disp)
+        wizard.combos["Dist"].setCurrentText(dist_disp)
+        wizard.combos["Speed"].setCurrentText("Speed")
+
+        # Save to preset
+        wizard.preset_combo.setEditText("GapPreset")
+        with patch.object(QMessageBox, "information"):
+            wizard._on_save_preset()
+
+        # Submit wizard
+        wizard._on_submit()
+        self.assertEqual(wizard.result_gap_time_threshold, 2.0)
+        self.assertEqual(wizard.result_gap_dist_threshold, 60.0)
+
+        # Check preset has gap thresholds
+        preset = state_mgr.get_preset_by_name("GapPreset")
+        self.assertIsNotNone(preset)
+        self.assertEqual(preset.get("gap_time_threshold"), 2.0)
+        self.assertEqual(preset.get("gap_dist_threshold"), 60.0)
+
+        # Load preset in a new wizard instance
+        wizard2 = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time", "Dist", "Speed"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset="GapPreset"
+        )
+        self.assertEqual(wizard2.spin_gap_time.value(), 2.0)
+        self.assertEqual(wizard2.spin_gap_dist.value(), 60.0)
+        wizard2.close()
+        wizard.close()
+
+        # 2. Verify GraphViewWidget uses session.gap_time_threshold and session.gap_dist_threshold
+        widget = GraphViewWidget(state_manager=state_mgr)
+        lap_data = {
+            "lap_time": np.array([0.0, 1.0, 5.0, 6.0]),  # Gap of 4s between index 1 and 2
+            "lap_dist": np.array([0.0, 10.0, 20.0, 30.0]),
+            "speed": np.array([10.0, 20.0, 30.0, 40.0])
+        }
+        lap = Lap(session_id="s_gap", lap_number=1, duration=6.0, distance=30.0, data=lap_data)
+        session = Session(
+            id="s_gap",
+            name="Gap Session",
+            file_path=test_file,
+            laps=[lap],
+            channels=["speed"],
+            gap_time_threshold=2.0,  # 2s threshold (< 4s gap)
+            gap_dist_threshold=100.0
+        )
+        widget.set_sessions({"s_gap": session})
+        widget.set_selected_laps([("s_gap", 1, "#FF0000")])
+        widget.set_selected_channels({"speed"})
+        widget._toggle_gap_filter(True)
+
+        widget.rebuild_plots()
+        plot = widget.plot_widgets.get("speed")
+        self.assertIsNotNone(plot)
+        curve_items = [item for item in plot.listDataItems() if isinstance(item, pg.PlotCurveItem)]
+        self.assertTrue(len(curve_items) > 0)
+        curve = curve_items[0]
+        # connect mask should have disconnected the gap between pt 1 and 2
+        connect = curve.opts.get("connect")
+        self.assertIsInstance(connect, np.ndarray)
+        # connect[1] should be 0 (disconnected because dt=4.0 > 2.0)
+        self.assertEqual(connect[1], 0)
+        # connect[0] should be 1 (connected because dt=1.0 <= 2.0)
+        self.assertEqual(connect[0], 1)
         widget.close()
 
 

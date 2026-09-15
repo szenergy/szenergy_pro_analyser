@@ -28,3 +28,12 @@ These rules and guidelines must be followed by AI coding agents working on the S
 
 ### 7. Continuous Guideline Maintenance
 * Keep this `AGENTS.md` file updated over time as new patterns, preferences, and project guidelines are established.
+
+### 8. Global vs. Local Calculated Channels Pattern
+* **Global Calculated Channels**: Configured in Channel Manager (`ui/channel_manager_dialog.py`). Defined system-wide across all files and laps using standard global channel slugs. Evaluated on-the-fly via `Lap.get_channel()`.
+* **Local Calculated Channels**: Configured per-file in Import Wizard (`ui/import_wizard.py` and `ui/local_calculated_channel_dialog.py`). Compute mathematical values from raw unmapped file columns and map the result directly to target global channel slugs upon parsing. Preserved across presets, file remapping, and workspace restore. Strictly kept separate from `Session.raw_df` and `Session.mapping` (which must strictly contain genuine raw file columns only) to avoid duplicate entries in session remapping and preset saving.
+
+### 9. Per-File Data Gap Disconnection Thresholds Pattern
+* Configured per file in Import Wizard (`ui/import_wizard.py`) and Edit Channel Mapping.
+* Stored on `Session` (`gap_time_threshold`, `gap_dist_threshold`) and persisted across presets, workspace state, and memory remapping.
+* Used during curve generation in `ui/graph_view.py` for each session/curve independently when gap filtering is active. Global menu configuration dialog is removed; global button toggles gap disconnection on/off.

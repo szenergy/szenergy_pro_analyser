@@ -84,6 +84,9 @@ class FileParseWorker(BaseWorker):
         lap_slug: str = STD_CH_LAP_NUM_SLUG,
         time_slug: str = STD_CH_LAP_TIME_SLUG,
         dist_slug: str = STD_CH_LAP_DIST_SLUG,
+        local_calculated_channels: Optional[list] = None,
+        gap_time_threshold: Optional[float] = None,
+        gap_dist_threshold: Optional[float] = None,
         parent=None
     ):
         super().__init__(parent)
@@ -96,6 +99,9 @@ class FileParseWorker(BaseWorker):
         self.lap_slug = lap_slug
         self.time_slug = time_slug
         self.dist_slug = dist_slug
+        self.local_calculated_channels = local_calculated_channels
+        self.gap_time_threshold = gap_time_threshold
+        self.gap_dist_threshold = gap_dist_threshold
 
     def do_work(self):
         logger.debug("FileParseWorker started for: %s", os.path.basename(self.file_path))
@@ -108,7 +114,10 @@ class FileParseWorker(BaseWorker):
             self.dist_label,
             self.lap_slug,
             self.time_slug,
-            self.dist_slug
+            self.dist_slug,
+            local_calculated_channels=self.local_calculated_channels,
+            gap_time_threshold=self.gap_time_threshold,
+            gap_dist_threshold=self.gap_dist_threshold
         )
         logger.debug("FileParseWorker completed successfully for: %s", os.path.basename(self.file_path))
         return session
@@ -167,8 +176,11 @@ class WorkspaceRestoreWorker(BaseWorker, QObject):
 
             file_path = s_info.get("file_path")
             mapping = s_info.get("mapping", {})
+            local_calcs = s_info.get("local_calculated_channels", [])
             preset_slug = s_info.get("preset_slug")
             preset_name = s_info.get("preset_name")
+            gap_time_threshold = s_info.get("gap_time_threshold")
+            gap_dist_threshold = s_info.get("gap_dist_threshold")
             selected_laps = s_info.get("selected_laps", [])
 
             filename = os.path.basename(file_path)
@@ -187,7 +199,10 @@ class WorkspaceRestoreWorker(BaseWorker, QObject):
                     time_slug=self.time_slug,
                     dist_slug=self.dist_slug,
                     preset_slug=preset_slug,
-                    preset_name=preset_name
+                    preset_name=preset_name,
+                    local_calculated_channels=local_calcs,
+                    gap_time_threshold=gap_time_threshold,
+                    gap_dist_threshold=gap_dist_threshold
                 )
                 session.preset_slug = preset_slug
                 session.preset_name = preset_name

@@ -194,11 +194,25 @@ class StateManager:
             for item in data:
                 if isinstance(item, dict) and "name" in item and "mapping" in item:
                     slug = item.get("slug") or generate_slug(item["name"])
-                    presets.append({
+                    preset_dict: Dict[str, Any] = {
                         "slug": slug,
                         "name": item["name"],
                         "mapping": item["mapping"]
-                    })
+                    }
+                    if "local_calculated_channels" in item and isinstance(item["local_calculated_channels"], list):
+                        preset_dict["local_calculated_channels"] = item["local_calculated_channels"]
+                        calc_targets = {c.get("target_slug") for c in item["local_calculated_channels"] if isinstance(c, dict) and c.get("target_slug")}
+                        calc_targets |= {c.get("name") for c in item["local_calculated_channels"] if isinstance(c, dict) and c.get("name")}
+                        calc_targets |= {c.get("target_label") for c in item["local_calculated_channels"] if isinstance(c, dict) and c.get("target_label")}
+                        if calc_targets and isinstance(preset_dict["mapping"], dict):
+                            preset_dict["mapping"] = {k: v for k, v in preset_dict["mapping"].items() if k not in calc_targets}
+                    else:
+                        preset_dict["local_calculated_channels"] = []
+                    if "gap_time_threshold" in item and item["gap_time_threshold"] is not None:
+                        preset_dict["gap_time_threshold"] = float(item["gap_time_threshold"])
+                    if "gap_dist_threshold" in item and item["gap_dist_threshold"] is not None:
+                        preset_dict["gap_dist_threshold"] = float(item["gap_dist_threshold"])
+                    presets.append(preset_dict)
             return presets
 
         if isinstance(data, dict):
@@ -209,7 +223,8 @@ class StateManager:
                     migrated.append({
                         "slug": generate_slug(name),
                         "name": name,
-                        "mapping": mapping
+                        "mapping": mapping,
+                        "local_calculated_channels": []
                     })
             return migrated
 
@@ -243,7 +258,15 @@ class StateManager:
             return preset["slug"]
         return None
 
-    def save_preset(self, preset_name: str, mapping: Dict[str, str], slug: Optional[str] = None) -> str:
+    def save_preset(
+        self,
+        preset_name: str,
+        mapping: Dict[str, str],
+        slug: Optional[str] = None,
+        local_calculated_channels: Optional[List[Dict[str, Any]]] = None,
+        gap_time_threshold: Optional[float] = None,
+        gap_dist_threshold: Optional[float] = None
+    ) -> str:
         """
         Save or update a preset mapping. If slug is provided and exists, updates name and mapping.
         If slug is None, checks for matching name; if new, generates unique slug.
@@ -265,19 +288,43 @@ class StateManager:
                     target_preset = p
                     break
 
+        clean_mapping = dict(mapping)
+        if local_calculated_channels:
+            calc_targets = {c.get("target_slug") for c in local_calculated_channels if isinstance(c, dict) and c.get("target_slug")}
+            calc_targets |= {c.get("name") for c in local_calculated_channels if isinstance(c, dict) and c.get("name")}
+            calc_targets |= {c.get("target_label") for c in local_calculated_channels if isinstance(c, dict) and c.get("target_label")}
+            if calc_targets:
+                clean_mapping = {k: v for k, v in clean_mapping.items() if k not in calc_targets}
+
         if target_preset:
             target_preset["name"] = preset_name
-            target_preset["mapping"] = mapping
+            target_preset["mapping"] = clean_mapping
+            if local_calculated_channels is not None:
+                target_preset["local_calculated_channels"] = local_calculated_channels
+            elif "local_calculated_channels" not in target_preset:
+                target_preset["local_calculated_channels"] = []
+            if gap_time_threshold is not None:
+                target_preset["gap_time_threshold"] = float(gap_time_threshold)
+            if gap_dist_threshold is not None:
+                target_preset["gap_dist_threshold"] = float(gap_dist_threshold)
             saved_slug = target_preset["slug"]
-            logger.info("Updated preset '%s' (slug: '%s') with %d channels", preset_name, saved_slug, len(mapping))
+            logger.info("Updated preset '%s' (slug: '%s') with %d channels and %d local calcs",
+                        preset_name, saved_slug, len(mapping), len(target_preset.get("local_calculated_channels", [])))
         else:
             saved_slug = self.generate_unique_slug(slug or preset_name, existing_slugs)
-            presets.append({
+            new_preset = {
                 "slug": saved_slug,
                 "name": preset_name,
-                "mapping": mapping
-            })
-            logger.info("Created new preset '%s' (slug: '%s') with %d channels", preset_name, saved_slug, len(mapping))
+                "mapping": clean_mapping,
+                "local_calculated_channels": list(local_calculated_channels) if local_calculated_channels is not None else []
+            }
+            if gap_time_threshold is not None:
+                new_preset["gap_time_threshold"] = float(gap_time_threshold)
+            if gap_dist_threshold is not None:
+                new_preset["gap_dist_threshold"] = float(gap_dist_threshold)
+            presets.append(new_preset)
+            logger.info("Created new preset '%s' (slug: '%s') with %d channels and %d local calcs",
+                        preset_name, saved_slug, len(clean_mapping), len(local_calculated_channels or []))
 
         write_versioned_json(self.presets_file, 2, presets)
         return saved_slug
@@ -317,20 +364,33 @@ class StateManager:
     def get_file_preset(self, file_path: str) -> Optional[str]:
         """Returns remembered preset slug for a file path, or None."""
         presets = self.load_file_presets()
-        return presets.get(file_path)
+        abs_path = os.path.abspath(file_path)
+        if abs_path in presets:
+            return presets[abs_path]
+        if file_path in presets:
+            return presets[file_path]
+        return None
 
     def save_file_preset(self, file_path: str, preset_slug: str) -> None:
         """Remembers a preset slug for a specific file path."""
         presets = self.load_file_presets()
-        presets[file_path] = preset_slug
+        abs_path = os.path.abspath(file_path)
+        presets[abs_path] = preset_slug
         write_versioned_json(self.file_mappings_file, 2, presets)
         logger.info("Saved file preset mapping: '%s' -> slug '%s'", os.path.basename(file_path), preset_slug)
 
     def remove_file_preset(self, file_path: str) -> None:
         """Removes remembered preset slug for a specific file path."""
         presets = self.load_file_presets()
+        abs_path = os.path.abspath(file_path)
+        removed = False
+        if abs_path in presets:
+            del presets[abs_path]
+            removed = True
         if file_path in presets:
             del presets[file_path]
+            removed = True
+        if removed:
             write_versioned_json(self.file_mappings_file, 2, presets)
             logger.info("Removed file preset mapping for '%s'", os.path.basename(file_path))
 
@@ -340,12 +400,17 @@ class StateManager:
         """
         preset = self.get_preset_by_slug(slug_or_name) or self.get_preset_by_name(slug_or_name)
         mapping = preset.get("mapping", {}) if preset else {}
+        local_calcs = preset.get("local_calculated_channels", []) if preset else []
         raw_set = set(raw_columns)
         preset_cols = list(mapping.keys())
+        for c in local_calcs:
+            for inp in c.get("inputs", {}).values():
+                if inp not in preset_cols:
+                    preset_cols.append(inp)
 
         matched_channels = [c for c in preset_cols if c in raw_set]
         missing_channels = [c for c in preset_cols if c not in raw_set]
-        unmapped_channels = [c for c in raw_columns if c not in mapping]
+        unmapped_channels = [c for c in raw_columns if c not in preset_cols]
 
         matched_count = len(matched_channels)
         preset_total = len(preset_cols)
@@ -374,9 +439,12 @@ class StateManager:
 
         for preset in presets:
             mapping = preset.get("mapping", {})
-            if not mapping:
+            local_calcs = preset.get("local_calculated_channels", [])
+            if not mapping and not local_calcs:
                 continue
             preset_cols = set(mapping.keys())
+            for c in local_calcs:
+                preset_cols.update(c.get("inputs", {}).values())
             matched = preset_cols.intersection(raw_set)
             matched_count = len(matched)
             preset_total = len(preset_cols)
@@ -636,11 +704,16 @@ class StateManager:
                 for p in imported_presets:
                     if isinstance(p, dict) and "name" in p and "mapping" in p and isinstance(p["mapping"], dict):
                         slug = p.get("slug") or generate_slug(p["name"])
-                        preset_items.append({"slug": slug, "name": p["name"], "mapping": p["mapping"]})
+                        p_dict = {"slug": slug, "name": p["name"], "mapping": p["mapping"]}
+                        if "local_calculated_channels" in p and isinstance(p["local_calculated_channels"], list):
+                            p_dict["local_calculated_channels"] = p["local_calculated_channels"]
+                        else:
+                            p_dict["local_calculated_channels"] = []
+                        preset_items.append(p_dict)
             elif isinstance(imported_presets, dict):
                 for name, mapping in imported_presets.items():
                     if isinstance(mapping, dict):
-                        preset_items.append({"slug": generate_slug(name), "name": name, "mapping": mapping})
+                        preset_items.append({"slug": generate_slug(name), "name": name, "mapping": mapping, "local_calculated_channels": []})
 
             for p in preset_items:
                 slug = p["slug"]
@@ -650,8 +723,12 @@ class StateManager:
                 if slug in existing_presets_by_slug:
                     existing_presets_by_slug[slug]["name"] = name
                     existing_presets_by_slug[slug]["mapping"] = mapping
+                    if "local_calculated_channels" in p:
+                        existing_presets_by_slug[slug]["local_calculated_channels"] = p["local_calculated_channels"]
                 elif name in existing_presets_by_name:
                     existing_presets_by_name[name]["mapping"] = mapping
+                    if "local_calculated_channels" in p:
+                        existing_presets_by_name[name]["local_calculated_channels"] = p["local_calculated_channels"]
                 else:
                     existing_presets_by_slug[slug] = p
                 num_presets_imported += 1

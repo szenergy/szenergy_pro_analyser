@@ -297,7 +297,7 @@ class SidebarWidget(QWidget):
 
             menu.addSeparator()
 
-            edit_mapping_action = QAction("Edit Channel Mapping...", self)
+            edit_mapping_action = QAction("Manage Session...", self)
             edit_mapping_action.triggered.connect(lambda: self.session_edit_mapping_requested.emit(session_id))
             menu.addAction(edit_mapping_action)
 

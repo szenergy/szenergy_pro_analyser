@@ -8,13 +8,14 @@ All internal keys use slugs (not display labels).
 import logging
 import os
 import warnings
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
 import pandas as pd
 from nptdms import TdmsFile
 
 from core.data_models import Session, Lap
 from core.state_manager import generate_slug
+from core.channel_calculator import evaluate_channel_formula
 from utils.constants import (
     STD_CH_LAP_NUM, STD_CH_LAP_TIME, STD_CH_LAP_DIST,
     STD_CH_LAP_NUM_SLUG, STD_CH_LAP_TIME_SLUG, STD_CH_LAP_DIST_SLUG
@@ -214,17 +215,92 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
                                 time_slug: str = STD_CH_LAP_TIME_SLUG,
                                 dist_slug: str = STD_CH_LAP_DIST_SLUG,
                                 preset_slug: Optional[str] = None,
-                                preset_name: Optional[str] = None) -> Session:
+                                preset_name: Optional[str] = None,
+                                local_calculated_channels: Optional[List[Dict[str, Any]]] = None,
+                                gap_time_threshold: Optional[float] = None,
+                                gap_dist_threshold: Optional[float] = None) -> Session:
     """
-    Parses a Session in memory from an existing raw DataFrame and mapping dictionary.
+    Parses a Session in memory from an existing raw DataFrame, mapping dictionary,
+    and optional local calculated channel definitions.
     Mapping values are slugs (e.g. {"Speed_kmh": "speed"}).
     DataFrame columns are renamed to slugs. All internal keys use slugs.
     """
-    logger.debug("Parsing session '%s' with %d mapped channels (raw rows: %d)",
-                 os.path.basename(file_path), len(mapping), len(raw_df))
+    logger.debug("Parsing session '%s' with %d mapped channels (raw rows: %d, local calcs: %d)",
+                 os.path.basename(file_path), len(mapping), len(raw_df),
+                 len(local_calculated_channels or []))
+
+    effective_local_calcs = list(local_calculated_channels) if local_calculated_channels else []
+
+    # Identify all local calculated channel target slugs and names to prevent polluting raw_df and mapping
+    calc_col_names = set()
+    for calc_def in effective_local_calcs:
+        if calc_def.get("target_slug"):
+            calc_col_names.add(calc_def["target_slug"])
+        if calc_def.get("name"):
+            calc_col_names.add(calc_def["name"])
+        if calc_def.get("target_label"):
+            calc_col_names.add(calc_def["target_label"])
+
+    clean_raw_df = raw_df.drop(columns=[c for c in calc_col_names if c in raw_df.columns], errors="ignore").copy()
+    working_raw_df = clean_raw_df.copy()
+
+    # Evaluate local calculated channels sequentially on working_raw_df
+    for calc_def in effective_local_calcs:
+        target_slug = calc_def.get("target_slug", "")
+        name = calc_def.get("name") or target_slug
+        formula = calc_def.get("formula", "").strip()
+        inputs_map = calc_def.get("inputs", {})
+
+        if not target_slug or not formula:
+            continue
+
+        target_len = len(working_raw_df)
+        input_arrays: Dict[str, np.ndarray] = {}
+        missing_input = False
+
+        for var_letter, raw_col in inputs_map.items():
+            if raw_col in working_raw_df.columns:
+                col_series = pd.to_numeric(working_raw_df[raw_col], errors="coerce")
+                input_arrays[var_letter] = col_series.to_numpy(dtype=float, copy=True)
+            else:
+                logger.warning(
+                    "Local calculated channel '%s' missing input column '%s' in file '%s'",
+                    name, raw_col, os.path.basename(file_path)
+                )
+                missing_input = True
+                break
+
+        if missing_input:
+            continue
+
+        calc_result = evaluate_channel_formula(formula, input_arrays)
+        if calc_result is not None:
+            if len(calc_result) != target_len:
+                if len(calc_result) == 1:
+                    calc_result = np.full(target_len, calc_result[0], dtype=np.float64)
+                elif len(calc_result) > target_len:
+                    calc_result = calc_result[:target_len]
+                else:
+                    calc_result = np.pad(calc_result, (0, target_len - len(calc_result)), mode="edge")
+
+            working_raw_df[target_slug] = calc_result
+            if name and name != target_slug:
+                working_raw_df[name] = calc_result
+        else:
+            logger.warning(
+                "Evaluation failed for local calculated channel '%s' (formula: '%s') in file '%s'",
+                name, formula, os.path.basename(file_path)
+            )
+
     # Filter only columns present in mapping and rename to slug keys
-    valid_mapping = {raw: slug for raw, slug in mapping.items() if raw in raw_df.columns}
-    df = raw_df[list(valid_mapping.keys())].rename(columns=valid_mapping)
+    valid_mapping = {raw: slug for raw, slug in mapping.items() if raw in working_raw_df.columns and raw not in calc_col_names}
+    df = working_raw_df[list(valid_mapping.keys())].rename(columns=valid_mapping)
+
+    # Add evaluated local calculated channels directly to df under their target slug
+    for calc_def in effective_local_calcs:
+        target_slug = calc_def.get("target_slug", "")
+        if target_slug and target_slug in working_raw_df.columns:
+            df[target_slug] = working_raw_df[target_slug]
 
     # Coerce all mapped columns to numeric (non-numeric values become NaN)
     for col in df.columns:
@@ -243,9 +319,12 @@ def parse_session_from_dataframe(raw_df: pd.DataFrame, file_path: str, mapping: 
         file_path=file_path,
         channels=[str(col) for col in df.columns if col != resolved_lap],
         mapping=valid_mapping,
+        local_calculated_channels=effective_local_calcs,
         preset_slug=preset_slug,
         preset_name=preset_name,
-        raw_df=raw_df
+        gap_time_threshold=gap_time_threshold,
+        gap_dist_threshold=gap_dist_threshold,
+        raw_df=clean_raw_df
     )
 
     if df.empty:
@@ -350,7 +429,10 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
                   time_slug: str = STD_CH_LAP_TIME_SLUG,
                   dist_slug: str = STD_CH_LAP_DIST_SLUG,
                   preset_slug: Optional[str] = None,
-                  preset_name: Optional[str] = None) -> Session:
+                  preset_name: Optional[str] = None,
+                  local_calculated_channels: Optional[List[Dict[str, Any]]] = None,
+                  gap_time_threshold: Optional[float] = None,
+                  gap_dist_threshold: Optional[float] = None) -> Session:
     """
     Parses a log file from disk into a Session object and retains raw_df in memory.
     Mapping values should be slugs.
@@ -368,5 +450,8 @@ def parse_session(file_path: str, mapping: Dict[str, str], session_id: str,
         time_slug=time_slug,
         dist_slug=dist_slug,
         preset_slug=preset_slug,
-        preset_name=preset_name
+        preset_name=preset_name,
+        local_calculated_channels=local_calculated_channels,
+        gap_time_threshold=gap_time_threshold,
+        gap_dist_threshold=gap_dist_threshold
     )

@@ -144,7 +144,7 @@ class GraphViewWidget(QWidget):
         self.btn_gap_filter = QPushButton()
         self.btn_gap_filter.setCheckable(True)
         self.btn_gap_filter.setChecked(self.filter_gaps)
-        self.btn_gap_filter.setToolTip("Toggle Line Gap Disconnection")
+        self.btn_gap_filter.setToolTip("Toggle Line Disconnection")
         self.btn_gap_filter.setFixedSize(32, 28)
         self.btn_gap_filter.setIconSize(QSize(18, 18))
         self.btn_gap_filter.toggled.connect(self._toggle_gap_filter)
@@ -154,7 +154,7 @@ class GraphViewWidget(QWidget):
         self.btn_cursor = QPushButton()
         self.btn_cursor.setCheckable(True)
         self.btn_cursor.setChecked(self.show_cursor_values)
-        self.btn_cursor.setToolTip("Toggle Cursor Crosshair & Value Display")
+        self.btn_cursor.setToolTip("Toggle Cursor")
         self.btn_cursor.setFixedSize(32, 28)
         self.btn_cursor.setIconSize(QSize(18, 18))
         self.btn_cursor.toggled.connect(self._toggle_cursor_values)
@@ -164,7 +164,7 @@ class GraphViewWidget(QWidget):
         self.btn_legend = QPushButton()
         self.btn_legend.setCheckable(True)
         self.btn_legend.setChecked(self.show_legend)
-        self.btn_legend.setToolTip("Toggle Curve Legend")
+        self.btn_legend.setToolTip("Toggle Legend")
         self.btn_legend.setFixedSize(32, 28)
         self.btn_legend.setIconSize(QSize(18, 18))
         self.btn_legend.toggled.connect(self._toggle_legend)
@@ -172,7 +172,7 @@ class GraphViewWidget(QWidget):
 
         # 6. Rename Legend / Curve Labels Button
         self.btn_rename_legend = QPushButton()
-        self.btn_rename_legend.setToolTip("Rename Legend / Curve Labels...")
+        self.btn_rename_legend.setToolTip("Rename Legend Labels...")
         self.btn_rename_legend.setFixedSize(32, 28)
         self.btn_rename_legend.setIconSize(QSize(18, 18))
         self.btn_rename_legend.clicked.connect(self._on_rename_legend)
@@ -180,7 +180,7 @@ class GraphViewWidget(QWidget):
 
         # 7. Export Plot / Data Button
         self.btn_export = QPushButton()
-        self.btn_export.setToolTip("Export Plot / Data...")
+        self.btn_export.setToolTip("Export Plot...")
         self.btn_export.setFixedSize(32, 28)
         self.btn_export.setIconSize(QSize(18, 18))
         self.btn_export.clicked.connect(self._on_export_plot)
@@ -735,6 +735,9 @@ class GraphViewWidget(QWidget):
                         # Disconnect line segments if data points are separated by more than configured threshold (time or distance)
                         connect_arg = 'finite'
                         if self.filter_gaps and len(x_data) > 1:
+                            eff_gap_time = session.gap_time_threshold if session.gap_time_threshold is not None else (self.gap_time_threshold or DEFAULT_GAP_TIME_THRESHOLD)
+                            eff_gap_dist = session.gap_dist_threshold if session.gap_dist_threshold is not None else (self.gap_dist_threshold or DEFAULT_GAP_DIST_THRESHOLD)
+
                             dx = np.diff(x_data)
                             valid_finite = np.isfinite(y_data[:-1]) & np.isfinite(y_data[1:]) & np.isfinite(dx) & (dx >= 0)
 
@@ -743,18 +746,18 @@ class GraphViewWidget(QWidget):
                             if raw_time is not None and len(raw_time) > 1:
                                 dt = np.diff(raw_time[:min_len])
                                 k = len(dt)
-                                valid_finite[:k] &= np.isfinite(dt) & (dt >= 0) & (dt <= self.gap_time_threshold)
+                                valid_finite[:k] &= np.isfinite(dt) & (dt >= 0) & (dt <= eff_gap_time)
                             elif self.x_axis_slug == STD_CH_LAP_TIME_SLUG:
-                                valid_finite &= (dx <= self.gap_time_threshold)
+                                valid_finite &= (dx <= eff_gap_time)
 
                             # 2. Check distance gap threshold regardless of X-axis
                             raw_dist = lap.get_channel(STD_CH_LAP_DIST_SLUG, calculated_defs=calc_defs)
                             if raw_dist is not None and len(raw_dist) > 1:
                                 dd = np.diff(raw_dist[:min_len])
                                 k = len(dd)
-                                valid_finite[:k] &= np.isfinite(dd) & (dd >= 0) & (dd <= self.gap_dist_threshold)
+                                valid_finite[:k] &= np.isfinite(dd) & (dd >= 0) & (dd <= eff_gap_dist)
                             elif self.x_axis_slug == STD_CH_LAP_DIST_SLUG:
-                                valid_finite &= (dx <= self.gap_dist_threshold)
+                                valid_finite &= (dx <= eff_gap_dist)
 
                             connect_mask = np.zeros(len(x_data), dtype=np.ubyte)
                             connect_mask[:-1] = np.where(valid_finite, 1, 0)

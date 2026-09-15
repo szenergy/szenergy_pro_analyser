@@ -5,7 +5,7 @@ user-renamable display labels.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Set
 import numpy as np
 import pandas as pd
 
@@ -69,9 +69,13 @@ class Session:
     laps: List[Lap] = field(default_factory=list)
     channels: List[str] = field(default_factory=list)  # List of channel slugs (excluding lap)
     mapping: Dict[str, str] = field(default_factory=dict)  # {raw_column: slug}
+    local_calculated_channels: List[Dict[str, Any]] = field(default_factory=list)
     preset_slug: Optional[str] = None
     preset_name: Optional[str] = None
     
+    gap_time_threshold: Optional[float] = None
+    gap_dist_threshold: Optional[float] = None
+
     # Reference to original parsed dataframe if needed
     raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
 
