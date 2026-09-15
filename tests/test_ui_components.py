@@ -2525,26 +2525,58 @@ class TestUIComponents(unittest.TestCase):
             win._on_manage_maps()
             mock_exec.assert_called_once()
 
-    def test_sidebar_import_hint_label_lifecycle(self):
-        """Validates that sidebar displays import hint label when empty and hides when sessions are present."""
+    def test_sidebar_quick_import_button_and_signal(self):
+        """Validates that the sidebar has a quick import button at the top and emits open_file_requested."""
         sidebar = SidebarWidget()
-        self.assertIsNotNone(sidebar.import_hint_label)
-        self.assertIn("import telemetry data in the file menu", sidebar.import_hint_label.text().lower())
-        self.assertFalse(sidebar.import_hint_label.isHidden())
+        self.assertFalse(hasattr(sidebar, "import_hint_label"))
+        self.assertIsNotNone(sidebar.btn_import_session)
+        self.assertEqual(sidebar.btn_import_session.text(), "+ Import Session...")
 
-        # Add session -> hides label
-        sidebar.add_session(self.session)
-        self.assertTrue(sidebar.import_hint_label.isHidden())
+        signal_emitted = []
+        sidebar.open_file_requested.connect(lambda: signal_emitted.append(True))
+        sidebar.btn_import_session.click()
+        self.assertEqual(len(signal_emitted), 1)
 
-        # Remove session -> shows label again
-        sidebar.remove_session(self.session.id)
-        self.assertFalse(sidebar.import_hint_label.isHidden())
+    def test_main_window_quick_import_button_and_last_folder_persistence(self):
+        """Validates that quick import button in sidebar triggers _on_open_file and remembers last folder across restarts."""
+        from ui.main_window import MainWindow
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        win = MainWindow(state_manager=state_mgr)
 
-        # Add session again -> clear all -> shows label
-        sidebar.add_session(self.session)
-        self.assertTrue(sidebar.import_hint_label.isHidden())
-        sidebar.clear_all_sessions()
-        self.assertFalse(sidebar.import_hint_label.isHidden())
+        sample_csv = os.path.join(self.temp_dir.name, "log_file.csv")
+        with open(sample_csv, "w") as f:
+            f.write("Time,Distance,Speed,Lap\n0,0,10,1\n")
+
+        # Mock QFileDialog.getOpenFileNames
+        with patch.object(QFileDialog, "getOpenFileNames", return_value=([sample_csv], "CSV Files (*.csv)")) as mock_file_dialog:
+            with patch.object(win, "_import_file") as mock_import:
+                win.sidebar.btn_import_session.click()
+                mock_file_dialog.assert_called_once_with(
+                    win,
+                    "Select Telemetry Log Files",
+                    "",
+                    "Supported Log Files (*.csv *.xlsx *.xls *.tdms);;CSV Files (*.csv);;Excel Files (*.xlsx *.xls);;TDMS Files (*.tdms);;All Files (*)"
+                )
+                mock_import.assert_called_once_with(sample_csv)
+
+        # Verify state_manager remembered the folder
+        expected_dir = os.path.abspath(self.temp_dir.name)
+        self.assertEqual(state_mgr.get_last_import_dir(), expected_dir)
+
+        # Simulate restart with new StateManager on same config_dir
+        restarted_mgr = StateManager(config_dir=self.temp_dir.name)
+        self.assertEqual(restarted_mgr.get_last_import_dir(), expected_dir)
+
+        win2 = MainWindow(state_manager=restarted_mgr)
+        with patch.object(QFileDialog, "getOpenFileNames", return_value=([], "")) as mock_file_dialog2:
+            win2._on_open_file()
+            # Verify initial_dir passed to dialog is the remembered directory
+            mock_file_dialog2.assert_called_once_with(
+                win2,
+                "Select Telemetry Log Files",
+                expected_dir,
+                "Supported Log Files (*.csv *.xlsx *.xls *.tdms);;CSV Files (*.csv);;Excel Files (*.xlsx *.xls);;TDMS Files (*.tdms);;All Files (*)"
+            )
 
     def test_track_map_tab_manage_maps_button_and_placeholder(self):
         """Validates that track map tab has a settings button and placeholder text when no maps are available."""

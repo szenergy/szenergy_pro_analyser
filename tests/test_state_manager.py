@@ -352,6 +352,23 @@ class TestStateManager(unittest.TestCase):
 
         target_dir.cleanup()
 
+    def test_last_import_dir_persistence(self):
+        """Tests that last import directory is saved and restored across StateManager instances."""
+        self.assertEqual(self.state_manager.get_last_import_dir(), "")
+
+        # Set valid directory
+        test_dir = self.temp_dir.name
+        self.state_manager.set_last_import_dir(test_dir)
+        self.assertEqual(self.state_manager.get_last_import_dir(), os.path.abspath(test_dir))
+
+        # Re-instantiate StateManager with the same config dir (simulating restart)
+        restarted_mgr = StateManager(config_dir=self.state_manager.config_dir)
+        self.assertEqual(restarted_mgr.get_last_import_dir(), os.path.abspath(test_dir))
+
+        # If saved directory does not exist on disk, returns ""
+        restarted_mgr.set_last_import_dir("/non/existent/dir/path/123")
+        self.assertEqual(restarted_mgr.get_last_import_dir(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

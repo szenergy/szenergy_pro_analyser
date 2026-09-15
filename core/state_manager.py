@@ -99,6 +99,22 @@ class StateManager:
         """Saves persistent application settings to settings.json in versioned envelope format."""
         write_versioned_json(self.settings_file, 1, settings)
 
+    def get_last_import_dir(self) -> str:
+        """Returns the last directory used for importing log files, or an empty string if not set."""
+        settings = self.load_settings()
+        last_dir = settings.get("last_import_dir", "")
+        if isinstance(last_dir, str) and last_dir and os.path.isdir(last_dir):
+            return last_dir
+        return ""
+
+    def set_last_import_dir(self, dir_path: str) -> None:
+        """Persists the last directory used for importing log files in settings.json."""
+        if not dir_path or not isinstance(dir_path, str):
+            return
+        settings = self.load_settings()
+        settings["last_import_dir"] = os.path.abspath(dir_path)
+        self.save_settings(settings)
+
     def load_workspace_state(self) -> Dict[str, Any]:
         """Loads persistent workspace state (loaded sessions, selected laps, custom lap labels, sidebar channels)."""
         version, data = read_versioned_json(self.workspace_state_file)
@@ -151,7 +167,7 @@ class StateManager:
 
     def save_ui_state(self, state: Dict[str, Any]) -> None:
         """Saves state dictionary by routing settings to settings.json and workspace to workspace_state.json."""
-        settings = {}
+        settings = dict(self.load_settings())
         if "theme_mode" in state:
             settings["theme_mode"] = state["theme_mode"]
         if "window" in state:
@@ -167,6 +183,8 @@ class StateManager:
                 sb_settings["selected_map"] = sb["selected_map"]
             if sb_settings:
                 settings["sidebar"] = sb_settings
+        if "last_import_dir" in state:
+            settings["last_import_dir"] = state["last_import_dir"]
         if settings:
             self.save_settings(settings)
 

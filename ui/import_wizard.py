@@ -302,7 +302,6 @@ class ImportWizardDialog(QDialog):
         self.calc_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.calc_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.calc_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        # self.calc_table.setMaximumHeight(130)
         self.calc_table.setMinimumHeight(70)
         calc_vbox.addWidget(self.calc_table)
 

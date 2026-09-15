@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self.sidebar.session_removed.connect(self._on_session_removed)
         self.sidebar.session_edit_mapping_requested.connect(self._on_edit_session_mapping)
         self.sidebar.channel_manager_closed.connect(self._on_channel_manager_closed)
+        self.sidebar.open_file_requested.connect(self._on_open_file)
         self.main_splitter.addWidget(self.sidebar)
 
         # Right Graph View
@@ -399,15 +400,24 @@ class MainWindow(QMainWindow):
         self.graph_view.set_sessions(self.sessions)
 
     def _on_open_file(self):
+        initial_dir = ""
+        if hasattr(self, "state_manager") and self.state_manager:
+            initial_dir = self.state_manager.get_last_import_dir()
+
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Select Telemetry Log Files",
-            "",
+            initial_dir,
             "Supported Log Files (*.csv *.xlsx *.xls *.tdms);;CSV Files (*.csv);;Excel Files (*.xlsx *.xls);;TDMS Files (*.tdms);;All Files (*)"
         )
 
-        for path in file_paths:
-            self._import_file(path)
+        if file_paths:
+            if hasattr(self, "state_manager") and self.state_manager:
+                last_dir = os.path.dirname(os.path.abspath(file_paths[0]))
+                self.state_manager.set_last_import_dir(last_dir)
+
+            for path in file_paths:
+                self._import_file(path)
 
     def _import_file(self, file_path: str):
         """Processes file import using background QThread workers and loading dialogs."""
@@ -749,7 +759,9 @@ class MainWindow(QMainWindow):
                     "selected_map": self.sidebar.get_selected_map(),
                 }
 
+            existing_settings = self.state_manager.load_settings() if hasattr(self, "state_manager") and self.state_manager else {}
             settings_data = {
+                **existing_settings,
                 "theme_mode": self.theme_mode,
                 "window": window_state,
                 "graph": graph_state,
