@@ -355,62 +355,131 @@ class StateManager:
             write_versioned_json(self.presets_file, 2, filtered)
             logger.info("Deleted preset '%s'", slug_or_name)
 
-    def load_file_presets(self) -> Dict[str, str]:
-        """Load mapping of file paths to their remembered preset slugs."""
+    def _read_raw_file_mappings(self) -> Dict[str, Any]:
+        """Reads raw file mappings dictionary from file_mappings.json."""
         version, data = read_versioned_json(self.file_mappings_file)
         if isinstance(data, dict):
-            result = {}
-            for path, val in data.items():
-                preset_ident = None
-                if isinstance(val, str):
-                    preset_ident = val
-                elif isinstance(val, dict) and "preset_slug" in val and val["preset_slug"]:
-                    preset_ident = val["preset_slug"]
-                elif isinstance(val, dict) and "preset_name" in val and val["preset_name"]:
-                    preset_ident = val["preset_name"]
-
-                if preset_ident:
-                    # Resolve display name to slug if known, else check existing preset or generate slug
-                    slug = self.get_preset_slug_by_name(preset_ident)
-                    if not slug:
-                        p = self.get_preset_by_slug(preset_ident)
-                        slug = p["slug"] if p else generate_slug(preset_ident)
-                    result[path] = slug
-            return result
+            return data
         return {}
+
+    def get_file_mapping_config(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Returns remembered mapping configuration for a file path, or None.
+        Supports both new rich dict format and legacy slug fallback.
+        """
+        raw_data = self._read_raw_file_mappings()
+        abs_path = os.path.abspath(file_path)
+        val = raw_data.get(abs_path) or raw_data.get(file_path)
+        if not val:
+            return None
+
+        if isinstance(val, dict) and "mapping" in val:
+            return {
+                "preset_slug": val.get("preset_slug"),
+                "mapping": dict(val.get("mapping", {})),
+                "local_calculated_channels": [dict(c) for c in val.get("local_calculated_channels", [])],
+                "gap_time_threshold": val.get("gap_time_threshold"),
+                "gap_dist_threshold": val.get("gap_dist_threshold")
+            }
+
+        # Legacy fallback: slug string or dict with preset_slug/preset_name only
+        preset_ident = None
+        if isinstance(val, str):
+            preset_ident = val
+        elif isinstance(val, dict) and "preset_slug" in val and val["preset_slug"]:
+            preset_ident = val["preset_slug"]
+        elif isinstance(val, dict) and "preset_name" in val and val["preset_name"]:
+            preset_ident = val["preset_name"]
+
+        if preset_ident:
+            preset = self.get_preset_by_slug(preset_ident) or self.get_preset_by_name(preset_ident)
+            if preset:
+                return {
+                    "preset_slug": preset.get("slug"),
+                    "mapping": dict(preset.get("mapping", {})),
+                    "local_calculated_channels": [dict(c) for c in preset.get("local_calculated_channels", [])],
+                    "gap_time_threshold": preset.get("gap_time_threshold"),
+                    "gap_dist_threshold": preset.get("gap_dist_threshold")
+                }
+        return None
+
+    def save_file_mapping_config(self, file_path: str, config: Dict[str, Any]) -> None:
+        """Saves remembered mapping configuration for a file path without modifying presets."""
+        raw_data = self._read_raw_file_mappings()
+        abs_path = os.path.abspath(file_path)
+        raw_data[abs_path] = {
+            "preset_slug": config.get("preset_slug"),
+            "mapping": dict(config.get("mapping", {})),
+            "local_calculated_channels": [dict(c) for c in config.get("local_calculated_channels", [])],
+            "gap_time_threshold": config.get("gap_time_threshold"),
+            "gap_dist_threshold": config.get("gap_dist_threshold")
+        }
+        write_versioned_json(self.file_mappings_file, 2, raw_data)
+        logger.info("Saved file mapping configuration for '%s' (preset_slug: %s, %d channels, %d calcs)",
+                    os.path.basename(file_path), config.get("preset_slug"),
+                    len(config.get("mapping", {})), len(config.get("local_calculated_channels", [])))
+
+    def remove_file_mapping_config(self, file_path: str) -> None:
+        """Removes remembered mapping configuration for a specific file path."""
+        raw_data = self._read_raw_file_mappings()
+        abs_path = os.path.abspath(file_path)
+        removed = False
+        if abs_path in raw_data:
+            del raw_data[abs_path]
+            removed = True
+        if file_path in raw_data:
+            del raw_data[file_path]
+            removed = True
+        if removed:
+            write_versioned_json(self.file_mappings_file, 2, raw_data)
+            logger.info("Removed file mapping configuration for '%s'", os.path.basename(file_path))
+
+    def load_file_presets(self) -> Dict[str, str]:
+        """Load mapping of file paths to their remembered preset slugs (for backwards compatibility)."""
+        raw_data = self._read_raw_file_mappings()
+        result = {}
+        for path, val in raw_data.items():
+            preset_ident = None
+            if isinstance(val, str):
+                preset_ident = val
+            elif isinstance(val, dict) and "preset_slug" in val and val["preset_slug"]:
+                preset_ident = val["preset_slug"]
+            elif isinstance(val, dict) and "preset_name" in val and val["preset_name"]:
+                preset_ident = val["preset_name"]
+
+            if preset_ident:
+                slug = self.get_preset_slug_by_name(preset_ident)
+                if not slug:
+                    p = self.get_preset_by_slug(preset_ident)
+                    slug = p["slug"] if p else generate_slug(preset_ident)
+                result[path] = slug
+        return result
 
     def get_file_preset(self, file_path: str) -> Optional[str]:
         """Returns remembered preset slug for a file path, or None."""
+        config = self.get_file_mapping_config(file_path)
+        if config and config.get("preset_slug"):
+            return config["preset_slug"]
         presets = self.load_file_presets()
         abs_path = os.path.abspath(file_path)
-        if abs_path in presets:
-            return presets[abs_path]
-        if file_path in presets:
-            return presets[file_path]
-        return None
+        return presets.get(abs_path) or presets.get(file_path)
 
     def save_file_preset(self, file_path: str, preset_slug: str) -> None:
-        """Remembers a preset slug for a specific file path."""
-        presets = self.load_file_presets()
-        abs_path = os.path.abspath(file_path)
-        presets[abs_path] = preset_slug
-        write_versioned_json(self.file_mappings_file, 2, presets)
-        logger.info("Saved file preset mapping: '%s' -> slug '%s'", os.path.basename(file_path), preset_slug)
+        """Remembers a preset slug for a specific file path (for backwards compatibility)."""
+        config = self.get_file_mapping_config(file_path) or {}
+        config["preset_slug"] = preset_slug
+        if not config.get("mapping") and preset_slug:
+            p = self.get_preset_by_slug(preset_slug) or self.get_preset_by_name(preset_slug)
+            if p:
+                config["mapping"] = p.get("mapping", {})
+                config["local_calculated_channels"] = p.get("local_calculated_channels", [])
+                config["gap_time_threshold"] = p.get("gap_time_threshold")
+                config["gap_dist_threshold"] = p.get("gap_dist_threshold")
+        self.save_file_mapping_config(file_path, config)
 
     def remove_file_preset(self, file_path: str) -> None:
         """Removes remembered preset slug for a specific file path."""
-        presets = self.load_file_presets()
-        abs_path = os.path.abspath(file_path)
-        removed = False
-        if abs_path in presets:
-            del presets[abs_path]
-            removed = True
-        if file_path in presets:
-            del presets[file_path]
-            removed = True
-        if removed:
-            write_versioned_json(self.file_mappings_file, 2, presets)
-            logger.info("Removed file preset mapping for '%s'", os.path.basename(file_path))
+        self.remove_file_mapping_config(file_path)
 
     def get_preset_match_stats(self, slug_or_name: str, raw_columns: List[str]) -> Dict[str, Any]:
         """

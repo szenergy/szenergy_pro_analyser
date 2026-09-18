@@ -449,7 +449,7 @@ class MainWindow(QMainWindow):
 
         raw_columns, preview_df = preview_dialog.result_data
 
-        remembered_slug = self.state_manager.get_file_preset(file_path)
+        remembered_config = self.state_manager.get_file_mapping_config(file_path) if self.state_manager else None
         chosen_mapping = None
         chosen_local_calcs = []
         chosen_gap_time = None
@@ -457,27 +457,30 @@ class MainWindow(QMainWindow):
         applied_preset_slug = None
         applied_preset_name = None
 
-        if remembered_slug:
-            preset = self.state_manager.get_preset_by_slug(remembered_slug)
-            if not preset:
-                preset = self.state_manager.get_preset_by_name(remembered_slug)
+        if remembered_config:
+            preset_slug = remembered_config.get("preset_slug")
+            preset = None
+            if preset_slug and self.state_manager:
+                preset = self.state_manager.get_preset_by_slug(preset_slug) or self.state_manager.get_preset_by_name(preset_slug)
 
-            if not preset:
+            if preset_slug and not preset:
                 QMessageBox.warning(
                     self, "Preset Not Found",
-                    f"The remembered preset '{remembered_slug}' for this file was not found.\n"
+                    f"The remembered preset '{preset_slug}' for this file was not found.\n"
                     "Please configure the channel mapping in the wizard."
                 )
-                matching_slug = self.state_manager.find_matching_preset(raw_columns)
-                matching_preset = self.state_manager.get_preset_by_slug(matching_slug) if matching_slug else None
+                matching_slug = self.state_manager.find_matching_preset(raw_columns) if self.state_manager else None
+                matching_preset = self.state_manager.get_preset_by_slug(matching_slug) if (self.state_manager and matching_slug) else None
                 wizard = ImportWizardDialog(
                     file_path=file_path,
                     raw_columns=raw_columns,
                     preview_df=preview_df,
                     state_manager=self.state_manager,
                     initial_preset=matching_slug,
-                    initial_gap_time_threshold=matching_preset.get("gap_time_threshold") if matching_preset else None,
-                    initial_gap_dist_threshold=matching_preset.get("gap_dist_threshold") if matching_preset else None,
+                    initial_mapping=remembered_config.get("mapping"),
+                    initial_local_calculated_channels=remembered_config.get("local_calculated_channels"),
+                    initial_gap_time_threshold=remembered_config.get("gap_time_threshold") or (matching_preset.get("gap_time_threshold") if matching_preset else None),
+                    initial_gap_dist_threshold=remembered_config.get("gap_dist_threshold") or (matching_preset.get("gap_dist_threshold") if matching_preset else None),
                     parent=self
                 )
                 if wizard.exec() != ImportWizardDialog.Accepted:
@@ -489,17 +492,17 @@ class MainWindow(QMainWindow):
                 applied_preset_slug = wizard.result_preset_slug
                 applied_preset_name = wizard.result_preset_name
             else:
-                preset_mapping = preset.get("mapping", {})
                 file_cols_set = set(raw_columns)
-                mapped_channels = {col: slug for col, slug in preset_mapping.items() if col in file_cols_set}
+                saved_mapping = remembered_config.get("mapping", {})
+                mapped_channels = {col: slug for col, slug in saved_mapping.items() if col in file_cols_set}
                 mapped_slugs = set(mapped_channels.values())
-                preset_calcs = preset.get("local_calculated_channels", [])
-                mapped_slugs.update([c.get("target_slug") for c in preset_calcs if c.get("target_slug")])
+                saved_calcs = remembered_config.get("local_calculated_channels", [])
+                mapped_slugs.update([c.get("target_slug") for c in saved_calcs if c.get("target_slug")])
 
                 # Check if all local calcs have their inputs available
                 avail = set(file_cols_set)
                 calcs_valid = True
-                for calc in preset_calcs:
+                for calc in saved_calcs:
                     for raw_col in calc.get("inputs", {}).values():
                         if raw_col not in avail:
                             calcs_valid = False
@@ -510,12 +513,15 @@ class MainWindow(QMainWindow):
                     if target_slug:
                         avail.add(target_slug)
 
-                if (STD_CH_LAP_NUM_SLUG not in mapped_slugs or
-                        (STD_CH_LAP_TIME_SLUG not in mapped_slugs and STD_CH_LAP_DIST_SLUG not in mapped_slugs) or
-                        not calcs_valid):
+                has_required_channels = (
+                    STD_CH_LAP_NUM_SLUG in mapped_slugs and
+                    (STD_CH_LAP_TIME_SLUG in mapped_slugs or STD_CH_LAP_DIST_SLUG in mapped_slugs)
+                )
+
+                if not has_required_channels or not calcs_valid:
                     QMessageBox.warning(
                         self, "Mapping Error",
-                        f"The remembered preset '{preset.get('name')}' is missing required channels for this file.\n"
+                        "The remembered configuration for this file is missing required channels.\n"
                         "Please configure the channel mapping in the wizard."
                     )
                     wizard = ImportWizardDialog(
@@ -523,9 +529,11 @@ class MainWindow(QMainWindow):
                         raw_columns=raw_columns,
                         preview_df=preview_df,
                         state_manager=self.state_manager,
-                        initial_preset=preset.get("slug"),
-                        initial_gap_time_threshold=preset.get("gap_time_threshold"),
-                        initial_gap_dist_threshold=preset.get("gap_dist_threshold"),
+                        initial_preset=remembered_config.get("preset_slug"),
+                        initial_mapping=remembered_config.get("mapping"),
+                        initial_local_calculated_channels=remembered_config.get("local_calculated_channels"),
+                        initial_gap_time_threshold=remembered_config.get("gap_time_threshold"),
+                        initial_gap_dist_threshold=remembered_config.get("gap_dist_threshold"),
                         parent=self
                     )
                     if wizard.exec() != ImportWizardDialog.Accepted:
@@ -537,16 +545,16 @@ class MainWindow(QMainWindow):
                     applied_preset_slug = wizard.result_preset_slug
                     applied_preset_name = wizard.result_preset_name
                 else:
-                    # Valid remembered preset - skip the wizard!
+                    # Valid remembered configuration - skip the wizard!
                     chosen_mapping = mapped_channels
-                    chosen_local_calcs = preset_calcs
-                    chosen_gap_time = preset.get("gap_time_threshold")
-                    chosen_gap_dist = preset.get("gap_dist_threshold")
-                    applied_preset_slug = preset.get("slug")
-                    applied_preset_name = preset.get("name")
+                    chosen_local_calcs = saved_calcs
+                    chosen_gap_time = remembered_config.get("gap_time_threshold")
+                    chosen_gap_dist = remembered_config.get("gap_dist_threshold")
+                    applied_preset_slug = remembered_config.get("preset_slug")
+                    applied_preset_name = self.state_manager.get_preset_name_by_slug(applied_preset_slug) if (self.state_manager and applied_preset_slug) else None
         else:
-            matching_slug = self.state_manager.find_matching_preset(raw_columns)
-            matching_preset = self.state_manager.get_preset_by_slug(matching_slug) if matching_slug else None
+            matching_slug = self.state_manager.find_matching_preset(raw_columns) if self.state_manager else None
+            matching_preset = self.state_manager.get_preset_by_slug(matching_slug) if (self.state_manager and matching_slug) else None
             wizard = ImportWizardDialog(
                 file_path=file_path,
                 raw_columns=raw_columns,

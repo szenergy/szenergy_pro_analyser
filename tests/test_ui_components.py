@@ -551,7 +551,7 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(state_mgr.get_file_preset(test_file), preset_slug)
 
     def test_import_wizard_remember_for_file_without_preset(self):
-        """Validates that mapping a file without a preset auto-saves a file-specific preset when remembered."""
+        """Validates that mapping a file without a preset saves file-specific config without creating a global preset."""
         state_mgr = StateManager(config_dir=self.temp_dir.name)
         test_file = "/tmp/no_preset_file.csv"
 
@@ -566,11 +566,13 @@ class TestUIComponents(unittest.TestCase):
         self.assertTrue(wizard.remember_checkbox.isChecked())
         wizard._on_submit()
 
-        remembered = state_mgr.get_file_preset(test_file)
-        self.assertIsNotNone(remembered)
-        saved_preset = state_mgr.get_preset_by_slug(remembered)
-        self.assertIsNotNone(saved_preset)
-        self.assertEqual(saved_preset["mapping"], {"Lap": "lap_num", "Time": "lap_time"})
+        config = state_mgr.get_file_mapping_config(test_file)
+        self.assertIsNotNone(config)
+        self.assertEqual(config["mapping"], {"Lap": "lap_num", "Time": "lap_time"})
+        self.assertIsNone(config["preset_slug"])
+
+        # Presets list must NOT contain any newly created file preset
+        self.assertEqual(len(state_mgr.load_presets()), 0)
 
     def test_file_mapping_manager_dialog(self):
         """Validates that FileMappingManagerDialog displays right-aligned paths and supports multi-select removal."""
@@ -3207,7 +3209,129 @@ class TestUIComponents(unittest.TestCase):
         self.assertEqual(connect[1], 0)
         # connect[0] should be 1 (connected because dt=1.0 <= 2.0)
         self.assertEqual(connect[0], 1)
-        widget.close()
+    def test_import_wizard_submit_does_not_mutate_preset(self):
+        """Validates that submitting the wizard with local calculations does NOT mutate the shared preset in presets.json."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        preset_slug = state_mgr.save_preset("TrackPreset", {
+            "Lap": "lap_num",
+            "Time": "lap_time",
+            "FL": "wheel_speed_fl",
+            "FR": "wheel_speed_fr"
+        })
+        # Verify initial preset has 0 local calcs
+        init_preset = state_mgr.get_preset_by_slug(preset_slug)
+        self.assertEqual(len(init_preset.get("local_calculated_channels", [])), 0)
+
+        test_file = os.path.join(self.temp_dir.name, "file_with_custom_calc.csv")
+        wizard = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time", "FL", "FR"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset=preset_slug
+        )
+        self.assertTrue(wizard.remember_checkbox.isChecked())
+
+        # Add a local calculated channel to wizard
+        custom_calc = {
+            "target_slug": "speed_diff",
+            "target_label": "Speed Diff",
+            "expression": "fl - fr",
+            "inputs": {"fl": "FL", "fr": "FR"}
+        }
+        wizard.local_calculated_channels.append(custom_calc)
+
+        # Submit wizard ("Import Data")
+        wizard._on_submit()
+
+        # 1. Global preset in presets.json MUST NOT BE MUTATED
+        reloaded_preset = state_mgr.get_preset_by_slug(preset_slug)
+        self.assertEqual(len(reloaded_preset.get("local_calculated_channels", [])), 0)
+
+        # 2. File config in file_mappings.json MUST contain the custom local calc
+        file_config = state_mgr.get_file_mapping_config(test_file)
+        self.assertIsNotNone(file_config)
+        self.assertEqual(len(file_config["local_calculated_channels"]), 1)
+        self.assertEqual(file_config["local_calculated_channels"][0]["target_slug"], "speed_diff")
+        self.assertEqual(file_config["preset_slug"], preset_slug)
+
+    def test_import_wizard_explicit_save_preset_button(self):
+        """Validates that clicking 'Save Preset' explicitly updates presets.json."""
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        preset_slug = state_mgr.save_preset("TrackPreset", {
+            "Lap": "lap_num",
+            "Time": "lap_time",
+            "FL": "wheel_speed_fl",
+            "FR": "wheel_speed_fr"
+        })
+
+        test_file = os.path.join(self.temp_dir.name, "file_save_preset.csv")
+        wizard = ImportWizardDialog(
+            file_path=test_file,
+            raw_columns=["Lap", "Time", "FL", "FR"],
+            preview_df=pd.DataFrame(),
+            state_manager=state_mgr,
+            initial_preset=preset_slug
+        )
+
+        custom_calc = {
+            "target_slug": "speed_diff",
+            "target_label": "Speed Diff",
+            "expression": "fl - fr",
+            "inputs": {"fl": "FL", "fr": "FR"}
+        }
+        wizard.local_calculated_channels.append(custom_calc)
+
+        # User explicitly clicks "Save Preset" button
+        with patch.object(QMessageBox, "information"):
+            wizard._on_save_preset()
+
+        # Global preset in presets.json MUST NOW BE UPDATED
+        reloaded_preset = state_mgr.get_preset_by_slug(preset_slug)
+        self.assertEqual(len(reloaded_preset.get("local_calculated_channels", [])), 1)
+        self.assertEqual(reloaded_preset["local_calculated_channels"][0]["target_slug"], "speed_diff")
+
+    def test_main_window_import_file_bypasses_with_file_specific_calcs(self):
+        """Validates that re-importing a remembered file bypasses wizard and uses file-specific local calcs."""
+        from ui.main_window import MainWindow
+        state_mgr = StateManager(config_dir=self.temp_dir.name)
+        win = MainWindow(state_manager=state_mgr)
+
+        csv_file = os.path.join(self.temp_dir.name, "bypass_log.csv")
+        df = pd.DataFrame({
+            "lap_raw": [1, 1, 2, 2],
+            "time_raw": [0.0, 1.0, 2.0, 3.0],
+            "val_a": [10.0, 20.0, 30.0, 40.0],
+            "val_b": [1.0, 2.0, 3.0, 4.0]
+        })
+        df.to_csv(csv_file, index=False)
+
+        # Save a file-specific configuration with a local calculated channel
+        file_config = {
+            "preset_slug": None,
+            "mapping": {"lap_raw": "lap_num", "time_raw": "lap_time"},
+            "local_calculated_channels": [{
+                "target_slug": "diff_val",
+                "target_label": "Diff Val",
+                "formula": "a - b",
+                "inputs": {"a": "val_a", "b": "val_b"}
+            }],
+            "gap_time_threshold": 3.5,
+            "gap_dist_threshold": 60.0
+        }
+        state_mgr.save_file_mapping_config(csv_file, file_config)
+
+        # Import file -> must bypass wizard and parse with local calculated channel
+        with patch("ui.main_window.ImportWizardDialog") as mock_wizard:
+            win._import_file(csv_file)
+            mock_wizard.assert_not_called()
+
+        self.assertEqual(len(win.sessions), 1)
+        session = list(win.sessions.values())[0]
+        self.assertIn("diff_val", session.channels)
+        self.assertEqual(session.gap_time_threshold, 3.5)
+        self.assertEqual(session.gap_dist_threshold, 60.0)
+        win.close()
 
 
 if __name__ == "__main__":

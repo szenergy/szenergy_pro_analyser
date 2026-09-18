@@ -944,60 +944,16 @@ class ImportWizardDialog(QDialog):
 
         if self.state_manager:
             if not self.remember_checkbox.isChecked():
-                self.state_manager.remove_file_preset(self.file_path)
+                self.state_manager.remove_file_mapping_config(self.file_path)
             else:
-                target_preset_slug = None
-                active_preset = None
-
-                # 1. Check if an existing preset is selected/loaded or matches entered name
-                if self.result_preset_slug:
-                    active_preset = self.state_manager.get_preset_by_slug(self.result_preset_slug)
-                elif self.loaded_preset_slug:
-                    active_preset = self.state_manager.get_preset_by_slug(self.loaded_preset_slug)
-                elif entered_preset and entered_preset != "None":
-                    active_preset = self.state_manager.get_preset_by_name(entered_preset) or self.state_manager.get_preset_by_slug(entered_preset)
-
-                if active_preset:
-                    # Update preset with any new or modified channels from this file, preserving other channels in preset
-                    updated_mapping = dict(active_preset.get("mapping", {}))
-                    updated_mapping.update(mapping)
-                    target_preset_slug = self.state_manager.save_preset(
-                        active_preset.get("name", entered_preset or "Preset"),
-                        updated_mapping,
-                        slug=active_preset.get("slug"),
-                        local_calculated_channels=self.local_calculated_channels,
-                        gap_time_threshold=self.result_gap_time_threshold,
-                        gap_dist_threshold=self.result_gap_dist_threshold
-                    )
-                    self.result_preset_slug = target_preset_slug
-                    self.result_preset_name = active_preset.get("name", entered_preset)
-                elif entered_preset and entered_preset != "None":
-                    # User entered a new preset name that doesn't exist yet
-                    target_preset_slug = self.state_manager.save_preset(
-                        entered_preset,
-                        mapping,
-                        local_calculated_channels=self.local_calculated_channels,
-                        gap_time_threshold=self.result_gap_time_threshold,
-                        gap_dist_threshold=self.result_gap_dist_threshold
-                    )
-                    self.result_preset_slug = target_preset_slug
-                    self.result_preset_name = entered_preset
-                else:
-                    # User left preset as None / empty, but checked "Remember for this file"
-                    # Auto-save a file-specific preset so the file's mapping is remembered
-                    file_preset_name = os.path.splitext(os.path.basename(self.file_path))[0]
-                    target_preset_slug = self.state_manager.save_preset(
-                        file_preset_name,
-                        mapping,
-                        local_calculated_channels=self.local_calculated_channels,
-                        gap_time_threshold=self.result_gap_time_threshold,
-                        gap_dist_threshold=self.result_gap_dist_threshold
-                    )
-                    self.result_preset_slug = target_preset_slug
-                    self.result_preset_name = file_preset_name
-
-                if target_preset_slug:
-                    self.state_manager.save_file_preset(self.file_path, target_preset_slug)
+                config = {
+                    "preset_slug": self.result_preset_slug,
+                    "mapping": self.result_mapping,
+                    "local_calculated_channels": self.result_local_calculated_channels,
+                    "gap_time_threshold": self.result_gap_time_threshold,
+                    "gap_dist_threshold": self.result_gap_dist_threshold
+                }
+                self.state_manager.save_file_mapping_config(self.file_path, config)
 
         logger.info("ImportWizardDialog submitted: %d channels mapped, %d local calcs, preset '%s' (slug: '%s')",
                     len(self.result_mapping), len(self.result_local_calculated_channels),

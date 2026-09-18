@@ -2,6 +2,10 @@
 Unit tests for UI helper logic: lap time formatting, color pool allocation, limits, and channel filtering.
 """
 
+import os
+# Ensure Qt runs in headless offscreen mode during unit tests without displaying UI windows
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import unittest
 from ui.sidebar import format_lap_time
 from utils.constants import LAP_COLORS

@@ -7,6 +7,7 @@ These rules and guidelines must be followed by AI coding agents working on the S
 ### 1. Test Verification & Visual Validation
 * There are and should be tests to verify your code before concluding work. Run the test suite to ensure there are no regressions.
 * Always use `.venv/bin/python` to run tests and python scripts.
+* Ensure tests run headlessly in offscreen mode (`QT_QPA_PLATFORM=offscreen`) so UI windows never pop up on the desktop.
 * The final verification of visual appearance, layout, and UX flows will always be done by the user (this is a visual GUI application and agents cannot see).
 
 ### 2. Keep It Simple (Scope Discipline)
@@ -37,3 +38,8 @@ These rules and guidelines must be followed by AI coding agents working on the S
 * Configured per file in Import Wizard (`ui/import_wizard.py`) and Edit Channel Mapping.
 * Stored on `Session` (`gap_time_threshold`, `gap_dist_threshold`) and persisted across presets, workspace state, and memory remapping.
 * Used during curve generation in `ui/graph_view.py` for each session/curve independently when gap filtering is active. Global menu configuration dialog is removed; global button toggles gap disconnection on/off.
+
+### 10. Global Presets vs. File-Specific Configurations Pattern
+* **Global Presets (`presets.json`)**: Reusable templates across files. Modified **only** when the user explicitly clicks the "Save Preset" button.
+* **File Configurations (`file_mappings.json`)**: Autonomous per-file memory saved when "Remember for this file" is checked on wizard submit ("Import Data" / "Apply Changes"). Submitting the wizard must **never** modify or create global presets in `presets.json`. Detailed flows documented in `docs/import_wizard_flows.md`.
+

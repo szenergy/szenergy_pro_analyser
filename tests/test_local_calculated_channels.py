@@ -9,6 +9,10 @@ import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
+
+# Ensure Qt runs in headless offscreen mode during unit tests without displaying UI windows
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import numpy as np
 import pandas as pd
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
