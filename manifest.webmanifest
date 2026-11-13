@@ -1,0 +1,1 @@
+{"name":"SZenergy Pro Analyser","short_name":"SZenergy Pro","description":"High-performance telemetry and lap analysis tool","start_url":"./","display":"standalone","background_color":"#191B1F","theme_color":"#191B1F","lang":"en","scope":"./","icons":[{"src":"szenergy_logo.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}

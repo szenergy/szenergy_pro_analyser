@@ -1,0 +1,10 @@
+# Ignore workspace source/build/sample dirs when checking out `pages` locally
+/apps/
+/crates/
+/target/
+/samples/
+/sample_data/
+node_modules/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
