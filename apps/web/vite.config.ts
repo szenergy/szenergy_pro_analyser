@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  base: './',
   plugins: [
     react(),
     VitePWA({
@@ -17,10 +18,11 @@ export default defineConfig({
         theme_color: '#191B1F',
         background_color: '#191B1F',
         display: 'standalone',
-        start_url: '/',
+        start_url: './',
+        scope: './',
         icons: [
           {
-            src: '/szenergy_logo.png',
+            src: 'szenergy_logo.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'any maskable',
