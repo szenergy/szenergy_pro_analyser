@@ -1,6 +1,28 @@
-**/__pycache__/
-sample_data/
-.venv/
-build/
+# Rust / Cargo / WASM
+/target/
+/apps/web/src/wasm/
+
+# Node / Bun / Vite / TypeScript
+node_modules/
 dist/
+build/
+dev-dist/
+.vite/
+*.tsbuildinfo
+
+# Sample telemetry logs (local only)
+sample_data/
+samples/
+
+# Legacy Python / Packaging
+**/__pycache__/
+.venv/
 SZenergyProAnalyzer.spec
+
+# Logs, Environment & OS
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db

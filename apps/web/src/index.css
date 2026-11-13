@@ -1,0 +1,195 @@
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Application Backgrounds */
+  --bg-app: #191B1F;
+  --bg-panel: #1E2125;
+  --bg-surface: #16181B;
+  --bg-elevated: #25282D;
+  --bg-input: #282C31;
+  --bg-button: #2A2E33;
+  --bg-button-hover: #353A40;
+  --bg-menu: #22252A;
+  --bg-canvas: #191B1F;
+
+  /* Borders & Hairlines */
+  --border-subtle: #2C3036;
+  --border-strong: #3A3F47;
+  --grid-line: rgba(255, 255, 255, 0.12);
+
+  /* Text Hierarchy */
+  --text-primary: #E0E0E0;
+  --text-strong: #FFFFFF;
+  --text-muted: #A0A0A0;
+  --text-menu: #D0D0D0;
+
+  /* Brand & Telemetry Accents */
+  --accent: #FFC815;
+  --accent-fg: #FFC815;
+  --accent-border: #D9A700;
+  --accent-text: #141414;
+  --accent-subtle: rgba(255, 200, 21, 0.16);
+
+  /* Graph Interaction Overlays */
+  --crosshair-color: #FFD740;
+  --zoom-box-border: #FFC815;
+  --zoom-box-fill: rgba(255, 200, 21, 0.18);
+
+  /* Status Colors */
+  --danger: #FF5252;
+  --danger-bg: rgba(255, 82, 82, 0.15);
+  --warning: #FFD740;
+  --info: #64B5F6;
+  --badge-bg: #2A2E35;
+
+  /* Scrollbars */
+  --scrollbar-track: #16181B;
+  --scrollbar-thumb: #3A3F47;
+  --scrollbar-thumb-hover: #FFC815;
+
+  /* 12-Color Lap Palette */
+  --lap-color-0: #FF0000;
+  --lap-color-1: #00FF00;
+  --lap-color-2: #0000FF;
+  --lap-color-3: #FFFF00;
+  --lap-color-4: #00FFFF;
+  --lap-color-5: #FF00FF;
+  --lap-color-6: #FF9600;
+  --lap-color-7: #FF0096;
+  --lap-color-8: #00FF96;
+  --lap-color-9: #96FF00;
+  --lap-color-10: #9600FF;
+  --lap-color-11: #0096FF;
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Application Backgrounds */
+  --bg-app: #FFFFFF;
+  --bg-panel: #F8F9FA;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #E9ECEF;
+  --bg-input: #FFFFFF;
+  --bg-button: #E9ECEF;
+  --bg-button-hover: #DEE2E6;
+  --bg-menu: #FFFFFF;
+  --bg-canvas: #FFFFFF;
+
+  /* Borders & Hairlines */
+  --border-subtle: #DEE2E6;
+  --border-strong: #CED4DA;
+  --grid-line: rgba(0, 0, 0, 0.12);
+
+  /* Text Hierarchy */
+  --text-primary: #212529;
+  --text-strong: #111315;
+  --text-muted: #495057;
+  --text-menu: #212529;
+
+  /* Brand & Telemetry Accents */
+  --accent: #FFC815;
+  --accent-fg: #9A7200;
+  --accent-border: #D9A700;
+  --accent-text: #141414;
+  --accent-subtle: rgba(255, 200, 21, 0.18);
+
+  /* Graph Interaction Overlays */
+  --crosshair-color: #FFD740;
+  --zoom-box-border: #E0AC00;
+  --zoom-box-fill: rgba(255, 200, 21, 0.22);
+
+  /* Status Colors */
+  --danger: #D32F2F;
+  --danger-bg: rgba(211, 47, 47, 0.12);
+  --warning: #F57C00;
+  --info: #1976D2;
+  --badge-bg: #E8EAF0;
+
+  /* Scrollbars */
+  --scrollbar-track: #F8F9FA;
+  --scrollbar-thumb: #CED4DA;
+  --scrollbar-thumb-hover: #FFC815;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* Modern Thin Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+.channel-row .channel-solo-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.channel-row:hover .channel-solo-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.channel-solo-btn:hover {
+  background: var(--accent-subtle) !important;
+  color: var(--accent-fg) !important;
+}
