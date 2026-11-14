@@ -1,14 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  Clock,
   Database,
   Download,
-  Edit2,
   FileSpreadsheet,
+  FolderOpen,
+  GripVertical,
   Layers,
   Map as MapIcon,
   Plus,
-  Sliders,
+  Search,
   Trash2,
   Upload,
   X,
@@ -18,10 +20,12 @@ import {
   stateManager,
 } from '@/state/stateManager';
 import {
-  ChannelDef,
-  FileMappingConfig,
+  ChannelGroupDef,
+  FileImportConfig,
+  isRequiredChannelGroupId,
   LAP_COLORS,
-  PresetDef,
+  RecentFileEntry,
+  SessionSummary,
   TrackMapDef,
 } from '@/types/telemetry';
 import { telemetryClient } from '@/workers/telemetryClient';
@@ -46,7 +50,7 @@ const modalStyle: React.CSSProperties = {
   border: '1px solid var(--border-strong)',
   borderRadius: 8,
   width: '100%',
-  maxWidth: 820,
+  maxWidth: 860,
   maxHeight: '88vh',
   display: 'flex',
   flexDirection: 'column',
@@ -103,98 +107,321 @@ const dangerBtnStyle: React.CSSProperties = {
 };
 
 // ---------------------------------------------------------------------------
-// 1. PresetManagerModal
+// 1. ChannelGroupManagerModal
 // ---------------------------------------------------------------------------
 
-export interface PresetManagerModalProps {
+export interface ChannelGroupManagerModalProps {
   isOpen: boolean;
+  sessions: SessionSummary[];
+  initialFocusGroupId?: string | null;
+  initialDraftChannels?: string[] | null;
   onClose: () => void;
-  onPresetsChanged?: () => void;
+  onGroupsUpdated: () => Promise<void> | void;
 }
 
-export const PresetManagerModal: React.FC<PresetManagerModalProps> = ({
+export const ChannelGroupManagerModal: React.FC<ChannelGroupManagerModalProps> = ({
   isOpen,
+  sessions,
+  initialFocusGroupId,
+  initialDraftChannels,
   onClose,
-  onPresetsChanged,
+  onGroupsUpdated,
 }) => {
-  const [presets, setPresets] = useState<PresetDef[]>([]);
-  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
-  const [renamingSlug, setRenamingSlug] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
-
-  const reload = useCallback(() => {
-    const list = stateManager.loadPresets();
-    setPresets(list);
-    if (list.length > 0 && !list.some((p) => p.slug === selectedSlug)) {
-      setSelectedSlug(list[0].slug);
-    } else if (list.length === 0) {
-      setSelectedSlug(null);
-    }
-  }, [selectedSlug]);
+  const [draftGroups, setDraftGroups] = useState<ChannelGroupDef[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draggedMember, setDraggedMember] = useState<string | null>(null);
+  const [dragOverMember, setDragOverMember] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
-    if (isOpen) {
-      reload();
-      setRenamingSlug(null);
+    if (!isOpen) return;
+    setErrorMsg('');
+    setSearch('');
+    const loaded = stateManager.getChannelGroups();
+
+    if (initialDraftChannels && initialDraftChannels.length > 0) {
+      const cleanDraft = Array.from(new Set(initialDraftChannels));
+      const draftSet = new Set(cleanDraft);
+      const cleanedLoaded = loaded.map((g) => ({
+        ...g,
+        channels: g.channels.filter((c) => !draftSet.has(c)),
+      }));
+      const newId = generateUniqueSlug(
+        `grp_${cleanDraft[0]}`,
+        cleanedLoaded.map((g) => g.id),
+      );
+      const draftGroup: ChannelGroupDef = {
+        id: newId,
+        name: cleanDraft[0],
+        unit: '',
+        channels: cleanDraft,
+      };
+      setDraftGroups([...cleanedLoaded, draftGroup]);
+      setSelectedId(newId);
+      return;
     }
-  }, [isOpen, reload]);
+
+    setDraftGroups(loaded);
+    if (initialFocusGroupId && loaded.some((g) => g.id === initialFocusGroupId)) {
+      setSelectedId(initialFocusGroupId);
+    } else if (loaded.length > 0) {
+      setSelectedId(loaded[0].id);
+    } else {
+      setSelectedId(null);
+    }
+  }, [isOpen, initialFocusGroupId, initialDraftChannels]);
+
+  const selectedGroup = useMemo(
+    () => draftGroups.find((g) => g.id === selectedId) ?? null,
+    [draftGroups, selectedId],
+  );
+
+  const editMembers = useMemo(
+    () => selectedGroup?.channels ?? [],
+    [selectedGroup],
+  );
+
+  const allRawChannels = useMemo(() => {
+    const sessionMap = new Map<string, string[]>();
+    for (const s of sessions) {
+      const seenInSession = new Set<string>();
+      for (const ch of s.channels) {
+        seenInSession.add(ch);
+      }
+      if (s.lap_col) seenInSession.add(s.lap_col);
+      if (s.time_col) seenInSession.add(s.time_col);
+      if (s.dist_col) seenInSession.add(s.dist_col);
+      for (const ch of seenInSession) {
+        const list = sessionMap.get(ch) ?? [];
+        list.push(s.name);
+        sessionMap.set(ch, list);
+      }
+    }
+    for (const g of draftGroups) {
+      for (const ch of g.channels) {
+        if (!sessionMap.has(ch)) {
+          sessionMap.set(ch, []);
+        }
+      }
+    }
+    return Array.from(sessionMap.entries())
+      .map(([name, sessionNames]) => ({ name, sessionNames }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [sessions, draftGroups]);
+
+  const unselectedChannels = useMemo(() => {
+    const memberSet = new Set(editMembers);
+    const q = search.trim().toLowerCase();
+    return allRawChannels.filter((c) => {
+      if (memberSet.has(c.name)) return false;
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q);
+    });
+  }, [allRawChannels, editMembers, search]);
+
+  const filteredSelectedMembers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return editMembers;
+    return editMembers.filter((m) => m.toLowerCase().includes(q));
+  }, [editMembers, search]);
+
+  const channelSessionCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of allRawChannels) {
+      map.set(c.name, c.sessionNames.length);
+    }
+    return map;
+  }, [allRawChannels]);
+
+  const draftGroupForChannel = useMemo(() => {
+    const map = new Map<string, ChannelGroupDef>();
+    for (const g of draftGroups) {
+      for (const ch of g.channels) {
+        map.set(ch, g);
+      }
+    }
+    return map;
+  }, [draftGroups]);
 
   if (!isOpen) return null;
 
-  const selected = presets.find((p) => p.slug === selectedSlug) ?? null;
-
-  const handleStartRename = (preset: PresetDef) => {
-    setRenamingSlug(preset.slug);
-    setRenameValue(preset.name);
+  const updateSelectedGroup = (updater: (grp: ChannelGroupDef) => ChannelGroupDef) => {
+    if (!selectedId) return;
+    setErrorMsg('');
+    setDraftGroups((prev) =>
+      prev.map((g) => (g.id === selectedId ? updater(g) : g)),
+    );
   };
 
-  const handleConfirmRename = async (preset: PresetDef) => {
-    const trimmed = renameValue.trim();
-    if (trimmed && trimmed !== preset.name) {
-      await stateManager.savePreset(trimmed, preset.mapping, {
-        slug: preset.slug,
-        localCalculatedChannels: preset.local_calculated_channels,
-        gapTimeThreshold: preset.gap_time_threshold,
-        gapDistThreshold: preset.gap_dist_threshold,
+  const reorderMember = (fromName: string, toName: string) => {
+    if (fromName === toName) return;
+    updateSelectedGroup((grp) => {
+      const fromIdx = grp.channels.indexOf(fromName);
+      const toIdx = grp.channels.indexOf(toName);
+      if (fromIdx < 0 || toIdx < 0) return grp;
+      const next = [...grp.channels];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return { ...grp, channels: next };
+    });
+  };
+
+  const handleSelectGroup = (grp: ChannelGroupDef) => {
+    setErrorMsg('');
+    setSelectedId(grp.id);
+  };
+
+  const handleStartNew = () => {
+    setErrorMsg('');
+    const newId = generateUniqueSlug(
+      'grp_new_group',
+      draftGroups.map((g) => g.id),
+    );
+    const newGroup: ChannelGroupDef = {
+      id: newId,
+      name: 'New Group',
+      unit: '',
+      channels: [],
+    };
+    setDraftGroups((prev) => [...prev, newGroup]);
+    setSelectedId(newId);
+  };
+
+  const handleToggleMember = (chName: string) => {
+    if (!selectedId) return;
+    setErrorMsg('');
+    setDraftGroups((prev) => {
+      const target = prev.find((g) => g.id === selectedId);
+      if (!target) return prev;
+      const isRemoving = target.channels.includes(chName);
+      if (isRemoving) {
+        return prev.map((g) => {
+          if (g.id !== selectedId) return g;
+          const nextTransforms = g.transforms ? { ...g.transforms } : undefined;
+          if (nextTransforms) delete nextTransforms[chName];
+          return {
+            ...g,
+            channels: g.channels.filter((c) => c !== chName),
+            transforms: nextTransforms,
+          };
+        });
+      }
+      return prev.map((g) => {
+        if (g.id === selectedId) {
+          return { ...g, channels: [...g.channels, chName] };
+        }
+        const nextTransforms = g.transforms ? { ...g.transforms } : undefined;
+        if (nextTransforms) delete nextTransforms[chName];
+        return {
+          ...g,
+          channels: g.channels.filter((c) => c !== chName),
+          transforms: nextTransforms,
+        };
       });
-      onPresetsChanged?.();
-      reload();
-    }
-    setRenamingSlug(null);
+    });
   };
 
-  const handleDelete = (slug: string) => {
-    stateManager.deletePreset(slug);
-    onPresetsChanged?.();
-    reload();
+  const handleTransformChange = (chName: string, field: 'factor' | 'offset', rawValue: string) => {
+    const num = Number(rawValue);
+    const val = Number.isFinite(num) ? num : field === 'factor' ? 1 : 0;
+    updateSelectedGroup((grp) => {
+      const current = grp.transforms?.[chName] ?? { factor: 1, offset: 0 };
+      const next = {
+        factor: field === 'factor' ? val : current.factor,
+        offset: field === 'offset' ? val : current.offset,
+      };
+      const nextTransforms = { ...(grp.transforms ?? {}) };
+      if (next.factor === 1 && next.offset === 0) {
+        delete nextTransforms[chName];
+      } else {
+        nextTransforms[chName] = next;
+      }
+      return {
+        ...grp,
+        transforms: Object.keys(nextTransforms).length > 0 ? nextTransforms : undefined,
+      };
+    });
+  };
+
+  const handleDelete = (id: string) => {
+    if (isRequiredChannelGroupId(id)) return;
+    setErrorMsg('');
+    setDraftGroups((prev) => {
+      const next = prev.filter((g) => g.id !== id);
+      if (selectedId === id) {
+        setSelectedId(next[0]?.id ?? null);
+      }
+      return next;
+    });
+  };
+
+  const handleSaveAll = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setErrorMsg('');
+    for (const g of draftGroups) {
+      const cleanName = g.name.trim();
+      if (!cleanName) {
+        setSelectedId(g.id);
+        setErrorMsg('Every group must have a non-empty name.');
+        return;
+      }
+      if (!isRequiredChannelGroupId(g.id) && g.channels.length === 0) {
+        setSelectedId(g.id);
+        setErrorMsg(`Group "${cleanName}" must include at least one channel.`);
+        return;
+      }
+    }
+
+    const cleaned = draftGroups.map((g) => ({
+      ...g,
+      name: g.name.trim(),
+      unit: g.unit.trim(),
+      channels: [...g.channels],
+      ...(g.transforms ? { transforms: { ...g.transforms } } : {}),
+    }));
+    await stateManager.saveChannelGroups(cleaned);
+    await onGroupsUpdated();
+    onClose();
   };
 
   return (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+      <form
+        onSubmit={(e) => void handleSaveAll(e)}
+        style={modalStyle}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div style={headerStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, color: 'var(--text-strong)' }}>
-            <Sliders size={16} style={{ color: 'var(--accent)' }} />
-            <span>Preset Manager</span>
+            <Layers size={16} style={{ color: 'var(--accent)' }} />
+            <span>Channel Group Manager</span>
           </div>
-          <button type="button" onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+          >
             <X size={18} />
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', flex: 1, minHeight: 360, overflow: 'hidden' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', flex: 1, minHeight: 400, overflow: 'hidden' }}>
+          {/* Left: Group List */}
           <div style={{ borderRight: '1px solid var(--border-subtle)', overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {presets.length === 0 ? (
-              <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 16, textAlign: 'center' }}>
-                No saved presets.
+            {draftGroups.length === 0 ? (
+              <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16, textAlign: 'center' }}>
+                No channel groups yet. Create one to combine channels with different names across logs.
               </div>
             ) : (
-              presets.map((p) => {
-                const isSelected = p.slug === selectedSlug;
+              draftGroups.map((g) => {
+                const isSelected = g.id === selectedId;
+                const isRequired = isRequiredChannelGroupId(g.id);
                 return (
                   <div
-                    key={p.slug}
-                    onClick={() => setSelectedSlug(p.slug)}
+                    key={g.id}
+                    onClick={() => handleSelectGroup(g)}
                     style={{
                       padding: '8px 10px',
                       borderRadius: 6,
@@ -203,40 +430,41 @@ export const PresetManagerModal: React.FC<PresetManagerModalProps> = ({
                       border: `1px solid ${isSelected ? 'var(--accent-border)' : 'var(--border-subtle)'}`,
                     }}
                   >
-                    {renamingSlug === p.slug ? (
-                      <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="text"
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleConfirmRename(p);
-                            if (e.key === 'Escape') setRenamingSlug(null);
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {g.name || 'Untitled'}
+                        {g.unit ? ` [${g.unit}]` : ''}
+                      </span>
+                      {isRequired ? (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            padding: '2px 5px',
+                            borderRadius: 4,
+                            backgroundColor: 'var(--badge-bg)',
+                            color: 'var(--text-muted)',
+                            flexShrink: 0,
                           }}
-                          style={{ ...inputStyle, padding: '3px 6px', fontSize: 12 }}
-                          autoFocus
-                        />
-                        <button type="button" onClick={() => handleConfirmRename(p)} style={{ ...primaryBtnStyle, padding: '3px 6px' }}>
-                          <Check size={12} />
-                        </button>
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                        <span style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {p.name}
+                        >
+                          Required
                         </span>
-                        <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
-                          <button type="button" onClick={() => handleStartRename(p)} title="Rename" style={{ ...btnStyle, padding: '3px 6px' }}>
-                            <Edit2 size={12} />
-                          </button>
-                          <button type="button" onClick={() => handleDelete(p.slug)} title="Delete" style={{ ...dangerBtnStyle, padding: '3px 6px' }}>
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(g.id);
+                          }}
+                          style={{ ...dangerBtnStyle, padding: '3px 6px' }}
+                          title="Delete Group"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                      {Object.keys(p.mapping).length} channels · {p.local_calculated_channels.length} local calcs
+                      {g.channels.length} channel{g.channels.length === 1 ? '' : 's'}
                     </div>
                   </div>
                 );
@@ -244,340 +472,348 @@ export const PresetManagerModal: React.FC<PresetManagerModalProps> = ({
             )}
           </div>
 
-          <div style={{ overflowY: 'auto', padding: 16 }}>
-            {!selected ? (
+          {/* Right: Group Editor */}
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: 16, gap: 12 }}>
+            {!selectedGroup ? (
               <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', paddingTop: 40 }}>
-                Select a preset to inspect its mapping.
+                Select a group or click "New Group".
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: 'var(--text-muted)' }}>
-                  <span>Slug: <strong style={{ color: 'var(--text-primary)' }}>{selected.slug}</strong></span>
-                  <span>Gap Time: <strong style={{ color: 'var(--text-primary)' }}>{selected.gap_time_threshold ?? 'default'} s</strong></span>
-                  <span>Gap Dist: <strong style={{ color: 'var(--text-primary)' }}>{selected.gap_dist_threshold ?? 'default'} m</strong></span>
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px', gap: 10 }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                    <span>Group Name</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Vehicle Speed"
+                      value={selectedGroup.name}
+                      disabled={isRequiredChannelGroupId(selectedGroup.id)}
+                      onChange={(e) =>
+                        updateSelectedGroup((g) => ({ ...g, name: e.target.value }))
+                      }
+                      style={{
+                        ...inputStyle,
+                        opacity: isRequiredChannelGroupId(selectedGroup.id) ? 0.7 : 1,
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+                    <span>Unit (optional)</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. km/h"
+                      value={selectedGroup.unit}
+                      disabled={isRequiredChannelGroupId(selectedGroup.id)}
+                      onChange={(e) =>
+                        updateSelectedGroup((g) => ({ ...g, unit: e.target.value }))
+                      }
+                      style={{
+                        ...inputStyle,
+                        opacity: isRequiredChannelGroupId(selectedGroup.id) ? 0.7 : 1,
+                      }}
+                    />
+                  </label>
                 </div>
 
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-strong)' }}>
-                    Column Mapping ({Object.keys(selected.mapping).length})
-                  </div>
-                  <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, overflow: 'hidden' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ backgroundColor: 'var(--bg-surface)', textAlign: 'left', color: 'var(--text-muted)' }}>
-                          <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-subtle)' }}>Raw Column</th>
-                          <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-subtle)' }}>Target Channel</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {Object.entries(selected.mapping).map(([rawCol, targetSlug]) => (
-                          <tr key={rawCol} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                            <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{rawCol}</td>
-                            <td style={{ padding: '6px 10px' }}>
-                              {stateManager.getDisplayNameBySlug(targetSlug)} <span style={{ color: 'var(--text-muted)' }}>({targetSlug})</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}>
+                    Member Channels ({editMembers.length} selected — drag to set priority, top = highest)
+                  </span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '4px 8px',
+                      backgroundColor: 'var(--bg-input)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 4,
+                      width: 220,
+                    }}
+                  >
+                    <Search size={12} style={{ color: 'var(--text-muted)' }} />
+                    <input
+                      type="text"
+                      placeholder="Filter channels..."
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      style={{
+                        flex: 1,
+                        background: 'transparent',
+                        border: 'none',
+                        outline: 'none',
+                        color: 'var(--text-primary)',
+                        fontSize: 12,
+                      }}
+                    />
                   </div>
                 </div>
 
-                {selected.local_calculated_channels.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-strong)' }}>
-                      Local Calculated Channels ({selected.local_calculated_channels.length})
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 6,
+                    backgroundColor: 'var(--bg-surface)',
+                  }}
+                >
+                  {filteredSelectedMembers.length === 0 && unselectedChannels.length === 0 ? (
+                    <div style={{ padding: 16, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
+                      {allRawChannels.length === 0 && editMembers.length === 0
+                        ? 'Load telemetry files to pick channels.'
+                        : 'No channels match your filter.'}
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {selected.local_calculated_channels.map((lc) => (
-                        <div key={lc.target_slug} style={{ padding: '6px 10px', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 4, fontSize: 12 }}>
-                          <strong>{lc.name}</strong> → <code>{lc.formula}</code>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  ) : (
+                    <>
+                      {filteredSelectedMembers.map((chName) => {
+                        const priorityIdx = editMembers.indexOf(chName) + 1;
+                        const fileCount = channelSessionCounts.get(chName) ?? 0;
+                        const isDragTarget = dragOverMember === chName && draggedMember !== chName;
+                        const tr = selectedGroup.transforms?.[chName];
+                        const factorVal = tr?.factor ?? 1;
+                        const offsetVal = tr?.offset ?? 0;
+                        return (
+                          <div
+                            key={`sel:${chName}`}
+                            draggable
+                            onDragStart={(e) => {
+                              setDraggedMember(chName);
+                              e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              if (draggedMember && dragOverMember !== chName) {
+                                setDragOverMember(chName);
+                              }
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (draggedMember) {
+                                reorderMember(draggedMember, chName);
+                              }
+                              setDraggedMember(null);
+                              setDragOverMember(null);
+                            }}
+                            onDragEnd={() => {
+                              setDraggedMember(null);
+                              setDragOverMember(null);
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              padding: '6px 10px',
+                              borderBottom: '1px solid var(--border-subtle)',
+                              borderTop: isDragTarget ? '2px solid var(--accent)' : undefined,
+                              fontSize: 12,
+                              backgroundColor: 'var(--accent-subtle)',
+                              opacity: draggedMember === chName ? 0.5 : 1,
+                              cursor: 'grab',
+                            }}
+                          >
+                            <GripVertical size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                            <span
+                              className="tabular-nums"
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 600,
+                                color: 'var(--accent)',
+                                minWidth: 18,
+                              }}
+                            >
+                              #{priorityIdx}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked
+                              onChange={() => handleToggleMember(chName)}
+                              style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
+                            />
+                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 12 }}>
+                              {chName}
+                            </span>
+                            {!isRequiredChannelGroupId(selectedGroup.id) && (
+                              <div
+                                draggable={false}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onDragStart={(e) => e.preventDefault()}
+                                style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                              >
+                                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>×</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  aria-label={`Factor for ${chName}`}
+                                  title="Multiplier factor: (raw * factor) + offset"
+                                  value={factorVal}
+                                  onChange={(e) => handleTransformChange(chName, 'factor', e.target.value)}
+                                  style={{
+                                    ...inputStyle,
+                                    width: 60,
+                                    padding: '2px 5px',
+                                    fontSize: 11,
+                                  }}
+                                />
+                                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  aria-label={`Offset for ${chName}`}
+                                  title="Offset: (raw * factor) + offset"
+                                  value={offsetVal}
+                                  onChange={(e) => handleTransformChange(chName, 'offset', e.target.value)}
+                                  style={{
+                                    ...inputStyle,
+                                    width: 60,
+                                    padding: '2px 5px',
+                                    fontSize: 11,
+                                  }}
+                                />
+                              </div>
+                            )}
+                            {fileCount > 0 && (
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>
+                                {fileCount} file{fileCount === 1 ? '' : 's'}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {unselectedChannels.map((ch) => {
+                        const otherGroup = draftGroupForChannel.get(ch.name);
+                        const inOtherGroup =
+                          otherGroup && otherGroup.id !== selectedId ? otherGroup.name : null;
+                        return (
+                          <label
+                            key={ch.name}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              padding: '6px 10px',
+                              borderBottom: '1px solid var(--border-subtle)',
+                              fontSize: 12,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={false}
+                              onChange={() => handleToggleMember(ch.name)}
+                              style={{ accentColor: 'var(--accent)' }}
+                            />
+                            <span style={{ flex: 1, fontFamily: 'monospace', fontSize: 12 }}>
+                              {ch.name}
+                            </span>
+                            {inOtherGroup && (
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                in {inOtherGroup}
+                              </span>
+                            )}
+                            {ch.sessionNames.length > 0 && (
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                {ch.sessionNames.length} file{ch.sessionNames.length === 1 ? '' : 's'}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+
+                {errorMsg && (
+                  <div style={{ color: 'var(--danger)', fontSize: 12 }}>{errorMsg}</div>
                 )}
-              </div>
+              </>
             )}
           </div>
         </div>
-      </div>
-    </div>
-  );
-};
 
-// ---------------------------------------------------------------------------
-// 2. ChannelManagerModal
-// ---------------------------------------------------------------------------
-
-export interface ChannelManagerModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onChannelsUpdated: () => void;
-  onOpenGlobalCalc?: (editing?: ChannelDef) => void;
-}
-
-export const ChannelManagerModal: React.FC<ChannelManagerModalProps> = ({
-  isOpen,
-  onClose,
-  onChannelsUpdated,
-  onOpenGlobalCalc,
-}) => {
-  const [channels, setChannels] = useState<ChannelDef[]>([]);
-  const [newLabel, setNewLabel] = useState('');
-  const [newUnit, setNewUnit] = useState('');
-  const [editingSlug, setEditingSlug] = useState<string | null>(null);
-  const [editLabel, setEditLabel] = useState('');
-  const [editUnit, setEditUnit] = useState('');
-
-  const reload = useCallback(() => {
-    setChannels(stateManager.getChannelDefs());
-  }, []);
-
-  useEffect(() => {
-    if (isOpen) {
-      reload();
-      setEditingSlug(null);
-      setNewLabel('');
-      setNewUnit('');
-    }
-  }, [isOpen, reload]);
-
-  if (!isOpen) return null;
-
-  const handleAddCustom = (e: React.FormEvent) => {
-    e.preventDefault();
-    const label = newLabel.trim();
-    if (!label) return;
-    const existingSlugs = channels.map((c) => c.slug);
-    const slug = generateUniqueSlug(label, existingSlugs);
-    const updated: ChannelDef[] = [
-      ...channels,
-      { label, slug, type: 'custom', unit: newUnit.trim() },
-    ];
-    stateManager.saveChannelDefs(updated);
-    setNewLabel('');
-    setNewUnit('');
-    reload();
-    onChannelsUpdated();
-  };
-
-  const handleStartEdit = (ch: ChannelDef) => {
-    setEditingSlug(ch.slug);
-    setEditLabel(ch.label);
-    setEditUnit(ch.unit);
-  };
-
-  const handleSaveEdit = (ch: ChannelDef) => {
-    const label = editLabel.trim();
-    if (!label) return;
-    const updated = channels.map((c) =>
-      c.slug === ch.slug ? { ...c, label, unit: editUnit.trim() } : c,
-    );
-    stateManager.saveChannelDefs(updated);
-    setEditingSlug(null);
-    reload();
-    onChannelsUpdated();
-  };
-
-  const handleDelete = (slug: string) => {
-    const updated = channels.filter((c) => c.slug !== slug || c.type === 'system');
-    stateManager.saveChannelDefs(updated);
-    reload();
-    onChannelsUpdated();
-  };
-
-  return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
-        <div style={headerStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, color: 'var(--text-strong)' }}>
-            <Layers size={16} style={{ color: 'var(--accent)' }} />
-            <span>Channel Manager</span>
-          </div>
-          <button type="button" onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <X size={18} />
+        {/* Footer */}
+        <div
+          style={{
+            padding: '10px 16px',
+            borderTop: '1px solid var(--border-subtle)',
+            backgroundColor: 'var(--bg-surface)',
+            borderBottomLeftRadius: 8,
+            borderBottomRightRadius: 8,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <button type="button" onClick={handleStartNew} style={btnStyle}>
+            <Plus size={13} />
+            New Group
           </button>
-        </div>
-
-        <div style={{ padding: 16, borderBottom: '1px solid var(--border-subtle)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-          <form onSubmit={handleAddCustom} style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1, minWidth: 320 }}>
-            <input
-              type="text"
-              placeholder="New custom channel label..."
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              style={{ ...inputStyle, flex: 2 }}
-            />
-            <input
-              type="text"
-              placeholder="Unit (e.g. km/h)"
-              value={newUnit}
-              onChange={(e) => setNewUnit(e.target.value)}
-              style={{ ...inputStyle, flex: 1, maxWidth: 130 }}
-            />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={onClose} style={btnStyle}>
+              Cancel
+            </button>
             <button type="submit" style={primaryBtnStyle}>
-              <Plus size={14} />
-              Add Custom
+              <Check size={14} />
+              <span>Save</span>
             </button>
-          </form>
-
-          {onOpenGlobalCalc && (
-            <button type="button" onClick={() => onOpenGlobalCalc(undefined)} style={btnStyle}>
-              <Plus size={14} />
-              New Calculated Channel
-            </button>
-          )}
+          </div>
         </div>
-
-        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-subtle)' }}>
-                <th style={{ padding: '6px 8px' }}>Label</th>
-                <th style={{ padding: '6px 8px' }}>Unit</th>
-                <th style={{ padding: '6px 8px' }}>Slug</th>
-                <th style={{ padding: '6px 8px' }}>Type</th>
-                <th style={{ padding: '6px 8px', textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {channels.map((ch) => {
-                const isEditing = editingSlug === ch.slug;
-                return (
-                  <tr key={ch.slug} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    <td style={{ padding: '8px' }}>
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          value={editLabel}
-                          onChange={(e) => setEditLabel(e.target.value)}
-                          style={inputStyle}
-                        />
-                      ) : (
-                        <span style={{ fontWeight: 500 }}>{ch.label}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '8px', width: 110 }}>
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          value={editUnit}
-                          onChange={(e) => setEditUnit(e.target.value)}
-                          style={inputStyle}
-                        />
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)' }}>{ch.unit || '—'}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '8px', fontFamily: 'monospace', fontSize: 12, color: 'var(--text-muted)' }}>
-                      {ch.slug}
-                    </td>
-                    <td style={{ padding: '8px' }}>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          padding: '2px 6px',
-                          borderRadius: 4,
-                          backgroundColor: 'var(--badge-bg)',
-                          color: ch.type === 'system' ? 'var(--info)' : ch.type === 'calculated' ? 'var(--warning)' : 'var(--accent)',
-                        }}
-                      >
-                        {ch.type}
-                      </span>
-                    </td>
-                    <td style={{ padding: '8px', textAlign: 'right' }}>
-                      <div style={{ display: 'inline-flex', gap: 4 }}>
-                        {isEditing ? (
-                          <>
-                            <button type="button" onClick={() => handleSaveEdit(ch)} style={primaryBtnStyle}>
-                              <Check size={12} />
-                            </button>
-                            <button type="button" onClick={() => setEditingSlug(null)} style={btnStyle}>
-                              <X size={12} />
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            {ch.type === 'calculated' && onOpenGlobalCalc && (
-                              <button
-                                type="button"
-                                onClick={() => onOpenGlobalCalc(ch)}
-                                title="Edit Formula"
-                                style={btnStyle}
-                              >
-                                Formula
-                              </button>
-                            )}
-                            <button type="button" onClick={() => handleStartEdit(ch)} title="Edit Label/Unit" style={btnStyle}>
-                              <Edit2 size={12} />
-                            </button>
-                            {ch.type !== 'system' && (
-                              <button type="button" onClick={() => handleDelete(ch.slug)} title="Delete" style={dangerBtnStyle}>
-                                <Trash2 size={12} />
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      </form>
     </div>
   );
 };
 
 // ---------------------------------------------------------------------------
-// 3. FileMappingManagerModal
+// 2. RememberedImportsModal
 // ---------------------------------------------------------------------------
 
-export interface FileMappingManagerModalProps {
+export interface RememberedImportsModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-export const FileMappingManagerModal: React.FC<FileMappingManagerModalProps> = ({
+export const RememberedImportsModal: React.FC<RememberedImportsModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [mappings, setMappings] = useState<Record<string, FileMappingConfig>>({});
+  const [draftImports, setDraftImports] = useState<Record<string, FileImportConfig>>({});
   const [selectedSig, setSelectedSig] = useState<string | null>(null);
 
-  const reload = useCallback(() => {
-    const all = stateManager.getAllFileMappings();
-    setMappings(all);
-    const keys = Object.keys(all);
-    if (keys.length > 0 && (!selectedSig || !all[selectedSig])) {
-      setSelectedSig(keys[0]);
-    } else if (keys.length === 0) {
-      setSelectedSig(null);
-    }
-  }, [selectedSig]);
-
   useEffect(() => {
-    if (isOpen) {
-      reload();
-    }
-  }, [isOpen, reload]);
+    if (!isOpen) return;
+    const all = stateManager.getAllFileImports();
+    setDraftImports(all);
+    const keys = Object.keys(all);
+    setSelectedSig(keys.length > 0 ? keys[0] : null);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const entries = Object.entries(mappings);
-  const selected = selectedSig ? mappings[selectedSig] : null;
+  const entries = Object.entries(draftImports);
+  const selected = selectedSig ? draftImports[selectedSig] : null;
 
   const handleDelete = (sig: string) => {
-    stateManager.removeFileMappingConfig(sig);
-    reload();
+    setDraftImports((prev) => {
+      const next = { ...prev };
+      delete next[sig];
+      if (selectedSig === sig) {
+        const remaining = Object.keys(next);
+        setSelectedSig(remaining[0] ?? null);
+      }
+      return next;
+    });
   };
 
   const handleClearAll = () => {
-    stateManager.clearFileMappings();
-    reload();
+    setDraftImports({});
+    setSelectedSig(null);
+  };
+
+  const handleSave = async () => {
+    await stateManager.replaceAllFileImports(draftImports);
+    onClose();
   };
 
   return (
@@ -586,26 +822,23 @@ export const FileMappingManagerModal: React.FC<FileMappingManagerModalProps> = (
         <div style={headerStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, color: 'var(--text-strong)' }}>
             <Database size={16} style={{ color: 'var(--accent)' }} />
-            <span>Remembered File Mappings</span>
+            <span>Remembered File Imports</span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {entries.length > 0 && (
-              <button type="button" onClick={handleClearAll} style={dangerBtnStyle}>
-                <Trash2 size={12} />
-                Clear All
-              </button>
-            )}
-            <button type="button" onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-              <X size={18} />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+          >
+            <X size={18} />
+          </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', flex: 1, minHeight: 360, overflow: 'hidden' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', flex: 1, minHeight: 340, overflow: 'hidden' }}>
           <div style={{ borderRight: '1px solid var(--border-subtle)', overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {entries.length === 0 ? (
               <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 16, textAlign: 'center' }}>
-                No remembered file mappings.
+                No remembered file imports.
               </div>
             ) : (
               entries.map(([sig, cfg]) => {
@@ -640,7 +873,8 @@ export const FileMappingManagerModal: React.FC<FileMappingManagerModalProps> = (
                       </button>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                      Preset: {cfg.preset_slug ?? 'none'} · {Object.keys(cfg.mapping).length} mapped · {cfg.local_calculated_channels.length} calcs
+                      {cfg.sheet_name ? `Sheet: ${cfg.sheet_name} · ` : ''}
+                      Lap: {cfg.lap_col}
                     </div>
                   </div>
                 );
@@ -651,33 +885,72 @@ export const FileMappingManagerModal: React.FC<FileMappingManagerModalProps> = (
           <div style={{ overflowY: 'auto', padding: 16 }}>
             {!selected || !selectedSig ? (
               <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', paddingTop: 40 }}>
-                Select a file mapping entry to inspect.
+                Select a remembered import to inspect.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+                <div style={{ color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                   Signature: <code style={{ color: 'var(--text-primary)' }}>{selectedSig}</code>
                 </div>
-                <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, overflow: 'hidden' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ backgroundColor: 'var(--bg-surface)', textAlign: 'left', color: 'var(--text-muted)' }}>
-                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-subtle)' }}>Raw Column</th>
-                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-subtle)' }}>Target Channel</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(selected.mapping).map(([rawCol, targetSlug]) => (
-                        <tr key={rawCol} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                          <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{rawCol}</td>
-                          <td style={{ padding: '6px 10px' }}>{stateManager.getDisplayNameBySlug(targetSlug)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                {selected.sheet_name && (
+                  <div>
+                    Worksheet: <strong>{selected.sheet_name}</strong>
+                  </div>
+                )}
+                <div>
+                  Lap Number: <code>{selected.lap_col}</code>
                 </div>
+                <div>
+                  Lap Time: <code>{selected.time_col ?? '—'}</code>
+                </div>
+                <div>
+                  Lap Distance: <code>{selected.dist_col ?? '—'}</code>
+                </div>
+                {selected.group_overrides && Object.keys(selected.group_overrides).length > 0 && (
+                  <div>
+                    Group Overrides:{' '}
+                    <code>
+                      {Object.entries(selected.group_overrides)
+                        .map(([gid, ov]) => `${stateManager.getDisplayNameByKey(gid)} -> ${ov.channel} (×${ov.factor} + ${ov.offset})`)
+                        .join('; ')}
+                    </code>
+                  </div>
+                )}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            padding: '10px 16px',
+            borderTop: '1px solid var(--border-subtle)',
+            backgroundColor: 'var(--bg-surface)',
+            borderBottomLeftRadius: 8,
+            borderBottomRightRadius: 8,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <div>
+            {entries.length > 0 && (
+              <button type="button" onClick={handleClearAll} style={dangerBtnStyle}>
+                <Trash2 size={12} />
+                Clear All
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={onClose} style={btnStyle}>
+              Cancel
+            </button>
+            <button type="button" onClick={() => void handleSave()} style={primaryBtnStyle}>
+              <Check size={14} />
+              <span>Save</span>
+            </button>
           </div>
         </div>
       </div>
@@ -686,7 +959,7 @@ export const FileMappingManagerModal: React.FC<FileMappingManagerModalProps> = (
 };
 
 // ---------------------------------------------------------------------------
-// 4. TrackMapManagerModal
+// 3. TrackMapManagerModal
 // ---------------------------------------------------------------------------
 
 export interface TrackMapManagerModalProps {
@@ -711,11 +984,8 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
   onClose,
   onMapsUpdated,
 }) => {
-  const [maps, setMaps] = useState<TrackMapDef[]>([]);
+  const [draftMaps, setDraftMaps] = useState<TrackMapDef[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editColor, setEditColor] = useState<string>(LAP_COLORS[0]);
-  const [editRotation, setEditRotation] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pendingImport, setPendingImport] = useState<PendingMapImport | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -723,60 +993,48 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
   const jsonInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const reload = useCallback(async () => {
-    const loaded = await stateManager.loadMaps();
-    setMaps(loaded);
-    if (loaded.length > 0 && !loaded.some((m) => m.slug === selectedSlug)) {
-      setSelectedSlug(loaded[0].slug);
-    } else if (loaded.length === 0) {
-      setSelectedSlug(null);
-    }
-  }, [selectedSlug]);
-
   useEffect(() => {
     if (isOpen) {
       setErrorMsg(null);
-      void reload();
-    } else if (pendingImport) {
+      const loaded = stateManager.loadMaps();
+      setDraftMaps(loaded);
+      setSelectedSlug(loaded[0]?.slug ?? null);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen && pendingImport) {
       void telemetryClient.discardMapToken(pendingImport.mapToken);
       setPendingImport(null);
     }
-  }, [isOpen, reload, pendingImport]);
+  }, [isOpen, pendingImport]);
 
-  const selectedMap = maps.find((m) => m.slug === selectedSlug) ?? null;
-
-  useEffect(() => {
-    if (selectedMap) {
-      setEditName(selectedMap.name);
-      setEditColor(selectedMap.color);
-      setEditRotation(selectedMap.rotation);
-    }
-  }, [selectedMap]);
+  const selectedMap = useMemo(
+    () => draftMaps.find((m) => m.slug === selectedSlug) ?? null,
+    [draftMaps, selectedSlug],
+  );
 
   if (!isOpen) return null;
 
-  const handleSaveMapEdits = async () => {
-    if (!selectedMap) return;
-    const trimmed = editName.trim() || selectedMap.name;
-    await stateManager.saveMap({
-      ...selectedMap,
-      name: trimmed,
-      color: editColor,
-      rotation: Number.isFinite(editRotation) ? editRotation : 0,
-    });
-    await reload();
-    onMapsUpdated?.();
+  const updateSelectedMap = (updater: (m: TrackMapDef) => TrackMapDef) => {
+    if (!selectedSlug) return;
+    setDraftMaps((prev) =>
+      prev.map((m) => (m.slug === selectedSlug ? updater(m) : m)),
+    );
   };
 
-  const handleDeleteMap = async (slug: string) => {
-    await stateManager.deleteMap(slug);
-    await reload();
-    onMapsUpdated?.();
+  const handleDeleteMap = (slug: string) => {
+    setDraftMaps((prev) => {
+      const next = prev.filter((m) => m.slug !== slug);
+      if (selectedSlug === slug) {
+        setSelectedSlug(next[0]?.slug ?? null);
+      }
+      return next;
+    });
   };
 
   const handleExportJson = (map: TrackMapDef) => {
-    const json = stateManager.exportTrackMapJson(map.slug);
-    if (!json) return;
+    const json = JSON.stringify({ schema_version: 1, data: map }, null, 4);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -793,10 +1051,13 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
     try {
       setErrorMsg(null);
       const text = await file.text();
-      const imported = await stateManager.importTrackMapJson(text);
-      await reload();
+      const imported = stateManager.parseTrackMapJson(text);
+      setDraftMaps((prev) => {
+        const idx = prev.findIndex((m) => m.slug === imported.slug);
+        const next = idx >= 0 ? prev.map((m, i) => (i === idx ? imported : m)) : [...prev, imported];
+        return next.sort((a, b) => a.name.localeCompare(b.name));
+      });
       setSelectedSlug(imported.slug);
-      onMapsUpdated?.();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to import Track Map JSON');
     }
@@ -819,7 +1080,7 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
         yCol: columns[1] ?? columns[0] ?? '',
         distCol: '',
         name: baseName,
-        color: LAP_COLORS[maps.length % LAP_COLORS.length],
+        color: LAP_COLORS[draftMaps.length % LAP_COLORS.length],
       });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to parse map file columns');
@@ -848,7 +1109,7 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
         pendingImport.yCol,
         pendingImport.distCol || null,
       );
-      const slug = generateUniqueSlug(pendingImport.name, maps.map((m) => m.slug));
+      const slug = generateUniqueSlug(pendingImport.name, draftMaps.map((m) => m.slug));
       const newMap: TrackMapDef = {
         name: pendingImport.name.trim() || slug,
         slug,
@@ -858,16 +1119,25 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
         y: data.y,
         distance: data.distance,
       };
-      await stateManager.saveMap(newMap);
+      setDraftMaps((prev) => [...prev, newMap].sort((a, b) => a.name.localeCompare(b.name)));
       setPendingImport(null);
-      await reload();
       setSelectedSlug(newMap.slug);
-      onMapsUpdated?.();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to load track map data');
     } finally {
       setIsBusy(false);
     }
+  };
+
+  const handleSaveAll = async () => {
+    const cleaned = draftMaps.map((m) => ({
+      ...m,
+      name: m.name.trim() || m.slug,
+      rotation: Number.isFinite(m.rotation) ? m.rotation : 0,
+    }));
+    await stateManager.replaceAllMaps(cleaned);
+    onMapsUpdated?.();
+    onClose();
   };
 
   return (
@@ -878,22 +1148,12 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
             <MapIcon size={16} style={{ color: 'var(--accent)' }} />
             <span>Track Map Manager</span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input ref={jsonInputRef} type="file" accept=".json,application/json" onChange={handleImportJsonFile} style={{ display: 'none' }} />
-            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleSelectRawMapFile} style={{ display: 'none' }} />
-            <button type="button" onClick={() => jsonInputRef.current?.click()} style={btnStyle} disabled={isBusy}>
-              <Upload size={13} />
-              Import JSON
-            </button>
-            <button type="button" onClick={() => fileInputRef.current?.click()} style={primaryBtnStyle} disabled={isBusy}>
-              <FileSpreadsheet size={13} />
-              Import CSV / Excel
-            </button>
-            <button type="button" onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-              <X size={18} />
-            </button>
-          </div>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <X size={18} />
+          </button>
         </div>
+        <input ref={jsonInputRef} type="file" accept=".json,application/json" onChange={handleImportJsonFile} style={{ display: 'none' }} />
+        <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleSelectRawMapFile} style={{ display: 'none' }} />
 
         {errorMsg && (
           <div style={{ padding: '8px 16px', backgroundColor: 'var(--danger-bg)', color: 'var(--danger)', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>
@@ -979,22 +1239,22 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
               <button type="button" onClick={() => void handleCancelImport()} style={btnStyle} disabled={isBusy}>
-                Cancel
+                Back
               </button>
               <button type="submit" style={primaryBtnStyle} disabled={isBusy}>
-                {isBusy ? 'Importing...' : 'Save Track Map'}
+                {isBusy ? 'Importing...' : 'Add to Draft'}
               </button>
             </div>
           </form>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', flex: 1, minHeight: 360, overflow: 'hidden' }}>
             <div style={{ borderRight: '1px solid var(--border-subtle)', overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {maps.length === 0 ? (
+              {draftMaps.length === 0 ? (
                 <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 16, textAlign: 'center' }}>
                   No saved track maps.
                 </div>
               ) : (
-                maps.map((m) => {
+                draftMaps.map((m) => {
                   const isSelected = m.slug === selectedSlug;
                   return (
                     <div
@@ -1022,7 +1282,7 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          void handleDeleteMap(m.slug);
+                          handleDeleteMap(m.slug);
                         }}
                         style={{ ...dangerBtnStyle, padding: '3px 6px' }}
                         title="Delete"
@@ -1047,8 +1307,8 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
                       Map Name
                       <input
                         type="text"
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
+                        value={selectedMap.name}
+                        onChange={(e) => updateSelectedMap((m) => ({ ...m, name: e.target.value }))}
                         style={inputStyle}
                       />
                     </label>
@@ -1057,8 +1317,8 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
                       <input
                         type="number"
                         step="1"
-                        value={editRotation}
-                        onChange={(e) => setEditRotation(Number(e.target.value))}
+                        value={selectedMap.rotation}
+                        onChange={(e) => updateSelectedMap((m) => ({ ...m, rotation: Number(e.target.value) }))}
                         style={inputStyle}
                       />
                     </label>
@@ -1071,13 +1331,13 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
                         <button
                           key={c}
                           type="button"
-                          onClick={() => setEditColor(c)}
+                          onClick={() => updateSelectedMap((m) => ({ ...m, color: c }))}
                           style={{
                             width: 22,
                             height: 22,
                             borderRadius: '50%',
                             backgroundColor: c,
-                            border: editColor === c ? '2px solid #FFFFFF' : '1px solid var(--border-strong)',
+                            border: selectedMap.color === c ? '2px solid #FFFFFF' : '1px solid var(--border-strong)',
                             cursor: 'pointer',
                           }}
                         />
@@ -1090,14 +1350,10 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
                     <strong style={{ color: 'var(--text-primary)' }}>{selectedMap.distance ? 'Yes' : 'No'}</strong>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 4 }}>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                     <button type="button" onClick={() => handleExportJson(selectedMap)} style={btnStyle}>
                       <Download size={13} />
                       Export JSON
-                    </button>
-                    <button type="button" onClick={() => void handleSaveMapEdits()} style={primaryBtnStyle}>
-                      <Check size={13} />
-                      Save Changes
                     </button>
                   </div>
                 </div>
@@ -1105,6 +1361,175 @@ export const TrackMapManagerModal: React.FC<TrackMapManagerModalProps> = ({
             </div>
           </div>
         )}
+
+        {/* Footer */}
+        <div
+          style={{
+            padding: '10px 16px',
+            borderTop: '1px solid var(--border-subtle)',
+            backgroundColor: 'var(--bg-surface)',
+            borderBottomLeftRadius: 8,
+            borderBottomRightRadius: 8,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button type="button" onClick={() => jsonInputRef.current?.click()} style={btnStyle} disabled={isBusy}>
+              <Upload size={13} />
+              Import JSON
+            </button>
+            <button type="button" onClick={() => fileInputRef.current?.click()} style={btnStyle} disabled={isBusy}>
+              <FileSpreadsheet size={13} />
+              Import CSV / Excel
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={onClose} style={btnStyle}>
+              Cancel
+            </button>
+            <button type="button" onClick={() => void handleSaveAll()} style={primaryBtnStyle} disabled={isBusy}>
+              <Check size={14} />
+              <span>Save</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// 4. WelcomeStartupModal
+// ---------------------------------------------------------------------------
+
+export interface WelcomeStartupModalProps {
+  isOpen: boolean;
+  recentFiles: RecentFileEntry[];
+  onOpenFiles: () => void;
+  onOpenRecentFile: (entry: RecentFileEntry) => void;
+  onClose: () => void;
+}
+
+export const WelcomeStartupModal: React.FC<WelcomeStartupModalProps> = ({
+  isOpen,
+  recentFiles,
+  onOpenFiles,
+  onOpenRecentFile,
+  onClose,
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div
+        style={{
+          ...modalStyle,
+          maxWidth: 520,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={headerStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, color: 'var(--text-strong)' }}>
+            <FolderOpen size={16} style={{ color: 'var(--accent)' }} />
+            <span>Open Telemetry</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Clock size={13} />
+            <span>Recently Used Files</span>
+          </div>
+
+          <div
+            style={{
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 6,
+              backgroundColor: 'var(--bg-surface)',
+              maxHeight: 260,
+              overflowY: 'auto',
+            }}
+          >
+            {recentFiles.length === 0 ? (
+              <div style={{ padding: 20, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
+                No recently opened files.
+              </div>
+            ) : (
+              recentFiles.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenRecentFile(entry);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    width: '100%',
+                    padding: '9px 12px',
+                    border: 'none',
+                    borderBottom: '1px solid var(--border-subtle)',
+                    background: 'transparent',
+                    color: 'var(--text-primary)',
+                    fontSize: 12,
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {entry.name}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+                    {new Date(entry.lastOpenedAt).toLocaleDateString()}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div
+          style={{
+            padding: '10px 16px',
+            borderTop: '1px solid var(--border-subtle)',
+            backgroundColor: 'var(--bg-surface)',
+            borderBottomLeftRadius: 8,
+            borderBottomRightRadius: 8,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onOpenFiles();
+            }}
+            style={primaryBtnStyle}
+          >
+            <FolderOpen size={14} />
+            <span>Import File...</span>
+          </button>
+          <button type="button" onClick={onClose} style={btnStyle}>
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -5,11 +5,10 @@ use wasm_bindgen::prelude::*;
 
 use crate::csv_parser;
 use crate::excel_parser;
-use crate::formula;
 use crate::map_parser;
 use crate::session::{downsample_curve, nearest_sample, nearest_sample_2d, SessionStore};
 use crate::tdms_parser;
-use crate::types::{FilePreview, GlobalCalcDef, ParseSessionConfig, RawTable};
+use crate::types::{ChannelGroupDef, FilePreview, ParseSessionConfig, RawTable};
 
 #[derive(Debug, Deserialize)]
 struct SelectedLapInput {
@@ -35,10 +34,9 @@ struct PlotDataRequest {
     max_buckets: usize,
     #[serde(rename = "filterGaps")]
     filter_gaps: bool,
-    #[serde(rename = "globalCalcs")]
-    global_calcs: Vec<GlobalCalcDef>,
+    #[serde(rename = "channelGroups", default)]
+    channel_groups: Vec<ChannelGroupDef>,
 }
-
 #[derive(Debug, Deserialize)]
 struct HoveredLapInput {
     #[serde(rename = "sessionId")]
@@ -83,8 +81,8 @@ struct CursorQueryRequest {
     #[serde(rename = "targetX")]
     target_x: f64,
     hovered: Option<HoveredPlotBounds>,
-    #[serde(rename = "globalCalcs")]
-    global_calcs: Vec<GlobalCalcDef>,
+    #[serde(rename = "channelGroups", default)]
+    channel_groups: Vec<ChannelGroupDef>,
 }
 #[derive(Debug, Serialize)]
 struct InspectResult {
@@ -92,14 +90,6 @@ struct InspectResult {
     file_token: String,
     preview: FilePreview,
 }
-
-#[derive(Debug, Serialize)]
-struct FormulaValidationResult {
-    valid: bool,
-    message: String,
-    variables: Vec<String>,
-}
-
 #[derive(Debug, Serialize)]
 struct TrackMapColumnsResult {
     #[serde(rename = "mapToken")]
@@ -146,24 +136,31 @@ fn file_ext_lower(file_name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn preview_by_ext(file_name: &str, bytes: &[u8]) -> Result<FilePreview, String> {
+fn preview_by_ext(
+    file_name: &str,
+    bytes: &[u8],
+    sheet_name: Option<&str>,
+) -> Result<FilePreview, String> {
     match file_ext_lower(file_name).as_str() {
         "csv" => csv_parser::preview_csv(bytes, 5),
-        "xlsx" | "xls" => excel_parser::preview_excel(bytes, 5),
+        "xlsx" | "xls" => excel_parser::preview_excel(bytes, sheet_name, 5),
         "tdms" => tdms_parser::preview_tdms(bytes, 5),
         other => Err(format!("Unsupported file format: .{other}")),
     }
 }
 
-fn parse_by_ext(file_name: &str, bytes: &[u8]) -> Result<RawTable, String> {
+fn parse_by_ext(
+    file_name: &str,
+    bytes: &[u8],
+    sheet_name: Option<&str>,
+) -> Result<RawTable, String> {
     match file_ext_lower(file_name).as_str() {
         "csv" => csv_parser::parse_csv(bytes),
-        "xlsx" | "xls" => excel_parser::parse_excel(bytes),
+        "xlsx" | "xls" => excel_parser::parse_excel(bytes, sheet_name),
         "tdms" => tdms_parser::parse_tdms(bytes),
         other => Err(format!("Unsupported file format: .{other}")),
     }
 }
-
 fn to_js_err(msg: impl ToString) -> JsValue {
     JsValue::from_str(&msg.to_string())
 }
@@ -206,7 +203,7 @@ impl TelemetryEngine {
     }
 
     pub fn inspect_file(&mut self, file_name: &str, bytes: &[u8]) -> Result<JsValue, JsValue> {
-        let preview = preview_by_ext(file_name, bytes).map_err(to_js_err)?;
+        let preview = preview_by_ext(file_name, bytes, None).map_err(to_js_err)?;
         let token = self.alloc_token("file");
         self.pending_files
             .insert(token.clone(), (file_name.to_string(), bytes.to_vec()));
@@ -215,6 +212,65 @@ impl TelemetryEngine {
             preview,
         };
         to_js_json(&res)
+    }
+
+    pub fn inspect_excel_sheet(
+        &self,
+        file_token: &str,
+        sheet_name: &str,
+    ) -> Result<JsValue, JsValue> {
+        let (file_name, bytes) = self
+            .pending_files
+            .get(file_token)
+            .ok_or_else(|| to_js_err(format!("Pending file token '{file_token}' not found")))?;
+        let preview = preview_by_ext(file_name, bytes, Some(sheet_name)).map_err(to_js_err)?;
+        let res = InspectResult {
+            file_token: file_token.to_string(),
+            preview,
+        };
+        to_js_json(&res)
+    }
+
+    pub fn get_session_sheet_preview(
+        &self,
+        session_id: &str,
+        sheet_name: Option<String>,
+    ) -> Result<JsValue, JsValue> {
+        let session = self
+            .store
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| to_js_err(format!("Session '{session_id}' not found")))?;
+        if let Some(bytes) = &session.source_bytes {
+            let target_sheet = sheet_name.as_deref().or(session.summary.sheet_name.as_deref());
+            let preview = excel_parser::preview_excel(bytes, target_sheet, 5).map_err(to_js_err)?;
+            return to_js_json(&preview);
+        }
+        let finite_counts: Vec<usize> = session
+            .raw_table
+            .data
+            .iter()
+            .map(|col| col.iter().filter(|v| v.is_finite()).count())
+            .collect();
+        let preview_rows_count = session.raw_table.row_count.min(5);
+        let mut rows = Vec::with_capacity(preview_rows_count);
+        for r in 0..preview_rows_count {
+            let mut row = Vec::with_capacity(session.raw_table.columns.len());
+            for col in &session.raw_table.data {
+                let v = col.get(r).copied().unwrap_or(f64::NAN);
+                row.push(if v.is_finite() { v.to_string() } else { String::new() });
+            }
+            rows.push(row);
+        }
+        let preview = FilePreview {
+            columns: session.raw_table.columns.clone(),
+            rows,
+            sheets: None,
+            selected_sheet: session.summary.sheet_name.clone(),
+            finite_counts,
+            total_rows: session.raw_table.row_count,
+        };
+        to_js_json(&preview)
     }
 
     pub fn discard_pending_file(&mut self, file_token: &str) {
@@ -228,15 +284,46 @@ impl TelemetryEngine {
             .pending_files
             .remove(file_token)
             .ok_or_else(|| to_js_err(format!("Pending file token '{file_token}' not found")))?;
-        let raw = parse_by_ext(&file_name, &bytes).map_err(to_js_err)?;
-        let summary = self.store.parse_from_raw(raw, cfg);
+        let ext = file_ext_lower(&file_name);
+        let is_tabular = ext != "tdms";
+        let raw = parse_by_ext(&file_name, &bytes, cfg.sheet_name.as_deref()).map_err(to_js_err)?;
+        let source_bytes = if ext == "xlsx" || ext == "xls" {
+            Some(bytes)
+        } else {
+            None
+        };
+        let summary = self
+            .store
+            .parse_from_raw(raw, cfg, is_tabular, source_bytes)
+            .map_err(to_js_err)?;
         to_js_json(&summary)
     }
 
     pub fn reparse_session(&mut self, session_id: &str, config_val: JsValue) -> Result<JsValue, JsValue> {
-        let cfg: ParseSessionConfig =
+        let mut cfg: ParseSessionConfig =
             serde_wasm_bindgen::from_value(config_val).map_err(to_js_err)?;
-        let summary = self.store.reparse_session(session_id, cfg).map_err(to_js_err)?;
+        cfg.session_id = session_id.to_string();
+        let existing = self
+            .store
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| to_js_err(format!("Session '{session_id}' not found")))?;
+        let is_tabular = existing.is_tabular;
+        let source_bytes = existing.source_bytes.clone();
+        let sheet_changed = cfg.sheet_name != existing.summary.sheet_name;
+        let raw = if sheet_changed {
+            if let Some(bytes) = &source_bytes {
+                excel_parser::parse_excel(bytes, cfg.sheet_name.as_deref()).map_err(to_js_err)?
+            } else {
+                existing.raw_table.clone()
+            }
+        } else {
+            existing.raw_table.clone()
+        };
+        let summary = self
+            .store
+            .parse_from_raw(raw, cfg, is_tabular, source_bytes)
+            .map_err(to_js_err)?;
         to_js_json(&summary)
     }
 
@@ -246,35 +333,6 @@ impl TelemetryEngine {
 
     pub fn clear_sessions(&mut self) {
         self.store.sessions.clear();
-    }
-
-    pub fn clear_calculated_cache(&mut self, calc_slugs_val: JsValue) -> Result<(), JsValue> {
-        let slugs: Vec<String> = serde_wasm_bindgen::from_value(calc_slugs_val).map_err(to_js_err)?;
-        self.store.clear_calculated_cache(&slugs);
-        Ok(())
-    }
-
-    pub fn validate_formula(&self, expr: &str, expected_vars_val: JsValue) -> Result<JsValue, JsValue> {
-        let expected_vars: Option<Vec<String>> = if expected_vars_val.is_undefined() || expected_vars_val.is_null() {
-            None
-        } else {
-            Some(serde_wasm_bindgen::from_value(expected_vars_val).map_err(to_js_err)?)
-        };
-
-        let variables = formula::extract_variables(expr).unwrap_or_default();
-        let res = match formula::validate_formula(expr, expected_vars.as_deref()) {
-            Ok(()) => FormulaValidationResult {
-                valid: true,
-                message: "Formula is valid.".to_string(),
-                variables,
-            },
-            Err(err) => FormulaValidationResult {
-                valid: false,
-                message: err,
-                variables,
-            },
-        };
-        to_js_json(&res)
     }
 
     pub fn parse_track_map_columns(&mut self, file_name: &str, bytes: &[u8]) -> Result<JsValue, JsValue> {
@@ -317,10 +375,10 @@ impl TelemetryEngine {
 
     pub fn get_plot_data(&mut self, req_val: JsValue) -> Result<JsValue, JsValue> {
         let req: PlotDataRequest = serde_wasm_bindgen::from_value(req_val).map_err(to_js_err)?;
-        let global_map: HashMap<String, GlobalCalcDef> = req
-            .global_calcs
+        let group_map: HashMap<String, ChannelGroupDef> = req
+            .channel_groups
             .into_iter()
-            .map(|c| (c.slug.clone(), c))
+            .map(|g| (g.id.clone(), g))
             .collect();
 
         let curves_arr = Array::new();
@@ -337,7 +395,7 @@ impl TelemetryEngine {
                     &lap_info.session_id,
                     lap_info.lap_number,
                     &req.x_axis_slug,
-                    &global_map,
+                    &group_map,
                 ) else {
                     continue;
                 };
@@ -345,7 +403,7 @@ impl TelemetryEngine {
                     &lap_info.session_id,
                     lap_info.lap_number,
                     ch_slug,
-                    &global_map,
+                    &group_map,
                 ) else {
                     continue;
                 };
@@ -355,7 +413,6 @@ impl TelemetryEngine {
                     continue;
                 }
 
-                // Update full extents across selected curves
                 for i in 0..n {
                     let xv = raw_x[i];
                     let yv = raw_y[i];
@@ -393,13 +450,13 @@ impl TelemetryEngine {
                         &lap_info.session_id,
                         lap_info.lap_number,
                         "lap_time",
-                        &global_map,
+                        &group_map,
                     );
                     let d_arr = self.store.get_lap_channel(
                         &lap_info.session_id,
                         lap_info.lap_number,
                         "lap_dist",
-                        &global_map,
+                        &group_map,
                     );
                     (Some(gt), Some(gd), t_arr, d_arr)
                 } else {
@@ -475,12 +532,11 @@ impl TelemetryEngine {
 }
 
 fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> CursorQueryResponse {
-    let global_map: HashMap<String, GlobalCalcDef> = req
-        .global_calcs
+    let group_map: HashMap<String, ChannelGroupDef> = req
+        .channel_groups
         .iter()
-        .map(|c| (c.slug.clone(), c.clone()))
+        .map(|g| (g.id.clone(), g.clone()))
         .collect();
-
     let mut samples_by_channel: HashMap<String, Vec<CursorSampleItem>> = HashMap::new();
     let mut snapped_x = req.target_x;
     let mut snapped_by_lap_on_ch: HashMap<(String, i32), (f64, f64)> = HashMap::new();
@@ -502,14 +558,14 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                     &hlap.session_id,
                     hlap.lap_number,
                     &req.x_axis_slug,
-                    &global_map,
+                    &group_map,
                 ) {
                     for ch_slug in &req.channels {
                         let Some(raw_y) = store.get_lap_channel(
                             &hlap.session_id,
                             hlap.lap_number,
                             ch_slug,
-                            &global_map,
+                            &group_map,
                         ) else {
                             continue;
                         };
@@ -565,7 +621,7 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                         &lap_info.session_id,
                         lap_info.lap_number,
                         &req.x_axis_slug,
-                        &global_map,
+                        &group_map,
                     ) else {
                         continue;
                     };
@@ -573,7 +629,7 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                         &lap_info.session_id,
                         lap_info.lap_number,
                         &hov.channel_slug,
-                        &global_map,
+                        &group_map,
                     ) else {
                         continue;
                     };
@@ -648,7 +704,7 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                 &lap_info.session_id,
                 lap_info.lap_number,
                 &req.x_axis_slug,
-                &global_map,
+                &group_map,
             ) else {
                 continue;
             };
@@ -656,7 +712,7 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                 &lap_info.session_id,
                 lap_info.lap_number,
                 ch_slug,
-                &global_map,
+                &group_map,
             ) else {
                 continue;
             };
@@ -682,7 +738,7 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                 &lap_info.session_id,
                 lap_info.lap_number,
                 "lap_dist",
-                &global_map,
+                &group_map,
             ) {
                 if !dist_arr.is_empty() {
                     let mut dmin = f64::INFINITY;
@@ -706,13 +762,13 @@ fn resolve_cursor_query(store: &mut SessionStore, req: &CursorQueryRequest) -> C
                 &lap_info.session_id,
                 lap_info.lap_number,
                 &req.x_axis_slug,
-                &global_map,
+                &group_map,
             ),
             store.get_lap_channel(
                 &lap_info.session_id,
                 lap_info.lap_number,
                 "lap_dist",
-                &global_map,
+                &group_map,
             ),
         ) {
             if let Some((_, dist_val)) = nearest_sample(&x_arr, &dist_arr, snapped_x) {
@@ -741,9 +797,8 @@ mod tests {
     fn test_resolve_cursor_query_hovered_lap_raw_and_normalized() {
         let mut store = SessionStore::default();
         let mut lap1_data = HashMap::new();
-        lap1_data.insert("lap_dist".to_string(), vec![0.0, 5.0, 10.0]);
-        lap1_data.insert("speed".to_string(), vec![10.0, 30.0, 10.0]); // peak 30 at x=5 (100% of [10,30])
-        lap1_data.insert("power".to_string(), vec![0.0, 200.0, 800.0]); // 200 at x=5 (25% of [0,800])
+        lap1_data.insert("speed".to_string(), vec![10.0, 30.0, 10.0]);
+        lap1_data.insert("power".to_string(), vec![0.0, 200.0, 800.0]);
 
         store.sessions.insert(
             "s1".to_string(),
@@ -751,36 +806,44 @@ mod tests {
                 summary: SessionSummary {
                     id: "s1".to_string(),
                     name: "test.tdms".to_string(),
-                    channels: vec!["lap_dist".to_string(), "speed".to_string(), "power".to_string()],
+                    sheet_name: None,
+                    channels: vec!["speed".to_string(), "power".to_string()],
+                    skipped_channels: vec![],
+                    available_columns: vec!["lap".to_string(), "dist".to_string(), "speed".to_string(), "power".to_string()],
+                    lap_col: "lap".to_string(),
+                    time_col: None,
+                    dist_col: Some("dist".to_string()),
+                    has_time: false,
+                    has_dist: true,
                     laps: vec![LapSummary {
                         lap_number: 1,
                         duration: 10.0,
                         distance: 10.0,
                         sample_count: 3,
                     }],
-                    mapping: HashMap::new(),
-                    local_calculated_channels: vec![],
-                    preset_slug: None,
-                    preset_name: None,
                     gap_time_threshold: None,
                     gap_dist_threshold: None,
+                    group_overrides: HashMap::new(),
                 },
                 raw_table: RawTable {
                     columns: vec![],
                     data: vec![],
                     row_count: 0,
                 },
+                source_bytes: None,
+                is_tabular: false,
                 laps: vec![StoredLap {
                     lap_number: 1,
                     duration: 10.0,
                     distance: 10.0,
                     sample_count: 3,
+                    sys_time: None,
+                    sys_dist: Some(vec![0.0, 5.0, 10.0]),
                     data: lap1_data,
                 }],
             },
         );
 
-        // 1. Raw By-Lap hover near (5.1, 202.0) snaps to power peak on Lap 1
         let req_raw = CursorQueryRequest {
             x_axis_slug: "lap_dist".to_string(),
             channels: vec!["speed".to_string(), "power".to_string()],
@@ -806,14 +869,13 @@ mod tests {
                 plot_width: 500.0,
                 plot_height: 400.0,
             }),
-            global_calcs: vec![],
+            channel_groups: vec![],
         };
         let res_raw = resolve_cursor_query(&mut store, &req_raw);
         assert_eq!(res_raw.snapped_x, 5.0);
         assert_eq!(res_raw.samples_by_channel["speed"][0].actual_y, 30.0);
         assert_eq!(res_raw.samples_by_channel["power"][0].actual_y, 200.0);
 
-        // 2. Normalized By-Lap hover at 99% near x=5.02 snaps to speed peak (100% -> actual 30.0)
         let mut extents = HashMap::new();
         extents.insert("speed".to_string(), (10.0, 30.0));
         extents.insert("power".to_string(), (0.0, 800.0));
@@ -842,7 +904,7 @@ mod tests {
                 plot_width: 500.0,
                 plot_height: 200.0,
             }),
-            global_calcs: vec![],
+            channel_groups: vec![],
         };
         let res_norm = resolve_cursor_query(&mut store, &req_norm);
         assert_eq!(res_norm.snapped_x, 5.0);

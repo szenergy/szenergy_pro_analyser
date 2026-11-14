@@ -8,12 +8,19 @@ export const STD_CH_LAP_DIST = 'Lap Distance';
 export const STD_CH_LAP_NUM_SLUG = 'lap_num';
 export const STD_CH_LAP_TIME_SLUG = 'lap_time';
 export const STD_CH_LAP_DIST_SLUG = 'lap_dist';
-
-export const SYSTEM_CHANNEL_SLUGS: readonly string[] = [
+export const REQUIRED_CHANNEL_GROUP_IDS = [
   STD_CH_LAP_NUM_SLUG,
   STD_CH_LAP_TIME_SLUG,
   STD_CH_LAP_DIST_SLUG,
 ] as const;
+
+export function isRequiredChannelGroupId(id: string): boolean {
+  return (
+    id === STD_CH_LAP_NUM_SLUG ||
+    id === STD_CH_LAP_TIME_SLUG ||
+    id === STD_CH_LAP_DIST_SLUG
+  );
+}
 
 export const MAX_STACKED_PLOTS = 6;
 export const MAX_SELECTED_CHANNELS = MAX_STACKED_PLOTS;
@@ -39,57 +46,39 @@ export const LAP_COLORS: readonly string[] = [
   '#0096FF',
 ] as const;
 
-export type ChannelType = 'system' | 'custom' | 'calculated';
+export interface ChannelTransform {
+  factor: number;
+  offset: number;
+}
 
-export interface ChannelDef {
-  label: string;
-  slug: string;
-  type: ChannelType;
+export interface GroupChannelOverride {
+  channel: string;
+  factor: number;
+  offset: number;
+}
+
+export interface ChannelGroupDef {
+  id: string;
+  name: string;
   unit: string;
-  formula?: string;
-  inputs?: Record<string, string>;
+  channels: string[];
+  transforms?: Record<string, ChannelTransform>;
 }
 
-export const DEFAULT_CHANNEL_DEFS: readonly ChannelDef[] = [
-  { label: STD_CH_LAP_NUM, slug: STD_CH_LAP_NUM_SLUG, type: 'system', unit: '' },
-  { label: STD_CH_LAP_TIME, slug: STD_CH_LAP_TIME_SLUG, type: 'system', unit: 's' },
-  { label: STD_CH_LAP_DIST, slug: STD_CH_LAP_DIST_SLUG, type: 'system', unit: 'm' },
-];
-
-export interface LocalCalcDef {
-  name: string;
-  target_slug: string;
-  target_label: string;
-  formula: string;
-  inputs: Record<string, string>;
+export interface SystemRoleAliases {
+  lap: string[];
+  time: string[];
+  dist: string[];
 }
 
-export interface PresetDef {
-  slug: string;
-  name: string;
-  mapping: Record<string, string>;
-  local_calculated_channels: LocalCalcDef[];
+export interface FileImportConfig {
+  sheet_name: string | null;
+  lap_col: string;
+  time_col: string | null;
+  dist_col: string | null;
   gap_time_threshold?: number | null;
   gap_dist_threshold?: number | null;
-}
-
-export interface PresetMatchStats {
-  matched_count: number;
-  preset_total: number;
-  missing_in_file_count: number;
-  unmapped_in_file_count: number;
-  match_ratio: number;
-  matched_channels: string[];
-  missing_channels: string[];
-  unmapped_channels: string[];
-}
-
-export interface FileMappingConfig {
-  preset_slug: string | null;
-  mapping: Record<string, string>;
-  local_calculated_channels: LocalCalcDef[];
-  gap_time_threshold?: number | null;
-  gap_dist_threshold?: number | null;
+  group_overrides?: Record<string, GroupChannelOverride>;
 }
 
 export interface TrackMapDef {
@@ -118,33 +107,40 @@ export interface LapSummary {
 export interface SessionSummary {
   id: string;
   name: string;
+  sheet_name: string | null;
   channels: string[];
+  skipped_channels: string[];
+  available_columns: string[];
+  lap_col: string;
+  time_col: string | null;
+  dist_col: string | null;
+  has_time: boolean;
+  has_dist: boolean;
   laps: LapSummary[];
-  mapping: Record<string, string>;
-  local_calculated_channels: LocalCalcDef[];
-  preset_slug: string | null;
-  preset_name: string | null;
   gap_time_threshold: number | null;
   gap_dist_threshold: number | null;
+  group_overrides?: Record<string, GroupChannelOverride>;
 }
 
 export interface ParseSessionConfig {
   session_id: string;
   file_name: string;
-  mapping: Record<string, string>;
-  local_calculated_channels: LocalCalcDef[];
-  lap_slug: string;
-  time_slug: string;
-  dist_slug: string;
-  preset_slug: string | null;
-  preset_name: string | null;
+  sheet_name: string | null;
+  lap_col: string;
+  time_col: string | null;
+  dist_col: string | null;
   gap_time_threshold: number | null;
   gap_dist_threshold: number | null;
+  group_overrides?: Record<string, GroupChannelOverride>;
 }
 
 export interface FilePreview {
   columns: string[];
   rows: string[][];
+  sheets?: string[];
+  selectedSheet?: string;
+  finiteCounts: number[];
+  totalRows: number;
 }
 
 export interface SelectedLapInfo {
@@ -210,11 +206,11 @@ export interface RecentFileEntry {
 }
 
 export interface ConfigExportEnvelope {
-  schema_version: 1;
+  schema_version: 2;
   type: 'szenergypro_config_export';
   data: {
-    presets: PresetDef[];
-    channels: ChannelDef[];
+    channelGroups: ChannelGroupDef[];
+    systemAliases: SystemRoleAliases;
   };
 }
 

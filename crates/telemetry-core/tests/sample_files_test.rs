@@ -26,13 +26,18 @@ fn test_real_csv_sample() {
 #[test]
 fn test_real_xlsx_sample() {
     let bytes = std::fs::read(sample_path("xlsx/Test_10_06_2026_15_54_32.xlsx")).unwrap();
-    let preview = excel_parser::preview_excel(&bytes, 5).unwrap();
+    let preview = excel_parser::preview_excel(&bytes, None, 5).unwrap();
     assert!(!preview.columns.is_empty());
     assert_eq!(preview.rows.len(), 5);
+    assert_eq!(preview.sheets.as_deref(), Some(&["data".to_string(), "calc".to_string()][..]));
+    assert_eq!(preview.selected_sheet.as_deref(), Some("data"));
 
-    let table = excel_parser::parse_excel(&bytes).unwrap();
+    let table = excel_parser::parse_excel(&bytes, None).unwrap();
     assert!(table.row_count > 100);
     assert_eq!(table.columns.len(), table.data.len());
+
+    let calc_preview = excel_parser::preview_excel(&bytes, Some("calc"), 5).unwrap();
+    assert_eq!(calc_preview.selected_sheet.as_deref(), Some("calc"));
 }
 
 #[test]
@@ -52,8 +57,8 @@ fn test_real_tdms_samples() {
         assert_eq!(table.columns.len(), 95, "expected 95 channels in {rel}");
         assert!(table.row_count > 1000, "expected >1000 rows in {rel}");
         assert!(
-            table.columns.iter().any(|c| c == "Measurements/Lap_Number"),
-            "missing Measurements/Lap_Number in {rel}"
+            table.columns.iter().any(|c| c == "Lap_Number"),
+            "missing Lap_Number in {rel}"
         );
     }
 }

@@ -92,16 +92,38 @@ pub fn preview_csv(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String>
         .map_err(|e| format!("Failed to parse CSV header: {e}"))?;
 
     let columns = extract_headers(&header_rec);
+    let num_cols = columns.len();
     let mut rows = Vec::new();
+    let mut finite_counts = vec![0usize; num_cols];
+    let mut total_rows = 0usize;
 
-    for rec_res in records.take(max_rows) {
+    for rec_res in records {
         let rec = rec_res.map_err(|e| format!("Failed to parse CSV row: {e}"))?;
-        let mut row: Vec<String> = rec.iter().map(|s| s.to_string()).collect();
-        row.resize(columns.len(), String::new());
-        rows.push(row);
+        total_rows += 1;
+        if rows.len() < max_rows {
+            let mut row: Vec<String> = rec.iter().map(|s| s.to_string()).collect();
+            row.resize(num_cols, String::new());
+            rows.push(row);
+        }
+        for col_idx in 0..num_cols {
+            if let Some(field) = rec.get(col_idx) {
+                if let Ok(v) = field.trim().parse::<f64>() {
+                    if v.is_finite() {
+                        finite_counts[col_idx] += 1;
+                    }
+                }
+            }
+        }
     }
 
-    Ok(FilePreview { columns, rows })
+    Ok(FilePreview {
+        columns,
+        rows,
+        sheets: None,
+        selected_sheet: None,
+        finite_counts,
+        total_rows,
+    })
 }
 
 pub fn parse_csv(bytes: &[u8]) -> Result<RawTable, String> {

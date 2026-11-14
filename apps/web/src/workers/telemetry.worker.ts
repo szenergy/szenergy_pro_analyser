@@ -45,6 +45,16 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         respondOk(req.id, res);
         return;
       }
+      case 'inspectExcelSheet': {
+        const res = eng.inspect_excel_sheet(req.fileToken, req.sheetName);
+        respondOk(req.id, res);
+        return;
+      }
+      case 'getSessionSheetPreview': {
+        const res = eng.get_session_sheet_preview(req.sessionId, req.sheetName ?? null);
+        respondOk(req.id, res);
+        return;
+      }
       case 'discardPendingFile': {
         eng.discard_pending_file(req.fileToken);
         respondOk(req.id, null);
@@ -68,16 +78,6 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
       case 'clearSessions': {
         eng.clear_sessions();
         respondOk(req.id, null);
-        return;
-      }
-      case 'clearCalculatedCache': {
-        eng.clear_calculated_cache(req.calcSlugs);
-        respondOk(req.id, null);
-        return;
-      }
-      case 'validateFormula': {
-        const res = eng.validate_formula(req.formula, req.expectedVars ?? null);
-        respondOk(req.id, res);
         return;
       }
       case 'parseTrackMapColumns': {
@@ -110,7 +110,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           xMax: req.xMax,
           maxBuckets: req.maxBuckets,
           filterGaps: req.filterGaps,
-          globalCalcs: req.globalCalcs,
+          channelGroups: req.channelGroups,
         }) as {
           curves?: Array<{ x: Float64Array; y: Float64Array }>;
         };
@@ -131,7 +131,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           selectedLaps: req.selectedLaps,
           targetX: req.targetX,
           hovered: req.hovered ?? null,
-          globalCalcs: req.globalCalcs,
+          channelGroups: req.channelGroups,
         });
         respondOk(req.id, res);
         return;

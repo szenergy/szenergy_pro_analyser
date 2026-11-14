@@ -11,35 +11,50 @@ import {
 } from '@/state/db';
 import {
   AppSettings,
-  ChannelDef,
-  ChannelType,
+  ChannelGroupDef,
+  ChannelTransform,
   ConfigExportEnvelope,
   DEFAULT_APP_SETTINGS,
-  DEFAULT_CHANNEL_DEFS,
   DEFAULT_GRAPH_VIEW_SETTINGS,
-  FileMappingConfig,
+  FileImportConfig,
   GraphViewSettings,
+  GroupChannelOverride,
+  isRequiredChannelGroupId,
   LAP_COLORS,
-  LocalCalcDef,
-  PresetDef,
-  PresetMatchStats,
   RecentFileEntry,
+  REQUIRED_CHANNEL_GROUP_IDS,
   STD_CH_LAP_DIST,
   STD_CH_LAP_DIST_SLUG,
   STD_CH_LAP_NUM,
   STD_CH_LAP_NUM_SLUG,
   STD_CH_LAP_TIME,
   STD_CH_LAP_TIME_SLUG,
-  SYSTEM_CHANNEL_SLUGS,
+  SystemRoleAliases,
   ThemeMode,
   TrackMapDef,
   TrackMapExportEnvelope,
 } from '@/types/telemetry';
 
-const KV_PRESETS = 'presets';
-const KV_CHANNELS = 'channels';
-const KV_FILE_MAPPINGS = 'file_mappings';
+const KV_CHANNEL_GROUPS = 'channel_groups';
+const KV_SYSTEM_ALIASES = 'system_aliases';
+const KV_FILE_IMPORTS = 'file_imports';
 const KV_SETTINGS = 'settings';
+
+const DEFAULT_SYSTEM_ALIASES: SystemRoleAliases = {
+  lap: ['Lap Number', 'Lap_Number', 'lap_num', 'Lap', 'lap'],
+  time: ['Lap Time', 'Lap_Time', 'Lap_Time_[s]', 'Time_s', 'lap_time', 'Time', 'time'],
+  dist: [
+    'Lap Distance',
+    'Lap_Distance',
+    'Lap_Distance_[m]',
+    'Distance_m',
+    'Distance_[m]',
+    'lap_dist',
+    'Distance',
+    'distance',
+    'Dist',
+  ],
+};
 
 export function generateSlug(label: string): string {
   const slug = label
@@ -47,7 +62,7 @@ export function generateSlug(label: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9_]+/g, '_')
     .replace(/^_+|_+$/g, '');
-  return slug || 'channel';
+  return slug || 'group';
 }
 
 export function generateUniqueSlug(label: string, existingSlugs: Iterable<string>): string {
@@ -89,9 +104,17 @@ function fnv1aHex(input: string): string {
   return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
 }
 
-export async function computeFileSignature(fileName: string, rawColumns: string[]): Promise<string> {
+export async function computeFileSignature(
+  fileName: string,
+  rawColumns: string[],
+  sheetName?: string | null,
+): Promise<string> {
   const cleanName = fileName.trim();
-  const payload = JSON.stringify({ fileName: cleanName, columns: rawColumns });
+  const payload = JSON.stringify({
+    fileName: cleanName,
+    sheetName: sheetName ?? null,
+    columns: rawColumns,
+  });
 
   if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.subtle) {
     const encoded = new TextEncoder().encode(payload);
@@ -111,159 +134,98 @@ function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val);
 }
 
-function normalizeChannelType(slug: string, rawType: unknown): ChannelType {
-  if (SYSTEM_CHANNEL_SLUGS.includes(slug)) {
-    return 'system';
-  }
-  if (rawType === 'calculated') {
-    return 'calculated';
-  }
-  if (rawType === 'system') {
-    return 'system';
-  }
-  // Desktop legacy JSON uses 'normal'; map it to 'custom'
-  return 'custom';
-}
-
-function normalizeLocalCalc(raw: unknown): LocalCalcDef | null {
-  if (!isPlainObject(raw)) {
-    return null;
-  }
-  const formula = typeof raw.formula === 'string' ? raw.formula : '';
-  const targetSlug = typeof raw.target_slug === 'string' ? raw.target_slug : '';
-  if (!formula || !targetSlug) {
-    return null;
-  }
-  const targetLabel =
-    typeof raw.target_label === 'string' && raw.target_label ? raw.target_label : targetSlug;
-  const name = typeof raw.name === 'string' && raw.name ? raw.name : targetLabel;
-  const inputs: Record<string, string> = {};
-  if (isPlainObject(raw.inputs)) {
-    for (const [k, v] of Object.entries(raw.inputs)) {
-      if (typeof v === 'string') {
-        inputs[k] = v;
-      }
+function cloneTransforms(
+  transforms?: Record<string, ChannelTransform>,
+): Record<string, ChannelTransform> | undefined {
+  if (!transforms) return undefined;
+  const out: Record<string, ChannelTransform> = {};
+  for (const [k, v] of Object.entries(transforms)) {
+    if (!v || typeof v !== 'object') continue;
+    const factor = typeof v.factor === 'number' && Number.isFinite(v.factor) ? v.factor : 1;
+    const offset = typeof v.offset === 'number' && Number.isFinite(v.offset) ? v.offset : 0;
+    if (factor !== 1 || offset !== 0) {
+      out[k] = { factor, offset };
     }
   }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function cloneGroupOverrides(
+  overrides?: Record<string, GroupChannelOverride>,
+): Record<string, GroupChannelOverride> | undefined {
+  if (!overrides) return undefined;
+  const out: Record<string, GroupChannelOverride> = {};
+  for (const [gid, ov] of Object.entries(overrides)) {
+    if (!ov || typeof ov !== 'object' || typeof ov.channel !== 'string' || !ov.channel.trim()) {
+      continue;
+    }
+    out[gid] = {
+      channel: ov.channel.trim(),
+      factor: typeof ov.factor === 'number' && Number.isFinite(ov.factor) ? ov.factor : 1,
+      offset: typeof ov.offset === 'number' && Number.isFinite(ov.offset) ? ov.offset : 0,
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function cloneGroup(g: ChannelGroupDef): ChannelGroupDef {
+  const transforms = cloneTransforms(g.transforms);
   return {
-    name,
-    target_slug: targetSlug,
-    target_label: targetLabel,
-    formula,
-    inputs,
+    id: g.id,
+    name: g.name,
+    unit: g.unit ?? '',
+    channels: [...g.channels],
+    ...(transforms ? { transforms } : {}),
   };
 }
 
-function stripCalcTargetsFromMapping(
-  mapping: Record<string, string>,
-  localCalcs: LocalCalcDef[],
-): Record<string, string> {
-  if (localCalcs.length === 0) {
-    return { ...mapping };
-  }
-  const calcTargets = new Set<string>();
-  for (const c of localCalcs) {
-    if (c.target_slug) calcTargets.add(c.target_slug);
-    if (c.name) calcTargets.add(c.name);
-    if (c.target_label) calcTargets.add(c.target_label);
-  }
-  const cleaned: Record<string, string> = {};
-  for (const [k, v] of Object.entries(mapping)) {
-    if (!calcTargets.has(k)) {
-      cleaned[k] = v;
-    }
-  }
-  return cleaned;
-}
-
-function normalizePresetItem(raw: unknown): PresetDef | null {
-  if (!isPlainObject(raw)) {
-    return null;
-  }
-  if (typeof raw.name !== 'string' || !isPlainObject(raw.mapping)) {
-    return null;
-  }
-  const slug =
-    typeof raw.slug === 'string' && raw.slug.trim() ? raw.slug.trim() : generateSlug(raw.name);
-
-  const rawMapping: Record<string, string> = {};
-  for (const [k, v] of Object.entries(raw.mapping)) {
-    if (typeof v === 'string') {
-      rawMapping[k] = v;
-    }
-  }
-
-  const localCalcs: LocalCalcDef[] = [];
-  if (Array.isArray(raw.local_calculated_channels)) {
-    for (const item of raw.local_calculated_channels) {
-      const normalized = normalizeLocalCalc(item);
-      if (normalized) {
-        localCalcs.push(normalized);
-      }
-    }
-  }
-
-  const preset: PresetDef = {
-    slug,
-    name: raw.name,
-    mapping: stripCalcTargetsFromMapping(rawMapping, localCalcs),
-    local_calculated_channels: localCalcs,
-  };
-
-  if (typeof raw.gap_time_threshold === 'number' && Number.isFinite(raw.gap_time_threshold)) {
-    preset.gap_time_threshold = raw.gap_time_threshold;
-  }
-  if (typeof raw.gap_dist_threshold === 'number' && Number.isFinite(raw.gap_dist_threshold)) {
-    preset.gap_dist_threshold = raw.gap_dist_threshold;
-  }
-
-  return preset;
-}
-
-function isBetterPresetRank(
-  candidate: [number, number, number],
-  currentBest: [number, number, number],
-): boolean {
-  if (candidate[0] !== currentBest[0]) return candidate[0] > currentBest[0];
-  if (candidate[1] !== currentBest[1]) return candidate[1] > currentBest[1];
-  return candidate[2] > currentBest[2];
-}
-
-function cloneChannelDef(ch: ChannelDef): ChannelDef {
+function cloneFileImport(cfg: FileImportConfig): FileImportConfig {
+  const group_overrides = cloneGroupOverrides(cfg.group_overrides);
   return {
-    ...ch,
-    inputs: ch.inputs ? { ...ch.inputs } : undefined,
-  };
-}
-
-function clonePresetDef(p: PresetDef): PresetDef {
-  return {
-    ...p,
-    mapping: { ...p.mapping },
-    local_calculated_channels: p.local_calculated_channels.map((c) => ({
-      ...c,
-      inputs: { ...c.inputs },
-    })),
-  };
-}
-
-function cloneFileMapping(cfg: FileMappingConfig): FileMappingConfig {
-  return {
-    preset_slug: cfg.preset_slug ?? null,
-    mapping: { ...cfg.mapping },
-    local_calculated_channels: cfg.local_calculated_channels.map((c) => ({
-      ...c,
-      inputs: { ...c.inputs },
-    })),
+    sheet_name: cfg.sheet_name ?? null,
+    lap_col: cfg.lap_col,
+    time_col: cfg.time_col ?? null,
+    dist_col: cfg.dist_col ?? null,
     gap_time_threshold: cfg.gap_time_threshold ?? null,
     gap_dist_threshold: cfg.gap_dist_threshold ?? null,
+    ...(group_overrides ? { group_overrides } : {}),
   };
+}
+
+function normalizeColName(col: string): string {
+  return col.trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function stripUnitSuffix(col: string): string {
+  return col
+    .trim()
+    .replace(/[\s_]*(\[[^\]]*\]|\([^)]*\))\s*$/, '')
+    .trim();
+}
+
+function mergeUniqueStrings(primary: string[], fallback: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of [...primary, ...fallback]) {
+    const clean = s.trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(clean);
+    }
+  }
+  return out;
 }
 
 export class StateManager {
-  private presets: PresetDef[] = [];
-  private channels: ChannelDef[] = DEFAULT_CHANNEL_DEFS.map(cloneChannelDef);
-  private fileMappings: Record<string, FileMappingConfig> = {};
+  private channelGroups: ChannelGroupDef[] = [];
+  private systemAliases: SystemRoleAliases = {
+    lap: [...DEFAULT_SYSTEM_ALIASES.lap],
+    time: [...DEFAULT_SYSTEM_ALIASES.time],
+    dist: [...DEFAULT_SYSTEM_ALIASES.dist],
+  };
+  private fileImports: Record<string, FileImportConfig> = {};
   private settings: AppSettings = {
     ...DEFAULT_APP_SETTINGS,
     graph: { ...DEFAULT_GRAPH_VIEW_SETTINGS },
@@ -282,56 +244,62 @@ export class StateManager {
     }
 
     this.initPromise = (async () => {
-      const [rawPresets, rawChannels, rawFileMappings, rawSettings, maps, recentFiles] =
+      const [rawGroups, rawAliases, rawFileImports, rawSettings, maps, recentFiles] =
         await Promise.all([
-          kvGet<unknown>(KV_PRESETS),
-          kvGet<unknown>(KV_CHANNELS),
-          kvGet<unknown>(KV_FILE_MAPPINGS),
+          kvGet<unknown>(KV_CHANNEL_GROUPS),
+          kvGet<unknown>(KV_SYSTEM_ALIASES),
+          kvGet<unknown>(KV_FILE_IMPORTS),
           kvGet<unknown>(KV_SETTINGS),
           dbGetAllMaps(),
           dbGetRecentFiles(),
         ]);
 
-      this.presets = this.parseStoredPresets(rawPresets);
-
-      if (Array.isArray(rawChannels) && rawChannels.length > 0) {
-        const parsed = this.parseStoredChannels(rawChannels);
-        this.channels =
-          parsed.length > 0 ? parsed : DEFAULT_CHANNEL_DEFS.map(cloneChannelDef);
-      } else {
-        this.channels = DEFAULT_CHANNEL_DEFS.map(cloneChannelDef);
-        await kvSet(KV_CHANNELS, this.channels);
+      if (Array.isArray(rawGroups)) {
+        this.channelGroups = this.parseStoredGroups(rawGroups);
       }
 
-      if (isPlainObject(rawFileMappings)) {
-        const loadedMappings: Record<string, FileMappingConfig> = {};
-        for (const [sig, val] of Object.entries(rawFileMappings)) {
-          if (isPlainObject(val) && isPlainObject(val.mapping)) {
-            const mapping: Record<string, string> = {};
-            for (const [k, v] of Object.entries(val.mapping)) {
-              if (typeof v === 'string') {
-                mapping[k] = v;
-              }
-            }
-            const calcs: LocalCalcDef[] = [];
-            if (Array.isArray(val.local_calculated_channels)) {
-              for (const item of val.local_calculated_channels) {
-                const c = normalizeLocalCalc(item);
-                if (c) calcs.push(c);
-              }
-            }
-            loadedMappings[sig] = {
-              preset_slug: typeof val.preset_slug === 'string' ? val.preset_slug : null,
-              mapping,
-              local_calculated_channels: calcs,
+      if (isPlainObject(rawAliases)) {
+        const lap = Array.isArray(rawAliases.lap)
+          ? rawAliases.lap.filter((s): s is string => typeof s === 'string')
+          : [];
+        const time = Array.isArray(rawAliases.time)
+          ? rawAliases.time.filter((s): s is string => typeof s === 'string')
+          : [];
+        const dist = Array.isArray(rawAliases.dist)
+          ? rawAliases.dist.filter((s): s is string => typeof s === 'string')
+          : [];
+        this.systemAliases = {
+          lap: mergeUniqueStrings(lap, DEFAULT_SYSTEM_ALIASES.lap),
+          time: mergeUniqueStrings(time, DEFAULT_SYSTEM_ALIASES.time),
+          dist: mergeUniqueStrings(dist, DEFAULT_SYSTEM_ALIASES.dist),
+        };
+      }
+
+      const groupsChanged = this.ensureRequiredGroupsInMemory();
+      if (groupsChanged) {
+        await kvSet(KV_CHANNEL_GROUPS, this.channelGroups);
+      }
+      if (isPlainObject(rawFileImports)) {
+        const loaded: Record<string, FileImportConfig> = {};
+        for (const [sig, val] of Object.entries(rawFileImports)) {
+          if (isPlainObject(val) && typeof val.lap_col === 'string' && val.lap_col.trim()) {
+            const group_overrides = isPlainObject(val.group_overrides)
+              ? cloneGroupOverrides(val.group_overrides as Record<string, GroupChannelOverride>)
+              : undefined;
+            loaded[sig] = {
+              sheet_name: typeof val.sheet_name === 'string' ? val.sheet_name : null,
+              lap_col: val.lap_col,
+              time_col: typeof val.time_col === 'string' && val.time_col ? val.time_col : null,
+              dist_col: typeof val.dist_col === 'string' && val.dist_col ? val.dist_col : null,
               gap_time_threshold:
                 typeof val.gap_time_threshold === 'number' ? val.gap_time_threshold : null,
               gap_dist_threshold:
                 typeof val.gap_dist_threshold === 'number' ? val.gap_dist_threshold : null,
+              ...(group_overrides ? { group_overrides } : {}),
             };
           }
         }
-        this.fileMappings = loadedMappings;
+        this.fileImports = loaded;
       }
 
       if (isPlainObject(rawSettings)) {
@@ -414,502 +382,377 @@ export class StateManager {
     return this.initPromise;
   }
 
-  private parseStoredPresets(data: unknown): PresetDef[] {
-    if (!data) {
-      return [];
-    }
-    if (Array.isArray(data)) {
-      const list: PresetDef[] = [];
-      for (const item of data) {
-        const p = normalizePresetItem(item);
-        if (p) list.push(p);
-      }
-      return list;
-    }
-    if (isPlainObject(data)) {
-      const migrated: PresetDef[] = [];
-      for (const [name, mapping] of Object.entries(data)) {
-        if (isPlainObject(mapping)) {
-          const cleanMap: Record<string, string> = {};
-          for (const [k, v] of Object.entries(mapping)) {
-            if (typeof v === 'string') cleanMap[k] = v;
-          }
-          migrated.push({
-            slug: generateSlug(name),
-            name,
-            mapping: cleanMap,
-            local_calculated_channels: [],
-          });
-        }
-      }
-      return migrated;
-    }
-    return [];
-  }
-
-  private parseStoredChannels(data: unknown[]): ChannelDef[] {
-    const converted: ChannelDef[] = [];
+  private parseStoredGroups(data: unknown[]): ChannelGroupDef[] {
+    const out: ChannelGroupDef[] = [];
+    const seenIds = new Set<string>();
     for (const item of data) {
-      if (isPlainObject(item) && typeof item.label === 'string' && typeof item.slug === 'string') {
-        const slug = item.slug;
-        const type = normalizeChannelType(slug, item.type);
-        const unit = typeof item.unit === 'string' ? item.unit : '';
-        const ch: ChannelDef = { label: item.label, slug, type, unit };
-        if (typeof item.formula === 'string') {
-          ch.formula = item.formula;
-        }
-        if (isPlainObject(item.inputs)) {
-          const inputs: Record<string, string> = {};
-          for (const [k, v] of Object.entries(item.inputs)) {
-            if (typeof v === 'string') inputs[k] = v;
-          }
-          ch.inputs = inputs;
-        }
-        converted.push(ch);
-      } else if (typeof item === 'string') {
-        const slug = generateSlug(item);
-        converted.push({
-          label: item,
-          slug,
-          type: normalizeChannelType(slug, undefined),
-          unit: '',
-        });
-      } else if (isPlainObject(item) && typeof item.label === 'string') {
-        const slug = generateSlug(item.label);
-        converted.push({
-          label: item.label,
-          slug,
-          type: normalizeChannelType(slug, item.type),
-          unit: typeof item.unit === 'string' ? item.unit : '',
-        });
-      }
+      if (!isPlainObject(item) || typeof item.name !== 'string') continue;
+      const name = item.name.trim();
+      if (!name) continue;
+      const rawId = typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `grp_${generateSlug(name)}`;
+      const id = seenIds.has(rawId) ? generateUniqueSlug(rawId, seenIds) : rawId;
+      seenIds.add(id);
+      const unit = typeof item.unit === 'string' ? item.unit.trim() : '';
+      const channels = Array.isArray(item.channels)
+        ? mergeUniqueStrings(
+            item.channels.filter((c): c is string => typeof c === 'string'),
+            [],
+          )
+        : [];
+      const transforms = isPlainObject(item.transforms)
+        ? cloneTransforms(item.transforms as Record<string, ChannelTransform>)
+        : undefined;
+      out.push({ id, name, unit, channels, ...(transforms ? { transforms } : {}) });
     }
-    return converted;
+    return out;
   }
-
-  // -------------------------------------------------------------------------
-  // Slug & Display Helpers
-  // -------------------------------------------------------------------------
-
-  generateSlug(label: string): string {
-    return generateSlug(label);
-  }
-
-  generateUniqueSlug(label: string, existingSlugs?: Iterable<string>): string {
-    const slugs = existingSlugs ?? this.channels.map((ch) => ch.slug);
-    return generateUniqueSlug(label, slugs);
-  }
-
-  formatChannelDisplay(label: string, unit = ''): string {
-    return formatChannelDisplay(label, unit);
-  }
-
-  // -------------------------------------------------------------------------
-  // Channel Definitions
-  // -------------------------------------------------------------------------
-
-  getChannelDefs(): ChannelDef[] {
-    return this.channels.map(cloneChannelDef);
-  }
-
-  async saveChannelDefs(channels: ChannelDef[]): Promise<void> {
-    this.channels = channels.map((ch) => ({
-      label: ch.label,
-      slug: ch.slug,
-      type: normalizeChannelType(ch.slug, ch.type),
-      unit: ch.unit ?? '',
-      ...(ch.formula !== undefined ? { formula: ch.formula } : {}),
-      ...(ch.inputs !== undefined ? { inputs: { ...ch.inputs } } : {}),
-    }));
-    await kvSet(KV_CHANNELS, this.channels);
-  }
-
-  async saveNewCustomChannels(labels: string[]): Promise<boolean> {
-    const existingDefs = this.getChannelDefs();
-    const existingLabels = new Set<string>();
-    for (const ch of existingDefs) {
-      existingLabels.add(ch.label);
-      existingLabels.add(formatChannelDisplay(ch.label, ch.unit));
+  private getRequiredGroupMeta(id: string): { name: string; unit: string; defaultAliases: string[] } | null {
+    if (id === STD_CH_LAP_NUM_SLUG) {
+      return { name: STD_CH_LAP_NUM, unit: '', defaultAliases: this.systemAliases.lap };
     }
-    const existingSlugs = existingDefs.map((ch) => ch.slug);
-
-    let updated = false;
-    for (const rawLabel of labels) {
-      const labelClean = rawLabel.trim();
-      if (
-        labelClean &&
-        labelClean !== '-- Skip --' &&
-        !existingLabels.has(labelClean) &&
-        this.getSlugByLabel(labelClean) === null
-      ) {
-        const slug = generateUniqueSlug(labelClean, existingSlugs);
-        existingDefs.push({
-          label: labelClean,
-          slug,
-          type: 'custom',
-          unit: '',
-        });
-        existingLabels.add(labelClean);
-        existingSlugs.push(slug);
-        updated = true;
-      }
+    if (id === STD_CH_LAP_TIME_SLUG) {
+      return { name: STD_CH_LAP_TIME, unit: 's', defaultAliases: this.systemAliases.time };
     }
-
-    if (updated) {
-      await this.saveChannelDefs(existingDefs);
-    }
-    return updated;
-  }
-
-  getChannelLabels(): string[] {
-    return this.channels.map((ch) => ch.label);
-  }
-
-  getChannelDefsBySlug(): Record<string, ChannelDef> {
-    const res: Record<string, ChannelDef> = {};
-    for (const ch of this.channels) {
-      res[ch.slug] = cloneChannelDef(ch);
-    }
-    return res;
-  }
-
-  getCalculatedChannelDefs(): ChannelDef[] {
-    return this.channels.filter((ch) => ch.type === 'calculated').map(cloneChannelDef);
-  }
-
-  getCalculatedChannelSlugs(): Set<string> {
-    return new Set(this.channels.filter((ch) => ch.type === 'calculated').map((ch) => ch.slug));
-  }
-
-  getChannelDisplayNames(): string[] {
-    return this.channels.map((ch) => formatChannelDisplay(ch.label, ch.unit));
-  }
-
-  labelToSlugMapping(): Record<string, string> {
-    const res: Record<string, string> = {};
-    for (const ch of this.channels) {
-      if (ch.label && ch.slug) {
-        res[ch.label] = ch.slug;
-        const disp = formatChannelDisplay(ch.label, ch.unit);
-        if (disp) {
-          res[disp] = ch.slug;
-        }
-      }
-    }
-    return res;
-  }
-
-  getSlugByLabel(label: string): string | null {
-    const mapping = this.labelToSlugMapping();
-    if (label in mapping) {
-      return mapping[label];
-    }
-    const targetLower = label.trim().toLowerCase();
-    for (const [k, v] of Object.entries(mapping)) {
-      if (k.toLowerCase() === targetLower) {
-        return v;
-      }
+    if (id === STD_CH_LAP_DIST_SLUG) {
+      return { name: STD_CH_LAP_DIST, unit: 'm', defaultAliases: this.systemAliases.dist };
     }
     return null;
   }
 
-  getUnitBySlug(slug: string, defaultUnit = ''): string {
-    const found = this.channels.find((ch) => ch.slug === slug);
-    return found ? found.unit ?? defaultUnit : defaultUnit;
-  }
+  private ensureRequiredGroupsInMemory(): boolean {
+    const byId = new Map<string, ChannelGroupDef>();
+    const customGroups: ChannelGroupDef[] = [];
+    const claimedByCustom = new Set<string>();
 
-  getLabelBySlug(slug: string, defaultLabel?: string): string {
-    const found = this.channels.find((ch) => ch.slug === slug);
-    if (found) {
-      return found.label;
-    }
-    if (defaultLabel !== undefined) {
-      return defaultLabel;
-    }
-    if (slug === STD_CH_LAP_NUM_SLUG) return STD_CH_LAP_NUM;
-    if (slug === STD_CH_LAP_TIME_SLUG) return STD_CH_LAP_TIME;
-    if (slug === STD_CH_LAP_DIST_SLUG) return STD_CH_LAP_DIST;
-    return slug;
-  }
-
-  getDisplayNameBySlug(slug: string, defaultLabel?: string): string {
-    const found = this.channels.find((ch) => ch.slug === slug);
-    if (found) {
-      return formatChannelDisplay(found.label || slug, found.unit);
-    }
-    const label = this.getLabelBySlug(slug, defaultLabel);
-    const unit = this.getUnitBySlug(slug, '');
-    return formatChannelDisplay(label, unit);
-  }
-
-  getLapLabel(): string {
-    return this.getLabelBySlug(STD_CH_LAP_NUM_SLUG, STD_CH_LAP_NUM);
-  }
-
-  getTimeLabel(): string {
-    return this.getLabelBySlug(STD_CH_LAP_TIME_SLUG, STD_CH_LAP_TIME);
-  }
-
-  getDistanceLabel(): string {
-    return this.getLabelBySlug(STD_CH_LAP_DIST_SLUG, STD_CH_LAP_DIST);
-  }
-
-  // -------------------------------------------------------------------------
-  // Presets CRUD & Best-Fit Matching
-  // -------------------------------------------------------------------------
-
-  loadPresets(): PresetDef[] {
-    return this.presets.map(clonePresetDef);
-  }
-
-  async savePresets(presets: PresetDef[]): Promise<void> {
-    this.presets = presets.map(clonePresetDef);
-    await kvSet(KV_PRESETS, this.presets);
-  }
-
-  getPresetBySlug(slug: string): PresetDef | null {
-    const found = this.presets.find((p) => p.slug === slug);
-    return found ? clonePresetDef(found) : null;
-  }
-
-  getPresetByName(name: string): PresetDef | null {
-    const found = this.presets.find((p) => p.name === name);
-    return found ? clonePresetDef(found) : null;
-  }
-
-  getPresetNameBySlug(slug: string, fallback?: string): string {
-    const preset = this.getPresetBySlug(slug);
-    if (preset?.name) {
-      return preset.name;
-    }
-    return fallback !== undefined ? fallback : slug;
-  }
-
-  getPresetSlugByName(name: string): string | null {
-    const preset = this.getPresetByName(name);
-    return preset?.slug ?? null;
-  }
-
-  async savePreset(
-    presetName: string,
-    mapping: Record<string, string>,
-    options: {
-      slug?: string | null;
-      localCalculatedChannels?: LocalCalcDef[];
-      gapTimeThreshold?: number | null;
-      gapDistThreshold?: number | null;
-    } = {},
-  ): Promise<string> {
-    const presets = this.loadPresets();
-    const existingSlugs = presets.map((p) => p.slug);
-
-    const {
-      slug = null,
-      localCalculatedChannels,
-      gapTimeThreshold,
-      gapDistThreshold,
-    } = options;
-
-    let targetPreset: PresetDef | undefined;
-    if (slug) {
-      targetPreset = presets.find((p) => p.slug === slug);
-    }
-    if (!targetPreset) {
-      targetPreset = presets.find((p) => p.name === presetName);
-    }
-
-    const calcsCopy = localCalculatedChannels
-      ? localCalculatedChannels.map((c) => ({ ...c, inputs: { ...c.inputs } }))
-      : undefined;
-    const cleanMapping = stripCalcTargetsFromMapping(
-      mapping,
-      calcsCopy ?? targetPreset?.local_calculated_channels ?? [],
-    );
-
-    let savedSlug: string;
-    if (targetPreset) {
-      targetPreset.name = presetName;
-      targetPreset.mapping = cleanMapping;
-      if (calcsCopy !== undefined) {
-        targetPreset.local_calculated_channels = calcsCopy;
-      } else if (!targetPreset.local_calculated_channels) {
-        targetPreset.local_calculated_channels = [];
-      }
-      if (gapTimeThreshold !== undefined && gapTimeThreshold !== null) {
-        targetPreset.gap_time_threshold = Number(gapTimeThreshold);
-      }
-      if (gapDistThreshold !== undefined && gapDistThreshold !== null) {
-        targetPreset.gap_dist_threshold = Number(gapDistThreshold);
-      }
-      savedSlug = targetPreset.slug;
-    } else {
-      savedSlug = generateUniqueSlug(slug || presetName, existingSlugs);
-      const newPreset: PresetDef = {
-        slug: savedSlug,
-        name: presetName,
-        mapping: cleanMapping,
-        local_calculated_channels: calcsCopy ?? [],
-      };
-      if (gapTimeThreshold !== undefined && gapTimeThreshold !== null) {
-        newPreset.gap_time_threshold = Number(gapTimeThreshold);
-      }
-      if (gapDistThreshold !== undefined && gapDistThreshold !== null) {
-        newPreset.gap_dist_threshold = Number(gapDistThreshold);
-      }
-      presets.push(newPreset);
-    }
-
-    await this.savePresets(presets);
-    return savedSlug;
-  }
-
-  async deletePreset(slugOrName: string): Promise<void> {
-    const filtered = this.presets.filter(
-      (p) => p.slug !== slugOrName && p.name !== slugOrName,
-    );
-    if (filtered.length !== this.presets.length) {
-      await this.savePresets(filtered);
-    }
-  }
-
-  getPresetMatchStats(slugOrName: string, rawColumns: string[]): PresetMatchStats {
-    const preset = this.getPresetBySlug(slugOrName) ?? this.getPresetByName(slugOrName);
-    const mapping = preset?.mapping ?? {};
-    const localCalcs = preset?.local_calculated_channels ?? [];
-
-    const rawSet = new Set(rawColumns);
-    const presetCols = Object.keys(mapping);
-    const presetColSet = new Set(presetCols);
-
-    for (const calc of localCalcs) {
-      for (const inp of Object.values(calc.inputs ?? {})) {
-        if (!presetColSet.has(inp)) {
-          presetColSet.add(inp);
-          presetCols.push(inp);
+    for (const g of this.channelGroups) {
+      if (isRequiredChannelGroupId(g.id)) {
+        byId.set(g.id, cloneGroup(g));
+      } else {
+        const cloned = cloneGroup(g);
+        customGroups.push(cloned);
+        for (const ch of cloned.channels) {
+          claimedByCustom.add(ch.toLowerCase());
         }
       }
     }
 
-    const matchedChannels = presetCols.filter((c) => rawSet.has(c));
-    const missingChannels = presetCols.filter((c) => !rawSet.has(c));
-    const unmappedChannels = rawColumns.filter((c) => !presetColSet.has(c));
+    const requiredGroups: ChannelGroupDef[] = [];
+    for (const reqId of REQUIRED_CHANNEL_GROUP_IDS) {
+      const meta = this.getRequiredGroupMeta(reqId)!;
+      const existing = byId.get(reqId);
+      if (existing) {
+        const channels =
+          existing.channels.length > 0
+            ? existing.channels
+            : meta.defaultAliases.filter((c) => !claimedByCustom.has(c.toLowerCase()));
+        const transforms = cloneTransforms(existing.transforms);
+        requiredGroups.push({
+          id: reqId,
+          name: meta.name,
+          unit: meta.unit,
+          channels: [...channels],
+          ...(transforms ? { transforms } : {}),
+        });
+      } else {
+        requiredGroups.push({
+          id: reqId,
+          name: meta.name,
+          unit: meta.unit,
+          channels: meta.defaultAliases.filter((c) => !claimedByCustom.has(c.toLowerCase())),
+        });
+      }
+    }
 
-    const matchedCount = matchedChannels.length;
-    const presetTotal = presetCols.length;
-    const matchRatio = presetTotal > 0 ? matchedCount / presetTotal : 0.0;
+    const next = [...requiredGroups, ...customGroups];
+    const changed = JSON.stringify(next) !== JSON.stringify(this.channelGroups);
+    this.channelGroups = next;
+    this.syncSystemAliasesFromRequiredGroups();
+    return changed;
+  }
 
-    return {
-      matched_count: matchedCount,
-      preset_total: presetTotal,
-      missing_in_file_count: missingChannels.length,
-      unmapped_in_file_count: unmappedChannels.length,
-      match_ratio: matchRatio,
-      matched_channels: matchedChannels,
-      missing_channels: missingChannels,
-      unmapped_channels: unmappedChannels,
+  private syncSystemAliasesFromRequiredGroups(): void {
+    const lapGrp = this.channelGroups.find((g) => g.id === STD_CH_LAP_NUM_SLUG);
+    const timeGrp = this.channelGroups.find((g) => g.id === STD_CH_LAP_TIME_SLUG);
+    const distGrp = this.channelGroups.find((g) => g.id === STD_CH_LAP_DIST_SLUG);
+    this.systemAliases = {
+      lap: lapGrp && lapGrp.channels.length > 0 ? [...lapGrp.channels] : [...this.systemAliases.lap],
+      time: timeGrp && timeGrp.channels.length > 0 ? [...timeGrp.channels] : [...this.systemAliases.time],
+      dist: distGrp && distGrp.channels.length > 0 ? [...distGrp.channels] : [...this.systemAliases.dist],
     };
   }
 
-  findMatchingPreset(rawColumns: string[]): string | null {
-    const rawSet = new Set(rawColumns);
-    let bestPresetSlug: string | null = null;
-    let bestRank: [number, number, number] = [-1, -1.0, -1];
+  // -------------------------------------------------------------------------
+  // Channel Groups
+  // -------------------------------------------------------------------------
 
-    for (const preset of this.presets) {
-      const mapping = preset.mapping ?? {};
-      const localCalcs = preset.local_calculated_channels ?? [];
-      if (Object.keys(mapping).length === 0 && localCalcs.length === 0) {
-        continue;
+  getChannelGroups(): ChannelGroupDef[] {
+    return this.channelGroups.map(cloneGroup);
+  }
+
+  async saveChannelGroups(groups: ChannelGroupDef[]): Promise<void> {
+    this.channelGroups = groups.map(cloneGroup);
+    this.ensureRequiredGroupsInMemory();
+    await kvSet(KV_CHANNEL_GROUPS, this.channelGroups);
+    await kvSet(KV_SYSTEM_ALIASES, this.systemAliases);
+  }
+
+  getGroupById(groupId: string): ChannelGroupDef | null {
+    const found = this.channelGroups.find((g) => g.id === groupId);
+    return found ? cloneGroup(found) : null;
+  }
+
+  getGroupForRawChannel(rawChannel: string): ChannelGroupDef | null {
+    const found = this.channelGroups.find((g) => g.channels.includes(rawChannel));
+    return found ? cloneGroup(found) : null;
+  }
+
+  async upsertChannelGroup(params: {
+    id?: string;
+    name: string;
+    unit?: string;
+    channels: string[];
+  }): Promise<ChannelGroupDef> {
+    const cleanName = params.name.trim();
+    const cleanUnit = (params.unit ?? '').trim();
+    const cleanChannels = mergeUniqueStrings(params.channels, []);
+    const memberSet = new Set(cleanChannels);
+
+    // Ensure a raw channel only belongs to one group at a time
+    const nextGroups = this.channelGroups.map((g) => {
+      if (params.id && g.id === params.id) {
+        return cloneGroup(g);
       }
+      return {
+        ...cloneGroup(g),
+        channels: g.channels.filter((c) => !memberSet.has(c)),
+      };
+    });
 
-      const presetCols = new Set(Object.keys(mapping));
-      for (const calc of localCalcs) {
-        for (const inp of Object.values(calc.inputs ?? {})) {
-          presetCols.add(inp);
-        }
-      }
-
-      let matchedCount = 0;
-      for (const col of presetCols) {
-        if (rawSet.has(col)) {
-          matchedCount += 1;
-        }
-      }
-
-      const presetTotal = presetCols.size;
-      const matchRatio = presetTotal > 0 ? matchedCount / presetTotal : 0.0;
-
-      // Threshold check: works for full matches or partial matches with >=40% overlap
-      const isValidMatch =
-        presetTotal <= 2
-          ? matchedCount === presetTotal
-          : matchedCount >= 2 && matchRatio >= 0.4;
-
-      if (isValidMatch) {
-        const rank: [number, number, number] = [matchedCount, matchRatio, presetTotal];
-        if (isBetterPresetRank(rank, bestRank)) {
-          bestRank = rank;
-          bestPresetSlug = preset.slug;
-        }
+    if (params.id) {
+      const reqMeta = this.getRequiredGroupMeta(params.id);
+      const idx = nextGroups.findIndex((g) => g.id === params.id);
+      if (idx >= 0) {
+        const transforms = cloneTransforms(nextGroups[idx].transforms);
+        const updated: ChannelGroupDef = {
+          id: params.id,
+          name: reqMeta ? reqMeta.name : cleanName,
+          unit: reqMeta ? reqMeta.unit : cleanUnit,
+          channels: cleanChannels,
+          ...(transforms ? { transforms } : {}),
+        };
+        nextGroups[idx] = updated;
+        await this.saveChannelGroups(nextGroups);
+        return cloneGroup(this.getGroupById(params.id) ?? updated);
       }
     }
 
-    return bestPresetSlug;
+    const existingIds = nextGroups.map((g) => g.id);
+    const id = generateUniqueSlug(`grp_${cleanName}`, existingIds);
+    const created: ChannelGroupDef = {
+      id,
+      name: cleanName,
+      unit: cleanUnit,
+      channels: cleanChannels,
+    };
+    nextGroups.push(created);
+    await this.saveChannelGroups(nextGroups);
+    return cloneGroup(created);
+  }
+  async addChannelsToGroup(groupId: string, rawChannels: string[]): Promise<void> {
+    const group = this.getGroupById(groupId);
+    if (!group) return;
+    await this.upsertChannelGroup({
+      id: group.id,
+      name: group.name,
+      unit: group.unit,
+      channels: [...group.channels, ...rawChannels],
+    });
+  }
+
+  async deleteChannelGroup(groupId: string): Promise<void> {
+    if (isRequiredChannelGroupId(groupId)) {
+      return;
+    }
+    const filtered = this.channelGroups.filter((g) => g.id !== groupId);
+    if (filtered.length !== this.channelGroups.length) {
+      await this.saveChannelGroups(filtered);
+    }
+  }
+
+  getDisplayNameByKey(keyOrGroupId: string): string {
+    if (keyOrGroupId === STD_CH_LAP_NUM_SLUG) return STD_CH_LAP_NUM;
+    if (keyOrGroupId === STD_CH_LAP_TIME_SLUG) return formatChannelDisplay(STD_CH_LAP_TIME, 's');
+    if (keyOrGroupId === STD_CH_LAP_DIST_SLUG) return formatChannelDisplay(STD_CH_LAP_DIST, 'm');
+
+    const grp = this.channelGroups.find((g) => g.id === keyOrGroupId);
+    if (grp) {
+      return formatChannelDisplay(grp.name, grp.unit);
+    }
+    return keyOrGroupId;
   }
 
   // -------------------------------------------------------------------------
-  // Per-File Mapping Memory (Keyed by File Signature)
+  // System Role Aliases & Auto-Detection
   // -------------------------------------------------------------------------
 
-  async computeFileSignature(fileName: string, rawColumns: string[]): Promise<string> {
-    return computeFileSignature(fileName, rawColumns);
+  getSystemAliases(): SystemRoleAliases {
+    return {
+      lap: [...this.systemAliases.lap],
+      time: [...this.systemAliases.time],
+      dist: [...this.systemAliases.dist],
+    };
   }
 
-  getFileMappingConfig(signature: string): FileMappingConfig | null {
-    const entry = this.fileMappings[signature];
-    return entry ? cloneFileMapping(entry) : null;
+  async recordSystemAliases(
+    lapCol: string,
+    timeCol: string | null,
+    distCol: string | null,
+  ): Promise<void> {
+    const appendMissing = (existing: string[], col: string | null): string[] => {
+      if (!col || !col.trim()) return existing;
+      const clean = col.trim();
+      if (existing.some((c) => c.toLowerCase() === clean.toLowerCase())) {
+        return existing;
+      }
+      return [clean, ...existing];
+    };
+
+    this.systemAliases = {
+      lap: appendMissing(this.systemAliases.lap, lapCol),
+      time: appendMissing(this.systemAliases.time, timeCol),
+      dist: appendMissing(this.systemAliases.dist, distCol),
+    };
+    await kvSet(KV_SYSTEM_ALIASES, this.systemAliases);
+
+    const addToRequiredGroup = async (groupId: string, col: string | null) => {
+      if (!col || !col.trim()) return;
+      const clean = col.trim();
+      const grp = this.getGroupById(groupId);
+      if (!grp) return;
+      if (grp.channels.some((c) => c.toLowerCase() === clean.toLowerCase())) {
+        return;
+      }
+      await this.upsertChannelGroup({
+        id: grp.id,
+        name: grp.name,
+        unit: grp.unit,
+        channels: [clean, ...grp.channels],
+      });
+    };
+
+    await addToRequiredGroup(STD_CH_LAP_NUM_SLUG, lapCol);
+    await addToRequiredGroup(STD_CH_LAP_TIME_SLUG, timeCol);
+    await addToRequiredGroup(STD_CH_LAP_DIST_SLUG, distCol);
   }
 
-  getAllFileMappings(): Record<string, FileMappingConfig> {
-    const res: Record<string, FileMappingConfig> = {};
-    for (const [sig, cfg] of Object.entries(this.fileMappings)) {
-      res[sig] = cloneFileMapping(cfg);
+  autoDetectImportRoles(
+    columns: string[],
+    finiteCounts?: number[],
+  ): { lapCol: string | null; timeCol: string | null; distCol: string | null } {
+    const isNumericCandidate = (idx: number): boolean => {
+      if (!finiteCounts || idx >= finiteCounts.length) return true;
+      return finiteCounts[idx] >= 1;
+    };
+
+    const matchAlias = (aliases: string[], excludeCols: Set<string>): string | null => {
+      for (const alias of aliases) {
+        const idx = columns.findIndex(
+          (c, i) => !excludeCols.has(c) && c === alias && isNumericCandidate(i),
+        );
+        if (idx >= 0) return columns[idx];
+      }
+      for (const alias of aliases) {
+        const normAlias = normalizeColName(alias);
+        const idx = columns.findIndex(
+          (c, i) => !excludeCols.has(c) && normalizeColName(c) === normAlias && isNumericCandidate(i),
+        );
+        if (idx >= 0) return columns[idx];
+      }
+      for (const alias of aliases) {
+        const normAlias = normalizeColName(stripUnitSuffix(alias));
+        if (!normAlias) continue;
+        const idx = columns.findIndex(
+          (c, i) =>
+            !excludeCols.has(c) &&
+            normalizeColName(stripUnitSuffix(c)) === normAlias &&
+            isNumericCandidate(i),
+        );
+        if (idx >= 0) return columns[idx];
+      }
+      return null;
+    };
+
+    const used = new Set<string>();
+    const lapCol = matchAlias(this.systemAliases.lap, used);
+    if (lapCol) used.add(lapCol);
+    const timeCol = matchAlias(this.systemAliases.time, used);
+    if (timeCol) used.add(timeCol);
+    const distCol = matchAlias(this.systemAliases.dist, used);
+
+    return { lapCol, timeCol, distCol };
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-File Import Memory
+  // -------------------------------------------------------------------------
+
+  async computeFileSignature(
+    fileName: string,
+    rawColumns: string[],
+    sheetName?: string | null,
+  ): Promise<string> {
+    return computeFileSignature(fileName, rawColumns, sheetName);
+  }
+
+  getFileImportConfig(signature: string): FileImportConfig | null {
+    const entry = this.fileImports[signature];
+    return entry ? cloneFileImport(entry) : null;
+  }
+
+  getAllFileImports(): Record<string, FileImportConfig> {
+    const res: Record<string, FileImportConfig> = {};
+    for (const [sig, cfg] of Object.entries(this.fileImports)) {
+      res[sig] = cloneFileImport(cfg);
     }
     return res;
   }
 
-  async saveFileMappingConfig(signature: string, config: FileMappingConfig): Promise<void> {
-    this.fileMappings[signature] = cloneFileMapping(config);
-    await kvSet(KV_FILE_MAPPINGS, this.fileMappings);
+  async saveFileImportConfig(signature: string, config: FileImportConfig): Promise<void> {
+    this.fileImports[signature] = cloneFileImport(config);
+    await kvSet(KV_FILE_IMPORTS, this.fileImports);
   }
 
-  async removeFileMappingConfig(signature: string): Promise<void> {
-    if (signature in this.fileMappings) {
-      delete this.fileMappings[signature];
-      await kvSet(KV_FILE_MAPPINGS, this.fileMappings);
+  async removeFileImportConfig(signature: string): Promise<void> {
+    if (signature in this.fileImports) {
+      delete this.fileImports[signature];
+      await kvSet(KV_FILE_IMPORTS, this.fileImports);
     }
   }
 
-  async clearFileMappings(): Promise<void> {
-    this.fileMappings = {};
-    await kvSet(KV_FILE_MAPPINGS, this.fileMappings);
+  async clearFileImports(): Promise<void> {
+    this.fileImports = {};
+    await kvSet(KV_FILE_IMPORTS, this.fileImports);
   }
 
-  isFileMappingValidForColumns(config: FileMappingConfig, rawColumns: string[]): boolean {
+  async replaceAllFileImports(nextImports: Record<string, FileImportConfig>): Promise<void> {
+    const cleaned: Record<string, FileImportConfig> = {};
+    for (const [sig, cfg] of Object.entries(nextImports)) {
+      cleaned[sig] = cloneFileImport(cfg);
+    }
+    this.fileImports = cleaned;
+    await kvSet(KV_FILE_IMPORTS, this.fileImports);
+  }
+
+  isFileImportValidForColumns(config: FileImportConfig, rawColumns: string[]): boolean {
     const rawSet = new Set(rawColumns);
-    for (const rawCol of Object.keys(config.mapping)) {
-      if (!rawSet.has(rawCol)) {
-        return false;
-      }
+    if (!config.lap_col || !rawSet.has(config.lap_col)) {
+      return false;
     }
-    for (const calc of config.local_calculated_channels) {
-      for (const inpCol of Object.values(calc.inputs)) {
-        if (!rawSet.has(inpCol)) {
-          return false;
-        }
-      }
-    }
-    return true;
+    const hasTime = Boolean(config.time_col && rawSet.has(config.time_col));
+    const hasDist = Boolean(config.dist_col && rawSet.has(config.dist_col));
+    if (config.time_col && !hasTime) return false;
+    if (config.dist_col && !hasDist) return false;
+    return hasTime || hasDist;
   }
 
   // -------------------------------------------------------------------------
@@ -951,16 +794,16 @@ export class StateManager {
   }
 
   // -------------------------------------------------------------------------
-  // Config Export / Import (Desktop szenergy_config.json compatible)
+  // Config Export / Import
   // -------------------------------------------------------------------------
 
   exportConfig(): ConfigExportEnvelope {
     return {
-      schema_version: 1,
+      schema_version: 2,
       type: 'szenergypro_config_export',
       data: {
-        presets: this.loadPresets(),
-        channels: this.getChannelDefs(),
+        channelGroups: this.getChannelGroups(),
+        systemAliases: this.getSystemAliases(),
       },
     };
   }
@@ -971,201 +814,59 @@ export class StateManager {
 
   async importConfigJson(
     jsonText: string,
-  ): Promise<{ presetsImported: number; channelsImported: number }> {
+  ): Promise<{ groupsImported: number; aliasesImported: number }> {
     let raw: unknown;
     try {
       raw = JSON.parse(jsonText);
     } catch (err) {
       throw new Error(
-        `Could not parse JSON configuration: ${err instanceof Error ? err.message : String(err)}`,
+        `Could not parse configuration file as JSON: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
-    if (!isPlainObject(raw)) {
-      throw new Error('Invalid configuration format: root must be a JSON object.');
+    if (!isPlainObject(raw) || raw.type !== 'szenergypro_config_export' || !isPlainObject(raw.data)) {
+      throw new Error('Invalid configuration file format.');
     }
 
-    const schemaVersion = typeof raw.schema_version === 'number' ? raw.schema_version : 0;
-    const payload = isPlainObject(raw.data) ? raw.data : raw;
+    let groupsImported = 0;
+    let aliasesImported = 0;
 
-    const importedPresets = payload.presets;
-    const importedChannels = payload.channels ?? payload.custom_channels;
-
-    if (importedPresets === undefined && importedChannels === undefined) {
-      throw new Error("Invalid configuration file: neither 'presets' nor 'channels' found.");
+    if (Array.isArray(raw.data.channelGroups)) {
+      const imported = this.parseStoredGroups(raw.data.channelGroups);
+      const byId = new Map<string, ChannelGroupDef>();
+      for (const g of this.channelGroups) {
+        byId.set(g.id, cloneGroup(g));
+      }
+      for (const g of imported) {
+        byId.set(g.id, g);
+        groupsImported += 1;
+      }
+      await this.saveChannelGroups(Array.from(byId.values()));
     }
 
-    let channelsImported = 0;
-    if (importedChannels !== undefined) {
-      if (!Array.isArray(importedChannels)) {
-        throw new Error("'channels' in configuration must be a list of channel definitions.");
+    if (isPlainObject(raw.data.systemAliases)) {
+      const sa = raw.data.systemAliases;
+      const nextLap = Array.isArray(sa.lap)
+        ? sa.lap.filter((s): s is string => typeof s === 'string')
+        : [];
+      const nextTime = Array.isArray(sa.time)
+        ? sa.time.filter((s): s is string => typeof s === 'string')
+        : [];
+      const nextDist = Array.isArray(sa.dist)
+        ? sa.dist.filter((s): s is string => typeof s === 'string')
+        : [];
+      aliasesImported = nextLap.length + nextTime.length + nextDist.length;
+      this.systemAliases = {
+        lap: mergeUniqueStrings(nextLap, this.systemAliases.lap),
+        time: mergeUniqueStrings(nextTime, this.systemAliases.time),
+        dist: mergeUniqueStrings(nextDist, this.systemAliases.dist),
+      };
+      await kvSet(KV_SYSTEM_ALIASES, this.systemAliases);
+      if (this.ensureRequiredGroupsInMemory()) {
+        await kvSet(KV_CHANNEL_GROUPS, this.channelGroups);
       }
-
-      const existingChannels = this.getChannelDefs();
-      const channelsBySlug = new Map<string, ChannelDef>();
-      for (const ch of existingChannels) {
-        if (ch.slug) {
-          channelsBySlug.set(ch.slug, ch);
-        }
-      }
-      const existingSlugs = Array.from(channelsBySlug.keys());
-
-      for (const ch of importedChannels) {
-        if (isPlainObject(ch) && typeof ch.label === 'string') {
-          const label = ch.label.trim();
-          const rawSlug = typeof ch.slug === 'string' && ch.slug.trim() ? ch.slug.trim() : null;
-          const unit = typeof ch.unit === 'string' ? ch.unit : '';
-          const formula = typeof ch.formula === 'string' ? ch.formula : undefined;
-          let inputs: Record<string, string> | undefined;
-          if (isPlainObject(ch.inputs)) {
-            inputs = {};
-            for (const [k, v] of Object.entries(ch.inputs)) {
-              if (typeof v === 'string') inputs[k] = v;
-            }
-          }
-
-          if (rawSlug) {
-            const existing = channelsBySlug.get(rawSlug);
-            if (existing) {
-              existing.label = label;
-              if (typeof ch.unit === 'string') existing.unit = unit;
-              if (ch.type !== undefined) {
-                existing.type = normalizeChannelType(rawSlug, ch.type);
-              }
-              if (formula !== undefined) existing.formula = formula;
-              if (inputs !== undefined) existing.inputs = inputs;
-            } else {
-              const newCh: ChannelDef = {
-                label,
-                slug: rawSlug,
-                type: normalizeChannelType(rawSlug, ch.type),
-                unit,
-                ...(formula !== undefined ? { formula } : {}),
-                ...(inputs !== undefined ? { inputs } : {}),
-              };
-              channelsBySlug.set(rawSlug, newCh);
-              existingSlugs.push(rawSlug);
-            }
-            channelsImported += 1;
-          } else if (label) {
-            const slug = generateUniqueSlug(label, existingSlugs);
-            const newCh: ChannelDef = {
-              label,
-              slug,
-              type: normalizeChannelType(slug, ch.type),
-              unit,
-              ...(formula !== undefined ? { formula } : {}),
-              ...(inputs !== undefined ? { inputs } : {}),
-            };
-            channelsBySlug.set(slug, newCh);
-            existingSlugs.push(slug);
-            channelsImported += 1;
-          }
-        } else if (typeof ch === 'string') {
-          const label = ch.trim();
-          if (label) {
-            const slug = generateUniqueSlug(label, existingSlugs);
-            channelsBySlug.set(slug, {
-              label,
-              slug,
-              type: normalizeChannelType(slug, undefined),
-              unit: '',
-            });
-            existingSlugs.push(slug);
-            channelsImported += 1;
-          }
-        }
-      }
-
-      // Ensure all system-required channel slugs exist
-      const requiredSystemChannels: Array<[string, string, string]> = [
-        [STD_CH_LAP_NUM_SLUG, STD_CH_LAP_NUM, ''],
-        [STD_CH_LAP_TIME_SLUG, STD_CH_LAP_TIME, 's'],
-        [STD_CH_LAP_DIST_SLUG, STD_CH_LAP_DIST, 'm'],
-      ];
-      for (const [reqSlug, reqDefaultLabel, reqUnit] of requiredSystemChannels) {
-        if (!channelsBySlug.has(reqSlug)) {
-          channelsBySlug.set(reqSlug, {
-            label: reqDefaultLabel,
-            slug: reqSlug,
-            type: 'system',
-            unit: reqUnit,
-          });
-        }
-      }
-
-      await this.saveChannelDefs(Array.from(channelsBySlug.values()));
     }
-
-    let presetsImported = 0;
-    if (importedPresets !== undefined) {
-      if (!Array.isArray(importedPresets) && !isPlainObject(importedPresets)) {
-        throw new Error("'presets' in configuration must be a list or object.");
-      }
-
-      const existingPresets = this.loadPresets();
-      const presetsBySlug = new Map<string, PresetDef>();
-      const presetsByName = new Map<string, PresetDef>();
-      for (const p of existingPresets) {
-        presetsBySlug.set(p.slug, p);
-        presetsByName.set(p.name, p);
-      }
-
-      const presetItems: PresetDef[] = [];
-      if (Array.isArray(importedPresets)) {
-        for (const item of importedPresets) {
-          const p = normalizePresetItem(item);
-          if (p) presetItems.push(p);
-        }
-      } else if (isPlainObject(importedPresets)) {
-        const labelMap = this.labelToSlugMapping();
-        for (const [name, rawMapping] of Object.entries(importedPresets)) {
-          if (isPlainObject(rawMapping)) {
-            const mapping: Record<string, string> = {};
-            for (const [rawCol, target] of Object.entries(rawMapping)) {
-              if (typeof target === 'string') {
-                if (schemaVersion === 0 && target in labelMap) {
-                  mapping[rawCol] = labelMap[target];
-                } else {
-                  mapping[rawCol] = target;
-                }
-              }
-            }
-            presetItems.push({
-              slug: generateSlug(name),
-              name,
-              mapping,
-              local_calculated_channels: [],
-            });
-          }
-        }
-      }
-
-      for (const p of presetItems) {
-        const bySlug = presetsBySlug.get(p.slug);
-        const byName = presetsByName.get(p.name);
-        if (bySlug) {
-          bySlug.name = p.name;
-          bySlug.mapping = p.mapping;
-          bySlug.local_calculated_channels = p.local_calculated_channels;
-          if (p.gap_time_threshold !== undefined) bySlug.gap_time_threshold = p.gap_time_threshold;
-          if (p.gap_dist_threshold !== undefined) bySlug.gap_dist_threshold = p.gap_dist_threshold;
-        } else if (byName) {
-          byName.mapping = p.mapping;
-          byName.local_calculated_channels = p.local_calculated_channels;
-          if (p.gap_time_threshold !== undefined) byName.gap_time_threshold = p.gap_time_threshold;
-          if (p.gap_dist_threshold !== undefined) byName.gap_dist_threshold = p.gap_dist_threshold;
-        } else {
-          presetsBySlug.set(p.slug, p);
-          presetsByName.set(p.name, p);
-        }
-        presetsImported += 1;
-      }
-
-      await this.savePresets(Array.from(presetsBySlug.values()));
-    }
-
-    return { presetsImported, channelsImported };
+    return { groupsImported, aliasesImported };
   }
 
   // -------------------------------------------------------------------------
@@ -1296,6 +997,29 @@ export class StateManager {
     return true;
   }
 
+  async replaceAllMaps(nextMaps: TrackMapDef[]): Promise<void> {
+    const existingSlugs = new Set(this.maps.map((m) => m.slug));
+    const nextSlugs = new Set(nextMaps.map((m) => m.slug));
+    for (const slug of existingSlugs) {
+      if (!nextSlugs.has(slug)) {
+        await dbDeleteMapBySlug(slug);
+      }
+    }
+    const cloned: TrackMapDef[] = [];
+    for (const m of nextMaps) {
+      const copy: TrackMapDef = {
+        ...m,
+        x: [...m.x],
+        y: [...m.y],
+        distance: m.distance ? [...m.distance] : null,
+      };
+      await dbPutMap(copy);
+      cloned.push(copy);
+    }
+    cloned.sort((a, b) => a.name.localeCompare(b.name));
+    this.maps = cloned;
+  }
+
   exportTrackMapJson(slugOrName: string): string | null {
     const mapDef = this.getMap(slugOrName);
     if (!mapDef) {
@@ -1308,7 +1032,7 @@ export class StateManager {
     return JSON.stringify(envelope, null, 4);
   }
 
-  async importTrackMapJson(jsonText: string): Promise<TrackMapDef> {
+  parseTrackMapJson(jsonText: string): TrackMapDef {
     let raw: unknown;
     try {
       raw = JSON.parse(jsonText);
@@ -1366,7 +1090,7 @@ export class StateManager {
     const color =
       typeof data.color === 'string' && data.color.trim() ? data.color.trim() : LAP_COLORS[1];
 
-    const mapDef: TrackMapDef = {
+    return {
       name: cleanName,
       slug,
       rotation,
@@ -1375,9 +1099,12 @@ export class StateManager {
       y: yArr,
       distance: distArr,
     };
+  }
 
+  async importTrackMapJson(jsonText: string): Promise<TrackMapDef> {
+    const mapDef = this.parseTrackMapJson(jsonText);
     await dbPutMap(mapDef);
-    const existingIdx = this.maps.findIndex((m) => m.slug === slug);
+    const existingIdx = this.maps.findIndex((m) => m.slug === mapDef.slug);
     if (existingIdx >= 0) {
       this.maps[existingIdx] = mapDef;
     } else {

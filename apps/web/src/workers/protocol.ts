@@ -1,8 +1,9 @@
 import {
-  ChannelDef,
+  ChannelGroupDef,
   ParseSessionConfig,
   SelectedLapInfo,
 } from '@/types/telemetry';
+
 export interface PlotCurveData {
   channelSlug: string;
   sessionId: string;
@@ -52,22 +53,16 @@ export interface CursorQueryResponse {
   trackMapDots: Array<{ distance: number; color: string }>;
 }
 
-export interface FormulaValidationResult {
-  valid: boolean;
-  message: string;
-  variables: string[];
-}
-
 export type WorkerRequest =
   | { id: number; type: 'init' }
   | { id: number; type: 'inspectFile'; fileName: string; buffer: ArrayBuffer }
+  | { id: number; type: 'inspectExcelSheet'; fileToken: string; sheetName: string }
+  | { id: number; type: 'getSessionSheetPreview'; sessionId: string; sheetName?: string }
   | { id: number; type: 'discardPendingFile'; fileToken: string }
   | { id: number; type: 'importSession'; fileToken: string; config: ParseSessionConfig }
   | { id: number; type: 'reparseSession'; sessionId: string; config: ParseSessionConfig }
   | { id: number; type: 'removeSession'; sessionId: string }
   | { id: number; type: 'clearSessions' }
-  | { id: number; type: 'clearCalculatedCache'; calcSlugs: string[] }
-  | { id: number; type: 'validateFormula'; formula: string; expectedVars?: string[] }
   | { id: number; type: 'parseTrackMapColumns'; fileName: string; buffer: ArrayBuffer }
   | {
       id: number;
@@ -89,7 +84,7 @@ export type WorkerRequest =
       xMax: number | null;
       maxBuckets: number;
       filterGaps: boolean;
-      globalCalcs: ChannelDef[];
+      channelGroups: ChannelGroupDef[];
     }
   | {
       id: number;
@@ -99,7 +94,7 @@ export type WorkerRequest =
       selectedLaps: SelectedLapInfo[];
       targetX: number;
       hovered?: HoveredPlotBounds | null;
-      globalCalcs: ChannelDef[];
+      channelGroups: ChannelGroupDef[];
     };
 
 export type WorkerResponse =

@@ -1,5 +1,5 @@
 import {
-  ChannelDef,
+  ChannelGroupDef,
   FilePreview,
   MapData,
   ParseSessionConfig,
@@ -8,7 +8,6 @@ import {
 } from '@/types/telemetry';
 import {
   CursorQueryResponse,
-  FormulaValidationResult,
   HoveredPlotBounds,
   PlotDataResponse,
   WorkerRequest,
@@ -81,6 +80,22 @@ export class TelemetryWorkerClient {
     );
   }
 
+  public async inspectExcelSheet(
+    fileToken: string,
+    sheetName: string,
+  ): Promise<{ fileToken: string; preview: FilePreview }> {
+    await this.init();
+    return this.request({ type: 'inspectExcelSheet', fileToken, sheetName });
+  }
+
+  public async getSessionSheetPreview(
+    sessionId: string,
+    sheetName?: string,
+  ): Promise<FilePreview> {
+    await this.init();
+    return this.request({ type: 'getSessionSheetPreview', sessionId, sheetName });
+  }
+
   public async discardPendingFile(fileToken: string): Promise<void> {
     await this.init();
     return this.request({ type: 'discardPendingFile', fileToken });
@@ -104,19 +119,6 @@ export class TelemetryWorkerClient {
   public async clearSessions(): Promise<void> {
     await this.init();
     return this.request({ type: 'clearSessions' });
-  }
-
-  public async clearCalculatedCache(calcSlugs: string[]): Promise<void> {
-    await this.init();
-    return this.request({ type: 'clearCalculatedCache', calcSlugs });
-  }
-
-  public async validateFormula(
-    formula: string,
-    expectedVars?: string[],
-  ): Promise<FormulaValidationResult> {
-    await this.init();
-    return this.request({ type: 'validateFormula', formula, expectedVars });
   }
 
   public async parseTrackMapColumns(file: File): Promise<{ mapToken: string; columns: string[] }> {
@@ -159,7 +161,7 @@ export class TelemetryWorkerClient {
     xMax: number | null;
     maxBuckets: number;
     filterGaps: boolean;
-    globalCalcs: ChannelDef[];
+    channelGroups: ChannelGroupDef[];
   }): Promise<PlotDataResponse> {
     await this.init();
     return this.request({ type: 'getPlotData', ...params });
@@ -171,7 +173,7 @@ export class TelemetryWorkerClient {
     selectedLaps: SelectedLapInfo[];
     targetX: number;
     hovered?: HoveredPlotBounds | null;
-    globalCalcs: ChannelDef[];
+    channelGroups: ChannelGroupDef[];
   }): Promise<CursorQueryResponse> {
     await this.init();
     return this.request({ type: 'queryCursor', ...params });

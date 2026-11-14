@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Columns3,
   Crosshair,
+  GitCommitHorizontal,
   GripVertical,
   List,
   Maximize2,
@@ -224,10 +225,10 @@ export const GraphView: React.FC<GraphViewProps> = ({
     offsetY: number;
   } | null>(null);
 
-  // Derived channel metadata when channelsVersion or xAxisSlug changes
-  const globalCalcs = useMemo(() => {
+  // Derived channel group metadata when channelsVersion or xAxisSlug changes
+  const channelGroups = useMemo(() => {
     void channelsVersion;
-    return stateManager.getCalculatedChannelDefs();
+    return stateManager.getChannelGroups();
   }, [channelsVersion]);
 
   const xAxisOptions = useMemo(() => {
@@ -235,11 +236,11 @@ export const GraphView: React.FC<GraphViewProps> = ({
     return [
       {
         slug: STD_CH_LAP_DIST_SLUG,
-        label: stateManager.getDisplayNameBySlug(STD_CH_LAP_DIST_SLUG),
+        label: stateManager.getDisplayNameByKey(STD_CH_LAP_DIST_SLUG),
       },
       {
         slug: STD_CH_LAP_TIME_SLUG,
-        label: stateManager.getDisplayNameBySlug(STD_CH_LAP_TIME_SLUG),
+        label: stateManager.getDisplayNameByKey(STD_CH_LAP_TIME_SLUG),
       },
     ];
   }, [channelsVersion]);
@@ -248,16 +249,15 @@ export const GraphView: React.FC<GraphViewProps> = ({
     void channelsVersion;
     const map: Record<string, string> = {};
     for (const slug of selectedChannels) {
-      map[slug] = customChannelLabels[slug] || stateManager.getDisplayNameBySlug(slug);
+      map[slug] = customChannelLabels[slug] || stateManager.getDisplayNameByKey(slug);
     }
     return map;
   }, [selectedChannels, channelsVersion, customChannelLabels]);
 
   const xAxisLabel = useMemo(() => {
     void channelsVersion;
-    return stateManager.getDisplayNameBySlug(settings.xAxisSlug);
+    return stateManager.getDisplayNameByKey(settings.xAxisSlug);
   }, [settings.xAxisSlug, channelsVersion]);
-
   const sessionMap = useMemo(() => {
     const map = new Map<string, SessionSummary>();
     for (const s of sessions) {
@@ -285,7 +285,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
     selectedLaps,
     channelColors,
     settings,
-    globalCalcs,
+    channelGroups,
     displayLabels,
     lapLabels,
     xAxisLabel,
@@ -298,7 +298,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
     selectedLaps,
     channelColors,
     settings,
-    globalCalcs,
+    channelGroups,
     displayLabels,
     lapLabels,
     xAxisLabel,
@@ -548,7 +548,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
         xMax: xRange ? xRange[1] : null,
         maxBuckets,
         filterGaps: props.settings.filterGaps,
-        globalCalcs: props.globalCalcs,
+        channelGroups: props.channelGroups,
       });
 
       if (seq !== plotReqSeqRef.current || unmountedRef.current) return;
@@ -606,7 +606,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
           selectedLaps: props.selectedLaps,
           targetX,
           hovered,
-          globalCalcs: props.globalCalcs,
+          channelGroups: props.channelGroups,
         });
 
         if (seq !== cursorSeqRef.current || unmountedRef.current) {
@@ -622,7 +622,9 @@ export const GraphView: React.FC<GraphViewProps> = ({
         const isNorm = isByLap && props.settings.normalizeY;
         const yExtents = plotDataRef.current?.yExtents;
 
-        for (const [slug, items] of Object.entries(res.samplesByChannel)) {
+        for (const slug of props.selectedChannels) {
+          const items = res.samplesByChannel[slug];
+          if (!items) continue;
           for (const item of items) {
             if (!isByLap) {
               let list = nextSamples.get(slug);
@@ -789,7 +791,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
     settings.xAxisSlug,
     settings.filterGaps,
     channelsVersion,
-    globalCalcs,
+    channelGroups,
     fetchPlotData,
     drainCursorQueries,
   ]);
@@ -1357,7 +1359,15 @@ export const GraphView: React.FC<GraphViewProps> = ({
           onClick={() => onUpdateSettings({ showCursorValues: !settings.showCursorValues })}
           title="Toggle Cursor Values"
           icon={<Crosshair size={14} />}
-          label="Cursor Values"
+          label="Cursor"
+        />
+
+        <ToolbarToggleButton
+          active={settings.filterGaps}
+          onClick={() => onUpdateSettings({ filterGaps: !settings.filterGaps })}
+          title="Show or bridge data gaps across missing segments"
+          icon={<GitCommitHorizontal size={14} />}
+          label="Show Gaps"
         />
 
         <ToolbarToggleButton

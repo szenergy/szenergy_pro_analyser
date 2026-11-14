@@ -1,16 +1,16 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
-use crate::formula::evaluate_formula;
 use crate::types::{
-    GlobalCalcDef, LapSummary, ParseSessionConfig, RawTable, SessionSummary,
+    ChannelGroupDef, ChannelTransform, LapSummary, ParseSessionConfig, RawTable, SessionSummary,
 };
-
 #[derive(Debug, Clone)]
 pub struct StoredLap {
     pub lap_number: i32,
     pub duration: f64,
     pub distance: f64,
     pub sample_count: usize,
+    pub sys_time: Option<Vec<f64>>,
+    pub sys_dist: Option<Vec<f64>>,
     pub data: HashMap<String, Vec<f64>>,
 }
 
@@ -18,6 +18,8 @@ pub struct StoredLap {
 pub struct StoredSession {
     pub summary: SessionSummary,
     pub raw_table: RawTable,
+    pub source_bytes: Option<Vec<u8>>,
+    pub is_tabular: bool,
     pub laps: Vec<StoredLap>,
 }
 
@@ -66,228 +68,161 @@ fn compute_valid_span(values: &[f64]) -> f64 {
     0.0
 }
 
-fn normalize_len(mut vec: Vec<f64>, target_len: usize) -> Vec<f64> {
-    if vec.len() == target_len {
-        return vec;
+fn apply_transform(values: &[f64], factor: f64, offset: f64) -> Vec<f64> {
+    if (factor - 1.0).abs() <= f64::EPSILON && offset == 0.0 {
+        return values.to_vec();
     }
-    if target_len == 0 {
-        vec.clear();
-        return vec;
-    }
-    if vec.len() == 1 {
-        return vec![vec[0]; target_len];
-    }
-    if vec.len() > target_len {
-        vec.truncate(target_len);
-    } else {
-        let pad_val = vec.last().copied().unwrap_or(f64::NAN);
-        vec.resize(target_len, pad_val);
-    }
-    vec
+    values.iter().map(|&v| (v * factor) + offset).collect()
 }
+
+fn resolve_transform<'a>(
+    transforms: &'a HashMap<String, ChannelTransform>,
+    alias: &str,
+    resolved_key: &str,
+) -> (f64, f64) {
+    if let Some(t) = transforms.get(resolved_key) {
+        return (t.factor, t.offset);
+    }
+    if let Some(t) = transforms.get(alias) {
+        return (t.factor, t.offset);
+    }
+    if let Some(k) = resolve_key_case_insensitive(transforms, resolved_key) {
+        if let Some(t) = transforms.get(k) {
+            return (t.factor, t.offset);
+        }
+    }
+    (1.0, 0.0)
+}
+
 
 impl SessionStore {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn parse_from_raw(&mut self, raw: RawTable, cfg: ParseSessionConfig) -> SessionSummary {
-        let mut calc_col_names: HashSet<String> = HashSet::new();
-        for calc in &cfg.local_calculated_channels {
-            if !calc.target_slug.is_empty() {
-                calc_col_names.insert(calc.target_slug.clone());
-            }
-            if !calc.name.is_empty() {
-                calc_col_names.insert(calc.name.clone());
-            }
-            if !calc.target_label.is_empty() {
-                calc_col_names.insert(calc.target_label.clone());
-            }
+    pub fn parse_from_raw(
+        &mut self,
+        raw: RawTable,
+        cfg: ParseSessionConfig,
+        is_tabular: bool,
+        source_bytes: Option<Vec<u8>>,
+    ) -> Result<SessionSummary, String> {
+        let lap_col = cfg.lap_col.trim().to_string();
+        if lap_col.is_empty() {
+            return Err("Lap Number column is required.".to_string());
+        }
+        let lap_idx = raw
+            .column_index(&lap_col)
+            .ok_or_else(|| format!("Lap Number column '{}' was not found.", lap_col))?;
+
+        let time_col = cfg
+            .time_col
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let dist_col = cfg
+            .dist_col
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        if time_col.is_none() && dist_col.is_none() {
+            return Err("Select at least Lap Time or Lap Distance.".to_string());
         }
 
-        // Clean raw_table so local calculated channels never pollute raw_table or mapping
-        let mut clean_columns = Vec::with_capacity(raw.columns.len());
-        let mut clean_data = Vec::with_capacity(raw.data.len());
-        for (col_name, col_vec) in raw.columns.into_iter().zip(raw.data.into_iter()) {
-            if !calc_col_names.contains(&col_name) {
-                clean_columns.push(col_name);
-                clean_data.push(col_vec);
-            }
-        }
-        let clean_raw = RawTable {
-            columns: clean_columns,
-            data: clean_data,
-            row_count: raw.row_count,
+        let time_idx = match &time_col {
+            Some(col) => Some(
+                raw.column_index(col)
+                    .ok_or_else(|| format!("Lap Time column '{}' was not found.", col))?,
+            ),
+            None => None,
+        };
+        let dist_idx = match &dist_col {
+            Some(col) => Some(
+                raw.column_index(col)
+                    .ok_or_else(|| format!("Lap Distance column '{}' was not found.", col))?,
+            ),
+            None => None,
         };
 
-        let target_len = clean_raw.row_count;
-
-        // Build working map for sequential local calculated channel evaluation
-        let mut working_cols: HashMap<String, Vec<f64>> =
-            HashMap::with_capacity(clean_raw.columns.len() + cfg.local_calculated_channels.len() * 2);
-        for (col_name, col_vec) in clean_raw.columns.iter().zip(clean_raw.data.iter()) {
-            working_cols.insert(col_name.clone(), col_vec.clone());
+        let lap_vec = &raw.data[lap_idx];
+        let mut lap_groups: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+        for (idx, &val) in lap_vec.iter().enumerate() {
+            if val.is_finite() {
+                let lap_num = val as i32;
+                lap_groups.entry(lap_num).or_default().push(idx);
+            }
+        }
+        if lap_groups.is_empty() {
+            return Err(format!(
+                "Column '{}' contains no valid numeric lap numbers.",
+                lap_col
+            ));
         }
 
-        for calc in &cfg.local_calculated_channels {
-            let target_slug = calc.target_slug.trim();
-            let formula = calc.formula.trim();
-            if target_slug.is_empty() || formula.is_empty() {
+        let ref_finite_count = lap_vec.iter().filter(|v| v.is_finite()).count();
+
+        let mut kept_indices: Vec<usize> = Vec::new();
+        let mut channels: Vec<String> = Vec::new();
+        let mut skipped_channels: Vec<String> = Vec::new();
+
+        for (col_idx, col_name) in raw.columns.iter().enumerate() {
+            if col_idx == lap_idx {
                 continue;
             }
+            let col_vec = &raw.data[col_idx];
+            let finite_count = col_vec.iter().filter(|v| v.is_finite()).count();
 
-            let mut missing_input = false;
-            let mut input_refs: HashMap<String, &[f64]> = HashMap::with_capacity(calc.inputs.len());
-            for (var_name, raw_col) in &calc.inputs {
-                if let Some(arr) = working_cols.get(raw_col) {
-                    input_refs.insert(var_name.clone(), arr.as_slice());
-                } else {
-                    missing_input = true;
-                    break;
-                }
-            }
-            if missing_input {
-                continue;
-            }
+            let enough_points = if is_tabular {
+                finite_count >= 2 && (ref_finite_count < 4 || finite_count * 2 >= ref_finite_count)
+            } else {
+                finite_count >= 2
+            };
 
-            if let Ok(result) = evaluate_formula(formula, &input_refs, target_len) {
-                let normalized = normalize_len(result, target_len);
-                if !calc.name.is_empty() && calc.name != target_slug {
-                    working_cols.insert(calc.name.clone(), normalized.clone());
-                }
-                working_cols.insert(target_slug.to_string(), normalized);
+            if enough_points {
+                kept_indices.push(col_idx);
+                channels.push(col_name.clone());
+            } else {
+                skipped_channels.push(col_name.clone());
             }
         }
 
-        // Filter mapping to existing clean raw columns
-        let mut valid_mapping: HashMap<String, String> = HashMap::new();
-        for (raw_col, slug) in &cfg.mapping {
-            if !slug.is_empty()
-                && !calc_col_names.contains(raw_col)
-                && clean_raw.column_index(raw_col).is_some()
-            {
-                valid_mapping.insert(raw_col.clone(), slug.clone());
-            }
-        }
-
-        // Map columns to slugs in deterministic order (raw column order, then local calcs)
-        let mut mapped_cols: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut ordered_slugs: Vec<String> = Vec::new();
-        let mut seen_slugs: HashSet<String> = HashSet::new();
-
-        for raw_col in &clean_raw.columns {
-            if let Some(slug) = valid_mapping.get(raw_col) {
-                if let Some(col_vec) = working_cols.get(raw_col) {
-                    mapped_cols.insert(slug.clone(), col_vec.clone());
-                    if seen_slugs.insert(slug.clone()) {
-                        ordered_slugs.push(slug.clone());
-                    }
+        let mut stored_laps: Vec<StoredLap> = Vec::with_capacity(lap_groups.len());
+        for (lap_num, indices) in lap_groups {
+            let mut lap_data: HashMap<String, Vec<f64>> = HashMap::with_capacity(kept_indices.len());
+            for &col_idx in &kept_indices {
+                let col_name = &raw.columns[col_idx];
+                let col_vec = &raw.data[col_idx];
+                let mut slice = Vec::with_capacity(indices.len());
+                for &row_idx in &indices {
+                    slice.push(col_vec[row_idx]);
                 }
+                lap_data.insert(col_name.clone(), slice);
             }
-        }
 
-        for calc in &cfg.local_calculated_channels {
-            let target_slug = calc.target_slug.trim();
-            if !target_slug.is_empty() {
-                if let Some(col_vec) = working_cols.get(target_slug) {
-                    mapped_cols.insert(target_slug.to_string(), col_vec.clone());
-                    if seen_slugs.insert(target_slug.to_string()) {
-                        ordered_slugs.push(target_slug.to_string());
-                    }
-                }
-            }
-        }
+            let sys_time = time_idx.map(|t_idx| {
+                let col_vec = &raw.data[t_idx];
+                indices.iter().map(|&r| col_vec[r]).collect::<Vec<f64>>()
+            });
+            let sys_dist = dist_idx.map(|d_idx| {
+                let col_vec = &raw.data[d_idx];
+                indices.iter().map(|&r| col_vec[r]).collect::<Vec<f64>>()
+            });
 
-        let resolved_lap = resolve_key_case_insensitive(&mapped_cols, &cfg.lap_slug).map(str::to_string);
-        let resolved_time = resolve_key_case_insensitive(&mapped_cols, &cfg.time_slug).map(str::to_string);
-        let resolved_dist = resolve_key_case_insensitive(&mapped_cols, &cfg.dist_slug).map(str::to_string);
+            let duration = sys_time.as_deref().map(compute_valid_span).unwrap_or(0.0);
+            let distance = sys_dist.as_deref().map(compute_valid_span).unwrap_or(0.0);
 
-        let channels: Vec<String> = ordered_slugs
-            .into_iter()
-            .filter(|slug| resolved_lap.as_deref() != Some(slug.as_str()))
-            .collect();
-
-        let mut stored_laps: Vec<StoredLap> = Vec::new();
-
-        if target_len > 0 {
-            match &resolved_lap {
-                None => {
-                    let duration = resolved_time
-                        .as_ref()
-                        .and_then(|k| mapped_cols.get(k))
-                        .map(|v| compute_valid_span(v))
-                        .unwrap_or(0.0);
-                    let distance = resolved_dist
-                        .as_ref()
-                        .and_then(|k| mapped_cols.get(k))
-                        .map(|v| compute_valid_span(v))
-                        .unwrap_or(0.0);
-
-                    stored_laps.push(StoredLap {
-                        lap_number: 1,
-                        duration,
-                        distance,
-                        sample_count: target_len,
-                        data: mapped_cols,
-                    });
-                }
-                Some(lap_key) => {
-                    let lap_vec = &mapped_cols[lap_key];
-                    let mut lap_groups: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
-                    for (idx, &val) in lap_vec.iter().enumerate() {
-                        if val.is_finite() {
-                            let lap_num = val as i32;
-                            lap_groups.entry(lap_num).or_default().push(idx);
-                        }
-                    }
-
-                    if lap_groups.is_empty() {
-                        let mut data = mapped_cols;
-                        data.remove(lap_key);
-                        stored_laps.push(StoredLap {
-                            lap_number: 1,
-                            duration: 0.0,
-                            distance: 0.0,
-                            sample_count: target_len,
-                            data,
-                        });
-                    } else {
-                        for (lap_num, indices) in lap_groups {
-                            let mut lap_data: HashMap<String, Vec<f64>> =
-                                HashMap::with_capacity(mapped_cols.len());
-                            for (slug, col_vec) in &mapped_cols {
-                                if slug == lap_key {
-                                    continue;
-                                }
-                                let mut slice = Vec::with_capacity(indices.len());
-                                for &row_idx in &indices {
-                                    slice.push(col_vec[row_idx]);
-                                }
-                                lap_data.insert(slug.clone(), slice);
-                            }
-
-                            let duration = resolved_time
-                                .as_ref()
-                                .and_then(|k| lap_data.get(k))
-                                .map(|v| compute_valid_span(v))
-                                .unwrap_or(0.0);
-                            let distance = resolved_dist
-                                .as_ref()
-                                .and_then(|k| lap_data.get(k))
-                                .map(|v| compute_valid_span(v))
-                                .unwrap_or(0.0);
-
-                            stored_laps.push(StoredLap {
-                                lap_number: lap_num,
-                                duration,
-                                distance,
-                                sample_count: indices.len(),
-                                data: lap_data,
-                            });
-                        }
-                    }
-                }
-            }
+            stored_laps.push(StoredLap {
+                lap_number: lap_num,
+                duration,
+                distance,
+                sample_count: indices.len(),
+                sys_time,
+                sys_dist,
+                data: lap_data,
+            });
         }
 
         let lap_summaries: Vec<LapSummary> = stored_laps
@@ -303,141 +238,80 @@ impl SessionStore {
         let summary = SessionSummary {
             id: cfg.session_id.clone(),
             name: cfg.file_name.clone(),
+            sheet_name: cfg.sheet_name.clone(),
             channels,
+            skipped_channels,
+            available_columns: raw.columns.clone(),
+            lap_col,
+            time_col: time_col.clone(),
+            dist_col: dist_col.clone(),
+            has_time: time_idx.is_some(),
+            has_dist: dist_idx.is_some(),
             laps: lap_summaries,
-            mapping: valid_mapping,
-            local_calculated_channels: cfg.local_calculated_channels,
-            preset_slug: cfg.preset_slug,
-            preset_name: cfg.preset_name,
             gap_time_threshold: cfg.gap_time_threshold,
             gap_dist_threshold: cfg.gap_dist_threshold,
+            group_overrides: cfg.group_overrides,
         };
 
         let stored = StoredSession {
             summary: summary.clone(),
-            raw_table: clean_raw,
+            raw_table: raw,
+            source_bytes,
+            is_tabular,
             laps: stored_laps,
         };
         self.sessions.insert(cfg.session_id, stored);
-        summary
+        Ok(summary)
     }
 
-    pub fn reparse_session(
-        &mut self,
-        session_id: &str,
-        mut cfg: ParseSessionConfig,
-    ) -> Result<SessionSummary, String> {
-        let raw_table = self
-            .sessions
-            .get(session_id)
-            .map(|s| s.raw_table.clone())
-            .ok_or_else(|| format!("Session '{}' not found", session_id))?;
-        cfg.session_id = session_id.to_string();
-        Ok(self.parse_from_raw(raw_table, cfg))
-    }
-
-    pub fn get_lap_channel<'a>(
-        &mut self,
+    pub fn get_lap_channel(
+        &self,
         session_id: &str,
         lap_num: i32,
-        slug: &str,
-        global_calcs: &HashMap<String, GlobalCalcDef>,
+        key_or_group: &str,
+        groups: &HashMap<String, ChannelGroupDef>,
     ) -> Option<Vec<f64>> {
-        if slug.is_empty() {
+        if key_or_group.is_empty() {
             return None;
         }
-        let session = self.sessions.get_mut(session_id)?;
-        let lap = session.laps.iter_mut().find(|l| l.lap_number == lap_num)?;
+        let session = self.sessions.get(session_id)?;
+        let lap = session.laps.iter().find(|l| l.lap_number == lap_num)?;
 
-        if let Some(key) = resolve_key_case_insensitive(&lap.data, slug) {
-            return lap.data.get(key).cloned();
+        if key_or_group == "lap_time" {
+            return lap.sys_time.clone();
+        }
+        if key_or_group == "lap_dist" {
+            return lap.sys_dist.clone();
         }
 
-        let mut visited = HashSet::new();
-        compute_global_calc(lap, slug, global_calcs, &mut visited)
-    }
-
-    pub fn clear_calculated_cache(&mut self, calc_slugs: &[String]) {
-        if calc_slugs.is_empty() {
-            return;
-        }
-        for session in self.sessions.values_mut() {
-            for lap in &mut session.laps {
-                for slug in calc_slugs {
-                    lap.data.remove(slug);
+        if let Some(ov) = session.summary.group_overrides.get(key_or_group) {
+            if !ov.channel.is_empty() {
+                if let Some(resolved) = resolve_key_case_insensitive(&lap.data, &ov.channel) {
+                    if let Some(vec) = lap.data.get(resolved) {
+                        return Some(apply_transform(vec, ov.factor, ov.offset));
+                    }
                 }
             }
         }
-    }
-}
 
-fn compute_global_calc(
-    lap: &mut StoredLap,
-    slug: &str,
-    global_calcs: &HashMap<String, GlobalCalcDef>,
-    visited: &mut HashSet<String>,
-) -> Option<Vec<f64>> {
-    if visited.contains(slug) {
-        return None;
-    }
-
-    let calc_def = global_calcs.get(slug)?;
-    if calc_def.kind != "calculated" {
-        return None;
-    }
-
-    let formula = calc_def.formula.trim();
-    if formula.is_empty() || calc_def.inputs.is_empty() {
-        return None;
-    }
-
-    visited.insert(slug.to_string());
-
-    let mut resolved_inputs: Vec<(String, Vec<f64>)> = Vec::with_capacity(calc_def.inputs.len());
-    let mut target_len: Option<usize> = None;
-
-    for (var_name, input_slug) in &calc_def.inputs {
-        if input_slug.is_empty() {
-            visited.remove(slug);
+        if let Some(group) = groups.get(key_or_group) {
+            for alias in &group.channels {
+                if let Some(resolved) = resolve_key_case_insensitive(&lap.data, alias) {
+                    if let Some(vec) = lap.data.get(resolved) {
+                        let (factor, offset) =
+                            resolve_transform(&group.transforms, alias, resolved);
+                        return Some(apply_transform(vec, factor, offset));
+                    }
+                }
+            }
             return None;
         }
 
-        let arr_opt = if let Some(key) = resolve_key_case_insensitive(&lap.data, input_slug) {
-            lap.data.get(key).cloned()
-        } else {
-            compute_global_calc(lap, input_slug, global_calcs, visited)
-        };
-
-        let mut arr = match arr_opt {
-            Some(a) if !a.is_empty() => a,
-            _ => {
-                visited.remove(slug);
-                return None;
-            }
-        };
-
-        match target_len {
-            None => target_len = Some(arr.len()),
-            Some(len) if arr.len() != len => {
-                arr = normalize_len(arr, len);
-            }
-            _ => {}
+        if let Some(key) = resolve_key_case_insensitive(&lap.data, key_or_group) {
+            return lap.data.get(key).cloned();
         }
-
-        resolved_inputs.push((var_name.clone(), arr));
+        None
     }
-
-    visited.remove(slug);
-
-    let len = target_len?;
-    let input_refs: HashMap<String, &[f64]> = resolved_inputs
-        .iter()
-        .map(|(k, v)| (k.clone(), v.as_slice()))
-        .collect();
-
-    let result = evaluate_formula(formula, &input_refs, len).ok()?;
-    lap.data.insert(slug.to_string(), result.clone());
-    Some(result)
 }
 
 pub fn downsample_curve(
@@ -800,7 +674,6 @@ pub fn nearest_sample_2d(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::LocalCalcDef;
     use approx::assert_abs_diff_eq;
 
     fn make_raw(cols: &[(&str, &[f64])]) -> RawTable {
@@ -813,240 +686,148 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_from_raw_lap_splitting_and_local_calcs() {
+    fn test_parse_from_raw_zero_mapping_and_tabular_filtering() {
         let raw = make_raw(&[
-            ("Lap_Raw", &[2.0, 2.0, 1.0, 1.0, 1.0]),
-            ("Time_Raw", &[10.0, 12.5, 0.0, 1.0, 2.5]),
-            ("Dist_Raw", &[200.0, 250.0, 0.0, 20.0, 55.0]),
-            ("Wheel_FL", &[30.0, 40.0, 10.0, 20.0, 30.0]),
-            ("Wheel_FR", &[32.0, 42.0, 12.0, 22.0, 32.0]),
+            ("Lap_Raw", &[2.0, 2.0, 1.0, 1.0, 1.0, 1.0]),
+            ("Time_Raw", &[10.0, 12.5, 0.0, 1.0, 2.0, 3.0]),
+            ("Dist_Raw", &[200.0, 250.0, 0.0, 20.0, 40.0, 60.0]),
+            ("Speed", &[30.0, 40.0, 10.0, 20.0, 30.0, 40.0]),
+            // Constant / 1-value column should be skipped
+            ("Constant", &[42.0, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN]),
+            // Small 2-row summary table in a 6-row CSV/Excel sheet (2 * 2 < 6) should be skipped
+            ("Summary_Mini", &[100.0, 200.0, f64::NAN, f64::NAN, f64::NAN, f64::NAN]),
+            // All NaN string column should be skipped
+            ("Notes", &[f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN]),
         ]);
-
-        let mut mapping = HashMap::new();
-        mapping.insert("Lap_Raw".to_string(), "lap_num".to_string());
-        mapping.insert("Time_Raw".to_string(), "lap_time".to_string());
-        mapping.insert("Dist_Raw".to_string(), "lap_dist".to_string());
-
-        let local_calcs = vec![
-            LocalCalcDef {
-                name: "AvgSpeed".to_string(),
-                target_slug: "speed".to_string(),
-                target_label: "Speed".to_string(),
-                formula: "(A + B) / 2.0".to_string(),
-                inputs: HashMap::from([
-                    ("A".to_string(), "Wheel_FL".to_string()),
-                    ("B".to_string(), "Wheel_FR".to_string()),
-                ]),
-            },
-            LocalCalcDef {
-                name: "SpeedMS".to_string(),
-                target_slug: "speed_ms".to_string(),
-                target_label: "Speed m/s".to_string(),
-                formula: "A / 3.6".to_string(),
-                inputs: HashMap::from([("A".to_string(), "speed".to_string())]),
-            },
-        ];
 
         let cfg = ParseSessionConfig {
             session_id: "s1".to_string(),
             file_name: "run1.csv".to_string(),
-            mapping,
-            local_calculated_channels: local_calcs,
-            lap_slug: "lap_num".to_string(),
-            time_slug: "lap_time".to_string(),
-            dist_slug: "lap_dist".to_string(),
-            preset_slug: None,
-            preset_name: None,
+            sheet_name: None,
+            lap_col: "Lap_Raw".to_string(),
+            time_col: Some("Time_Raw".to_string()),
+            dist_col: Some("Dist_Raw".to_string()),
             gap_time_threshold: None,
             gap_dist_threshold: None,
+            group_overrides: HashMap::new(),
         };
 
         let mut store = SessionStore::new();
-        let summary = store.parse_from_raw(raw, cfg);
+        let summary = store.parse_from_raw(raw, cfg, true, None).unwrap();
 
         assert_eq!(summary.laps.len(), 2);
-        // Sorted numerically: Lap 1 then Lap 2
         assert_eq!(summary.laps[0].lap_number, 1);
-        assert_eq!(summary.laps[0].sample_count, 3);
-        assert_abs_diff_eq!(summary.laps[0].duration, 2.5);
-        assert_abs_diff_eq!(summary.laps[0].distance, 55.0);
+        assert_eq!(summary.laps[0].sample_count, 4);
+        assert_abs_diff_eq!(summary.laps[0].duration, 3.0);
+        assert_abs_diff_eq!(summary.laps[0].distance, 60.0);
 
         assert_eq!(summary.laps[1].lap_number, 2);
         assert_eq!(summary.laps[1].sample_count, 2);
         assert_abs_diff_eq!(summary.laps[1].duration, 2.5);
         assert_abs_diff_eq!(summary.laps[1].distance, 50.0);
 
-        assert!(summary.channels.contains(&"speed".to_string()));
-        assert!(summary.channels.contains(&"speed_ms".to_string()));
-        assert!(!summary.channels.contains(&"lap_num".to_string()));
+        assert!(summary.channels.contains(&"Speed".to_string()));
+        assert!(!summary.channels.contains(&"Lap_Raw".to_string()));
+        assert!(!summary.channels.contains(&"Constant".to_string()));
+        assert!(!summary.channels.contains(&"Summary_Mini".to_string()));
+        assert!(!summary.channels.contains(&"Notes".to_string()));
+        assert!(summary.skipped_channels.contains(&"Constant".to_string()));
+        assert!(summary.skipped_channels.contains(&"Summary_Mini".to_string()));
 
-        // Raw table must not be polluted by local calc targets
-        let stored = store.sessions.get("s1").unwrap();
-        assert!(stored.raw_table.column("speed").is_none());
-        assert!(stored.raw_table.column("AvgSpeed").is_none());
-
-        let lap1_speed = store.get_lap_channel("s1", 1, "speed", &HashMap::new()).unwrap();
-        assert_abs_diff_eq!(lap1_speed.as_slice(), [11.0, 21.0, 31.0].as_slice());
-
-        let lap2_speed = store.get_lap_channel("s1", 2, "speed", &HashMap::new()).unwrap();
-        assert_abs_diff_eq!(lap2_speed.as_slice(), [31.0, 41.0].as_slice());
+        let lap1_speed = store.get_lap_channel("s1", 1, "Speed", &HashMap::new()).unwrap();
+        assert_abs_diff_eq!(lap1_speed.as_slice(), [10.0, 20.0, 30.0, 40.0].as_slice());
+        let lap1_time = store.get_lap_channel("s1", 1, "lap_time", &HashMap::new()).unwrap();
+        assert_abs_diff_eq!(lap1_time.as_slice(), [0.0, 1.0, 2.0, 3.0].as_slice());
     }
 
     #[test]
-    fn test_parse_single_lap_when_no_lap_column_and_reparse() {
+    fn test_channel_group_priority_resolution() {
         let raw = make_raw(&[
-            ("Time", &[f64::NAN, 1.0, 3.5, f64::NAN]),
-            ("Dist", &[100.0, 80.0, 90.0, 95.0]), // negative delta -> clamped >= 0
-            ("Speed", &[10.0, 20.0, 30.0, 40.0]),
+            ("Lap", &[1.0, 1.0, 1.0]),
+            ("Time", &[0.0, 1.0, 2.0]),
+            ("Speed_A", &[10.0, 20.0, 30.0]),
+            ("Speed_B", &[99.0, 88.0, 77.0]),
         ]);
-
         let cfg = ParseSessionConfig {
-            session_id: "s_nolap".to_string(),
-            file_name: "nolap.csv".to_string(),
-            mapping: HashMap::from([
-                ("Time".to_string(), "lap_time".to_string()),
-                ("Dist".to_string(), "lap_dist".to_string()),
-                ("Speed".to_string(), "speed".to_string()),
-            ]),
-            local_calculated_channels: Vec::new(),
-            lap_slug: "lap_num".to_string(),
-            time_slug: "lap_time".to_string(),
-            dist_slug: "lap_dist".to_string(),
-            preset_slug: None,
-            preset_name: None,
+            session_id: "s1".to_string(),
+            file_name: "run.tdms".to_string(),
+            sheet_name: None,
+            lap_col: "Lap".to_string(),
+            time_col: Some("Time".to_string()),
+            dist_col: None,
             gap_time_threshold: None,
             gap_dist_threshold: None,
+            group_overrides: HashMap::new(),
         };
-
         let mut store = SessionStore::new();
-        let summary = store.parse_from_raw(raw, cfg);
-        assert_eq!(summary.laps.len(), 1);
-        assert_eq!(summary.laps[0].lap_number, 1);
-        assert_abs_diff_eq!(summary.laps[0].duration, 2.5);
-        assert_abs_diff_eq!(summary.laps[0].distance, 0.0);
+        let summary = store.parse_from_raw(raw, cfg, false, None).unwrap();
+        assert!(summary.has_time);
+        assert!(!summary.has_dist);
 
-        // Reparse with Speed mapped to vehicle_speed
-        let cfg2 = ParseSessionConfig {
-            session_id: "s_nolap".to_string(),
-            file_name: "nolap.csv".to_string(),
-            mapping: HashMap::from([
-                ("Time".to_string(), "lap_time".to_string()),
-                ("Speed".to_string(), "vehicle_speed".to_string()),
-            ]),
-            local_calculated_channels: Vec::new(),
-            lap_slug: "lap_num".to_string(),
-            time_slug: "lap_time".to_string(),
-            dist_slug: "lap_dist".to_string(),
-            preset_slug: Some("p1".to_string()),
-            preset_name: Some("P1".to_string()),
-            gap_time_threshold: Some(2.0),
-            gap_dist_threshold: Some(50.0),
-        };
-
-        let summary2 = store.reparse_session("s_nolap", cfg2).unwrap();
-        assert!(summary2.channels.contains(&"vehicle_speed".to_string()));
-        assert!(!summary2.channels.contains(&"speed".to_string()));
-        assert_eq!(summary2.gap_time_threshold, Some(2.0));
-    }
-
-    #[test]
-    fn test_cascading_global_calcs_cycle_detection_and_cache_clear() {
-        let raw = make_raw(&[
-            ("Time", &[0.0, 1.0]),
-            ("V_x", &[3.0, 6.0]),
-            ("V_y", &[4.0, 8.0]),
-        ]);
-
-        let cfg = ParseSessionConfig {
-            session_id: "s_calc".to_string(),
-            file_name: "calc.csv".to_string(),
-            mapping: HashMap::from([
-                ("Time".to_string(), "lap_time".to_string()),
-                ("V_x".to_string(), "v_x".to_string()),
-                ("V_y".to_string(), "v_y".to_string()),
-            ]),
-            local_calculated_channels: Vec::new(),
-            lap_slug: "lap_num".to_string(),
-            time_slug: "lap_time".to_string(),
-            dist_slug: "lap_dist".to_string(),
-            preset_slug: None,
-            preset_name: None,
-            gap_time_threshold: None,
-            gap_dist_threshold: None,
-        };
-
-        let mut store = SessionStore::new();
-        store.parse_from_raw(raw, cfg);
-
-        let mut global_calcs = HashMap::new();
-        global_calcs.insert(
-            "speed_ms".to_string(),
-            GlobalCalcDef {
-                slug: "speed_ms".to_string(),
-                label: "Speed m/s".to_string(),
-                kind: "calculated".to_string(),
-                unit: "m/s".to_string(),
-                formula: "sqrt(A**2 + B**2)".to_string(),
-                inputs: HashMap::from([
-                    ("A".to_string(), "v_x".to_string()),
-                    ("B".to_string(), "v_y".to_string()),
-                ]),
+        let mut transforms = HashMap::new();
+        transforms.insert(
+            "Speed_B".to_string(),
+            ChannelTransform {
+                factor: 2.0,
+                offset: 5.0,
             },
         );
-        global_calcs.insert(
-            "speed_kmh".to_string(),
-            GlobalCalcDef {
-                slug: "speed_kmh".to_string(),
-                label: "Speed km/h".to_string(),
-                kind: "calculated".to_string(),
+        let mut groups = HashMap::new();
+        groups.insert(
+            "grp_speed".to_string(),
+            ChannelGroupDef {
+                id: "grp_speed".to_string(),
+                name: "Speed".to_string(),
                 unit: "km/h".to_string(),
-                formula: "A * 3.6".to_string(),
-                inputs: HashMap::from([("A".to_string(), "speed_ms".to_string())]),
-            },
-        );
-        // Circular dependency pair
-        global_calcs.insert(
-            "cyc_a".to_string(),
-            GlobalCalcDef {
-                slug: "cyc_a".to_string(),
-                label: "Cyc A".to_string(),
-                kind: "calculated".to_string(),
-                unit: "".to_string(),
-                formula: "A + 1".to_string(),
-                inputs: HashMap::from([("A".to_string(), "cyc_b".to_string())]),
-            },
-        );
-        global_calcs.insert(
-            "cyc_b".to_string(),
-            GlobalCalcDef {
-                slug: "cyc_b".to_string(),
-                label: "Cyc B".to_string(),
-                kind: "calculated".to_string(),
-                unit: "".to_string(),
-                formula: "A * 2".to_string(),
-                inputs: HashMap::from([("A".to_string(), "cyc_a".to_string())]),
+                channels: vec![
+                    "Missing_Speed".to_string(),
+                    "Speed_B".to_string(),
+                    "Speed_A".to_string(),
+                ],
+                transforms,
             },
         );
 
-        // Case-insensitive / space-to-underscore fallback on direct channel
-        let vx = store.get_lap_channel("s_calc", 1, "V X", &global_calcs).unwrap();
-        assert_abs_diff_eq!(vx.as_slice(), [3.0, 6.0].as_slice());
+        // Speed_B has higher priority than Speed_A, and applies (raw * 2.0) + 5.0
+        let resolved = store.get_lap_channel("s1", 1, "grp_speed", &groups).unwrap();
+        assert_abs_diff_eq!(resolved.as_slice(), [203.0, 181.0, 159.0].as_slice());
 
-        // Cascading calculated channel
-        let kmh = store.get_lap_channel("s_calc", 1, "speed_kmh", &global_calcs).unwrap();
-        assert_abs_diff_eq!(kmh.as_slice(), [18.0, 36.0].as_slice());
+        // Local override selects Speed_A with (raw * 0.5) - 1.0
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "grp_speed".to_string(),
+            crate::types::GroupChannelOverride {
+                channel: "Speed_A".to_string(),
+                factor: 0.5,
+                offset: -1.0,
+            },
+        );
+        store
+            .sessions
+            .get_mut("s1")
+            .unwrap()
+            .summary
+            .group_overrides = overrides;
+        let overridden = store.get_lap_channel("s1", 1, "grp_speed", &groups).unwrap();
+        assert_abs_diff_eq!(overridden.as_slice(), [4.0, 9.0, 14.0].as_slice());
+    }
 
-        // Cached in lap.data
-        assert!(store.sessions["s_calc"].laps[0].data.contains_key("speed_ms"));
-        assert!(store.sessions["s_calc"].laps[0].data.contains_key("speed_kmh"));
-
-        // Circular dependency returns None without stack overflow
-        assert!(store.get_lap_channel("s_calc", 1, "cyc_a", &global_calcs).is_none());
-
-        // Clear calculated cache
-        store.clear_calculated_cache(&["speed_kmh".to_string(), "speed_ms".to_string()]);
-        assert!(!store.sessions["s_calc"].laps[0].data.contains_key("speed_kmh"));
-        assert!(!store.sessions["s_calc"].laps[0].data.contains_key("speed_ms"));
+    #[test]
+    fn test_requires_lap_and_time_or_dist() {
+        let raw = make_raw(&[("Lap", &[1.0, 1.0]), ("Speed", &[10.0, 20.0])]);
+        let cfg = ParseSessionConfig {
+            session_id: "s_err".to_string(),
+            file_name: "err.csv".to_string(),
+            sheet_name: None,
+            lap_col: "Lap".to_string(),
+            time_col: None,
+            dist_col: None,
+            gap_time_threshold: None,
+            gap_dist_threshold: None,
+            group_overrides: HashMap::new(),
+        };
+        let mut store = SessionStore::new();
+        assert!(store.parse_from_raw(raw, cfg, true, None).is_err());
     }
 
     #[test]

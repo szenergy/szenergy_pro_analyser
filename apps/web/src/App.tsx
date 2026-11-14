@@ -2,32 +2,30 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { TrackMapCursorPoint } from '@/plot/trackMapRenderer';
 import { computeFileSignature, stateManager } from '@/state/stateManager';
 import {
-  ChannelDef,
   DEFAULT_APP_SETTINGS,
   DEFAULT_GAP_DIST_THRESHOLD,
   DEFAULT_GAP_TIME_THRESHOLD,
   FilePreview,
+  GroupChannelOverride,
   GroupingMode,
+  isRequiredChannelGroupId,
   LAP_COLORS,
-  LocalCalcDef,
   MAX_STACKED_PLOTS,
   RecentFileEntry,
   SelectedLapInfo,
   SessionSummary,
   STD_CH_LAP_DIST_SLUG,
-  STD_CH_LAP_NUM_SLUG,
   STD_CH_LAP_TIME_SLUG,
   ThemeMode,
 } from '@/types/telemetry';
 import { telemetryClient } from '@/workers/telemetryClient';
 import { GraphView } from '@/components/GraphView';
-import { GlobalCalcModal } from '@/components/GlobalCalcModal';
 import { ImportWizardModal, ImportWizardSubmitResult } from '@/components/ImportWizardModal';
 import {
-  ChannelManagerModal,
-  FileMappingManagerModal,
-  PresetManagerModal,
+  ChannelGroupManagerModal,
+  RememberedImportsModal,
   TrackMapManagerModal,
+  WelcomeStartupModal,
 } from '@/components/ManagerModals';
 import { RenameLegendModal } from '@/components/RenameLegendModal';
 import { Sidebar } from '@/components/Sidebar';
@@ -40,11 +38,13 @@ interface WizardJob {
   fileName: string;
   fileSignature: string;
   preview: FilePreview;
-  initialPresetSlug: string | null;
-  initialMapping: Record<string, string>;
-  initialLocalCalcs: LocalCalcDef[];
+  initialSheetName: string | null;
+  initialLapCol: string | null;
+  initialTimeCol: string | null;
+  initialDistCol: string | null;
   initialGapTime: number | null;
   initialGapDist: number | null;
+  initialGroupOverrides?: Record<string, GroupChannelOverride>;
   initialRemember: boolean;
   fileEntry?: {
     size: number;
@@ -94,19 +94,21 @@ export const App: React.FC = () => {
   const [wizardJob, setWizardJob] = useState<WizardJob | null>(null);
   const [fileQueue, setFileQueue] = useState<QueuedFile[]>([]);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
+  const [toast, setToast] = useState<{ kind: 'info' | 'warning' | 'error'; text: string } | null>(
+    null,
+  );
   const [isDragOver, setIsDragOver] = useState(false);
 
   // Modals
-  const [presetsOpen, setPresetsOpen] = useState(false);
-  const [channelsOpen, setChannelsOpen] = useState(false);
-  const [globalCalcModal, setGlobalCalcModal] = useState<{
+  const [groupModal, setGroupModal] = useState<{
     open: boolean;
-    editing: ChannelDef | null;
-  }>({ open: false, editing: null });
-  const [fileMappingsOpen, setFileMappingsOpen] = useState(false);
+    focusGroupId: string | null;
+    draftChannels: string[] | null;
+  }>({ open: false, focusGroupId: null, draftChannels: null });
+  const [rememberedImportsOpen, setRememberedImportsOpen] = useState(false);
   const [mapsOpen, setMapsOpen] = useState(false);
   const [renameLegendOpen, setRenameLegendOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(true);
 
   const fallbackFileInputRef = useRef<HTMLInputElement | null>(null);
   const reloadFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -128,13 +130,13 @@ export const App: React.FC = () => {
 
   const isDark = themeMode === 'dark' ? true : themeMode === 'light' ? false : systemDark;
 
-  const showToast = useCallback((kind: 'info' | 'error', text: string) => {
+  const showToast = useCallback((kind: 'info' | 'warning' | 'error', text: string) => {
     setToast({ kind, text });
   }, []);
 
   useEffect(() => {
     if (!toast) return;
-    const t = window.setTimeout(() => setToast(null), 4500);
+    const t = window.setTimeout(() => setToast(null), 5000);
     return () => window.clearTimeout(t);
   }, [toast]);
 
@@ -173,11 +175,38 @@ export const App: React.FC = () => {
         setSidebarSplitRatio(settings.sidebarSplitRatio);
       }
       setRecentFiles(stateManager.getRecentFiles());
+      setChannelsVersion((v) => v + 1);
       setReady(true);
     })();
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const handleUpdateGraphSettings = useCallback(
+    async (partial: Partial<typeof graphSettings>) => {
+      const updated = await stateManager.updateGraphSettings(partial);
+      setGraphSettings(updated);
+    },
+    [],
+  );
+
+  const ensureValidXAxis = useCallback(
+    (nextSessions: SessionSummary[]) => {
+      if (nextSessions.length === 0) return;
+      const anyHasDist = nextSessions.some((s) => s.has_dist);
+      const anyHasTime = nextSessions.some((s) => s.has_time);
+      if (graphSettings.xAxisSlug === STD_CH_LAP_DIST_SLUG && !anyHasDist && anyHasTime) {
+        void handleUpdateGraphSettings({ xAxisSlug: STD_CH_LAP_TIME_SLUG });
+      } else if (graphSettings.xAxisSlug === STD_CH_LAP_TIME_SLUG && !anyHasTime && anyHasDist) {
+        void handleUpdateGraphSettings({ xAxisSlug: STD_CH_LAP_DIST_SLUG });
+      }
+    },
+    [graphSettings.xAxisSlug, handleUpdateGraphSettings],
+  );
+
+  const checkGroupCollisions = useCallback((_targetSessions: SessionSummary[]): boolean => {
+    return false;
   }, []);
 
   // Process next queued file when wizard is idle
@@ -191,15 +220,15 @@ export const App: React.FC = () => {
       const { file, handle } = nextItem;
       setBusyMessage(`Inspecting ${file.name}...`);
       try {
-        const { fileToken, preview } = await telemetryClient.inspectFile(file);
-        const signature = await computeFileSignature(file.name, preview.columns);
+        const inspected = await telemetryClient.inspectFile(file);
+        const { fileToken } = inspected;
+        let preview = inspected.preview;
 
         const alreadyLoaded = Array.from(loadedFilesRef.current.values()).some(
           (meta) =>
-            meta.signature === signature ||
-            (meta.name === file.name &&
-              meta.size === file.size &&
-              meta.lastModified === file.lastModified),
+            meta.name === file.name &&
+            meta.size === file.size &&
+            meta.lastModified === file.lastModified,
         );
         if (alreadyLoaded) {
           await telemetryClient.discardPendingFile(fileToken);
@@ -208,27 +237,56 @@ export const App: React.FC = () => {
           return;
         }
 
-        const remembered = stateManager.getFileMappingConfig(signature);
+        const defaultSignature = await computeFileSignature(
+          file.name,
+          preview.columns,
+          preview.selectedSheet ?? null,
+        );
+        let signature = defaultSignature;
+        let remembered = stateManager.getFileImportConfig(defaultSignature);
 
-        if (remembered && stateManager.isFileMappingValidForColumns(remembered, preview.columns)) {
-          // Automatic bypass (Flow 2.1)
+        // If a remembered config exists for another worksheet of this workbook, check sheets
+        if (!remembered && preview.sheets && preview.sheets.length > 1) {
+          const allImports = stateManager.getAllFileImports();
+          const candidateEntry = Object.entries(allImports).find(
+            ([sig, cfg]) =>
+              sig.startsWith(`${file.name.trim()}::`) &&
+              cfg.sheet_name &&
+              preview.sheets!.includes(cfg.sheet_name),
+          );
+          if (candidateEntry) {
+            const [candSig, candCfg] = candidateEntry;
+            const sheetRes = await telemetryClient.inspectExcelSheet(
+              fileToken,
+              candCfg.sheet_name!,
+            );
+            const sheetSig = await computeFileSignature(
+              file.name,
+              sheetRes.preview.columns,
+              sheetRes.preview.selectedSheet ?? null,
+            );
+            if (sheetSig === candSig) {
+              preview = sheetRes.preview;
+              signature = sheetSig;
+              remembered = candCfg;
+            }
+          }
+        }
+
+        // Auto-import 1: Remembered file import config
+        if (remembered && stateManager.isFileImportValidForColumns(remembered, preview.columns)) {
           setBusyMessage(`Importing ${file.name}...`);
           const sessionId = makeSessionId();
-          const presetName = remembered.preset_slug
-            ? stateManager.getPresetNameBySlug(remembered.preset_slug, remembered.preset_slug)
-            : null;
           const summary = await telemetryClient.importSession(fileToken, {
             session_id: sessionId,
             file_name: file.name,
-            mapping: remembered.mapping,
-            local_calculated_channels: remembered.local_calculated_channels,
-            lap_slug: STD_CH_LAP_NUM_SLUG,
-            time_slug: STD_CH_LAP_TIME_SLUG,
-            dist_slug: STD_CH_LAP_DIST_SLUG,
-            preset_slug: remembered.preset_slug,
-            preset_name: presetName,
+            sheet_name: remembered.sheet_name,
+            lap_col: remembered.lap_col,
+            time_col: remembered.time_col,
+            dist_col: remembered.dist_col,
             gap_time_threshold: remembered.gap_time_threshold ?? DEFAULT_GAP_TIME_THRESHOLD,
             gap_dist_threshold: remembered.gap_dist_threshold ?? DEFAULT_GAP_DIST_THRESHOLD,
+            group_overrides: remembered.group_overrides,
           });
           loadedFilesRef.current.set(sessionId, {
             name: file.name,
@@ -237,7 +295,11 @@ export const App: React.FC = () => {
             signature,
             ...(handle ? { handle } : {}),
           });
-          setSessions((prev) => [...prev, summary]);
+          setSessions((prev) => {
+            const next = [...prev, summary];
+            ensureValidXAxis(next);
+            return next;
+          });
           const updatedRecent = await stateManager.addRecentFile({
             id: signature,
             name: file.name,
@@ -248,39 +310,12 @@ export const App: React.FC = () => {
           });
           setRecentFiles(updatedRecent);
           setBusyMessage(null);
+          checkGroupCollisions([summary]);
           return;
         }
 
-        // Open Import Wizard (remembered stale config OR best-fit preset)
-        let initialPresetSlug: string | null = null;
-        let initialMapping: Record<string, string> = {};
-        let initialLocalCalcs: LocalCalcDef[] = [];
-        let initialGapTime: number | null = null;
-        let initialGapDist: number | null = null;
-
-        if (remembered) {
-          initialPresetSlug = remembered.preset_slug;
-          initialMapping = remembered.mapping;
-          initialLocalCalcs = remembered.local_calculated_channels;
-          initialGapTime = remembered.gap_time_threshold ?? null;
-          initialGapDist = remembered.gap_dist_threshold ?? null;
-        } else {
-          const matchedSlug = stateManager.findMatchingPreset(preview.columns);
-          if (matchedSlug) {
-            const preset = stateManager.getPresetBySlug(matchedSlug);
-            if (preset) {
-              initialPresetSlug = preset.slug;
-              initialMapping = { ...preset.mapping };
-              initialLocalCalcs = preset.local_calculated_channels.map((c) => ({
-                ...c,
-                inputs: { ...c.inputs },
-              }));
-              initialGapTime = preset.gap_time_threshold ?? null;
-              initialGapDist = preset.gap_dist_threshold ?? null;
-            }
-          }
-        }
-
+        // Pre-detect required roles for the Import Wizard when file is not remembered
+        const detected = stateManager.autoDetectImportRoles(preview.columns, preview.finiteCounts);
         setBusyMessage(null);
         setWizardJob({
           mode: 'import',
@@ -288,11 +323,13 @@ export const App: React.FC = () => {
           fileName: file.name,
           fileSignature: signature,
           preview,
-          initialPresetSlug,
-          initialMapping,
-          initialLocalCalcs,
-          initialGapTime,
-          initialGapDist,
+          initialSheetName: remembered?.sheet_name ?? preview.selectedSheet ?? null,
+          initialLapCol: remembered?.lap_col ?? detected.lapCol,
+          initialTimeCol: remembered?.time_col ?? detected.timeCol,
+          initialDistCol: remembered?.dist_col ?? detected.distCol,
+          initialGapTime: remembered?.gap_time_threshold ?? null,
+          initialGapDist: remembered?.gap_dist_threshold ?? null,
+          initialGroupOverrides: remembered?.group_overrides,
           initialRemember: true,
           fileEntry: {
             size: file.size,
@@ -308,53 +345,57 @@ export const App: React.FC = () => {
         );
       }
     })();
-  }, [ready, wizardJob, fileQueue, showToast]);
+  }, [ready, wizardJob, fileQueue, showToast, checkGroupCollisions, ensureValidXAxis]);
 
-  const enqueueFiles = useCallback((items: QueuedFile[]) => {
-    const supported = items.filter((item) => {
-      const ext = item.file.name.split('.').pop()?.toLowerCase() ?? '';
-      return ext === 'csv' || ext === 'xlsx' || ext === 'xls' || ext === 'tdms';
-    });
-    if (supported.length === 0) {
-      showToast('error', 'Unsupported file format. Supported: .csv, .xlsx, .xls, .tdms');
-      return;
-    }
-
-    const unique: QueuedFile[] = [];
-    const seenBatch = new Set<string>();
-    let skippedDuplicateName: string | null = null;
-    for (const item of supported) {
-      const f = item.file;
-      const batchKey = `${f.name}::${f.size}::${f.lastModified}`;
-      const matchesLoaded = Array.from(loadedFilesRef.current.values()).some(
-        (m) => m.name === f.name && m.size === f.size && m.lastModified === f.lastModified,
-      );
-      const matchesWizard =
-        wizardJob?.mode === 'import' &&
-        wizardJob.fileName === f.name &&
-        wizardJob.fileEntry?.size === f.size &&
-        wizardJob.fileEntry?.lastModified === f.lastModified;
-      const matchesQueued = fileQueue.some(
-        (q) =>
-          q.file.name === f.name &&
-          q.file.size === f.size &&
-          q.file.lastModified === f.lastModified,
-      );
-      if (seenBatch.has(batchKey) || matchesLoaded || matchesWizard || matchesQueued) {
-        skippedDuplicateName = f.name;
-        continue;
+  const enqueueFiles = useCallback(
+    (items: QueuedFile[]) => {
+      const supported = items.filter((item) => {
+        const ext = item.file.name.split('.').pop()?.toLowerCase() ?? '';
+        return ext === 'csv' || ext === 'xlsx' || ext === 'xls' || ext === 'tdms';
+      });
+      if (supported.length === 0) {
+        showToast('error', 'Unsupported file format. Supported: .csv, .xlsx, .xls, .tdms');
+        return;
       }
-      seenBatch.add(batchKey);
-      unique.push(item);
-    }
 
-    if (skippedDuplicateName) {
-      showToast('info', `'${skippedDuplicateName}' is already loaded.`);
-    }
-    if (unique.length > 0) {
-      setFileQueue((prev) => [...prev, ...unique]);
-    }
-  }, [fileQueue, showToast, wizardJob]);
+      const unique: QueuedFile[] = [];
+      const seenBatch = new Set<string>();
+      let skippedDuplicateName: string | null = null;
+      for (const item of supported) {
+        const f = item.file;
+        const batchKey = `${f.name}::${f.size}::${f.lastModified}`;
+        const matchesLoaded = Array.from(loadedFilesRef.current.values()).some(
+          (m) => m.name === f.name && m.size === f.size && m.lastModified === f.lastModified,
+        );
+        const matchesWizard =
+          wizardJob?.mode === 'import' &&
+          wizardJob.fileName === f.name &&
+          wizardJob.fileEntry?.size === f.size &&
+          wizardJob.fileEntry?.lastModified === f.lastModified;
+        const matchesQueued = fileQueue.some(
+          (q) =>
+            q.file.name === f.name &&
+            q.file.size === f.size &&
+            q.file.lastModified === f.lastModified,
+        );
+        if (seenBatch.has(batchKey) || matchesLoaded || matchesWizard || matchesQueued) {
+          skippedDuplicateName = f.name;
+          continue;
+        }
+        seenBatch.add(batchKey);
+        unique.push(item);
+      }
+
+      if (skippedDuplicateName) {
+        showToast('info', `'${skippedDuplicateName}' is already loaded.`);
+      }
+      if (unique.length > 0) {
+        setWelcomeOpen(false);
+        setFileQueue((prev) => [...prev, ...unique]);
+      }
+    },
+    [fileQueue, showToast, wizardJob],
+  );
 
   const handleOpenFiles = useCallback(async () => {
     const win = window as Window & {
@@ -388,7 +429,6 @@ export const App: React.FC = () => {
         if (err instanceof DOMException && err.name === 'AbortError') {
           return;
         }
-        // Fallback to standard file input if picker throws
       }
     }
     fallbackFileInputRef.current?.click();
@@ -449,20 +489,8 @@ export const App: React.FC = () => {
     const job = wizardJob;
     setWizardJob(null);
 
-    if (result.rememberForFile) {
-      await stateManager.saveFileMappingConfig(job.fileSignature, {
-        preset_slug: result.presetSlug,
-        mapping: result.mapping,
-        local_calculated_channels: result.localCalculatedChannels,
-        gap_time_threshold: result.gapTimeThreshold,
-        gap_dist_threshold: result.gapDistThreshold,
-      });
-    } else {
-      await stateManager.removeFileMappingConfig(job.fileSignature);
-    }
-
+    await stateManager.recordSystemAliases(result.lapCol, result.timeCol, result.distCol);
     setChannelsVersion((v) => v + 1);
-
     try {
       if (job.mode === 'import' && job.fileToken) {
         setBusyMessage(`Parsing ${job.fileName}...`);
@@ -471,35 +499,60 @@ export const App: React.FC = () => {
         const summary = await telemetryClient.importSession(job.fileToken, {
           session_id: sessionId,
           file_name: job.fileName,
-          mapping: result.mapping,
-          local_calculated_channels: result.localCalculatedChannels,
-          lap_slug: STD_CH_LAP_NUM_SLUG,
-          time_slug: STD_CH_LAP_TIME_SLUG,
-          dist_slug: STD_CH_LAP_DIST_SLUG,
-          preset_slug: result.presetSlug,
-          preset_name: result.presetName,
+          sheet_name: result.sheetName,
+          lap_col: result.lapCol,
+          time_col: result.timeCol,
+          dist_col: result.distCol,
           gap_time_threshold: result.gapTimeThreshold,
           gap_dist_threshold: result.gapDistThreshold,
+          group_overrides: result.groupOverrides,
         });
+
+        const finalSig = await computeFileSignature(
+          job.fileName,
+          summary.available_columns,
+          summary.sheet_name,
+        );
+        if (result.rememberForFile) {
+          await stateManager.saveFileImportConfig(finalSig, {
+            sheet_name: result.sheetName,
+            lap_col: result.lapCol,
+            time_col: result.timeCol,
+            dist_col: result.distCol,
+            gap_time_threshold: result.gapTimeThreshold,
+            gap_dist_threshold: result.gapDistThreshold,
+            group_overrides: result.groupOverrides,
+          });
+        } else {
+          await stateManager.removeFileImportConfig(finalSig);
+        }
         loadedFilesRef.current.set(sessionId, {
           name: job.fileName,
           size: job.fileEntry?.size,
           lastModified: job.fileEntry?.lastModified,
-          signature: job.fileSignature,
+          signature: finalSig,
           ...(job.fileEntry?.handle ? { handle: job.fileEntry.handle } : {}),
         });
         if (isReplacing) {
-          setSessions((prev) => prev.map((s) => (s.id === summary.id ? summary : s)));
+          setSessions((prev) => {
+            const next = prev.map((s) => (s.id === summary.id ? summary : s));
+            ensureValidXAxis(next);
+            return next;
+          });
           const validLapNums = new Set(summary.laps.map((l) => l.lap_number));
           setSelectedLaps((prev) =>
             prev.filter((l) => l.sessionId !== summary.id || validLapNums.has(l.lapNumber)),
           );
         } else {
-          setSessions((prev) => [...prev, summary]);
+          setSessions((prev) => {
+            const next = [...prev, summary];
+            ensureValidXAxis(next);
+            return next;
+          });
         }
         if (job.fileEntry) {
           const updatedRecent = await stateManager.addRecentFile({
-            id: job.fileSignature,
+            id: finalSig,
             name: job.fileName,
             size: job.fileEntry.size,
             lastModified: job.fileEntry.lastModified,
@@ -508,27 +561,49 @@ export const App: React.FC = () => {
           });
           setRecentFiles(updatedRecent);
         }
+        checkGroupCollisions([summary]);
       } else if (job.mode === 'edit' && job.sessionId) {
         setBusyMessage(`Updating ${job.fileName}...`);
         const summary = await telemetryClient.reparseSession(job.sessionId, {
           session_id: job.sessionId,
           file_name: job.fileName,
-          mapping: result.mapping,
-          local_calculated_channels: result.localCalculatedChannels,
-          lap_slug: STD_CH_LAP_NUM_SLUG,
-          time_slug: STD_CH_LAP_TIME_SLUG,
-          dist_slug: STD_CH_LAP_DIST_SLUG,
-          preset_slug: result.presetSlug,
-          preset_name: result.presetName,
+          sheet_name: result.sheetName,
+          lap_col: result.lapCol,
+          time_col: result.timeCol,
+          dist_col: result.distCol,
           gap_time_threshold: result.gapTimeThreshold,
           gap_dist_threshold: result.gapDistThreshold,
+          group_overrides: result.groupOverrides,
         });
-        setSessions((prev) => prev.map((s) => (s.id === summary.id ? summary : s)));
-        // Remove selected laps that no longer exist after remapping
+
+        const finalSig = await computeFileSignature(
+          job.fileName,
+          summary.available_columns,
+          summary.sheet_name,
+        );
+        if (result.rememberForFile) {
+          await stateManager.saveFileImportConfig(finalSig, {
+            sheet_name: result.sheetName,
+            lap_col: result.lapCol,
+            time_col: result.timeCol,
+            dist_col: result.distCol,
+            gap_time_threshold: result.gapTimeThreshold,
+            gap_dist_threshold: result.gapDistThreshold,
+            group_overrides: result.groupOverrides,
+          });
+        } else {
+          await stateManager.removeFileImportConfig(finalSig);
+        }
+        setSessions((prev) => {
+          const next = prev.map((s) => (s.id === summary.id ? summary : s));
+          ensureValidXAxis(next);
+          return next;
+        });
         const validLapNums = new Set(summary.laps.map((l) => l.lap_number));
         setSelectedLaps((prev) =>
           prev.filter((l) => l.sessionId !== summary.id || validLapNums.has(l.lapNumber)),
         );
+        checkGroupCollisions([summary]);
       }
     } catch (err) {
       showToast(
@@ -547,44 +622,54 @@ export const App: React.FC = () => {
     setWizardJob(null);
   };
 
-  const handleEditSessionMapping = async (sessionId: string) => {
+  const handleEditSessionImport = async (sessionId: string) => {
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return;
-    const rawCols = Array.from(
-      new Set([
-        ...Object.keys(session.mapping),
-        ...session.local_calculated_channels.flatMap((c) => Object.values(c.inputs)),
-      ]),
-    );
-    const sig = await computeFileSignature(session.name, rawCols);
-    const remembered = stateManager.getFileMappingConfig(sig) !== null;
-    setWizardJob({
-      mode: 'edit',
-      sessionId: session.id,
-      fileName: session.name,
-      fileSignature: sig,
-      preview: {
-        columns: rawCols,
-        rows: [],
-      },
-      initialPresetSlug: session.preset_slug,
-      initialMapping: { ...session.mapping },
-      initialLocalCalcs: session.local_calculated_channels.map((c) => ({
-        ...c,
-        inputs: { ...c.inputs },
-      })),
-      initialGapTime: session.gap_time_threshold,
-      initialGapDist: session.gap_dist_threshold,
-      initialRemember: remembered,
-    });
+    try {
+      const preview = await telemetryClient.getSessionSheetPreview(
+        session.id,
+        session.sheet_name ?? undefined,
+      );
+      const sig = await computeFileSignature(
+        session.name,
+        preview.columns,
+        preview.selectedSheet ?? session.sheet_name,
+      );
+      const remembered = stateManager.getFileImportConfig(sig) !== null;
+      setWizardJob({
+        mode: 'edit',
+        sessionId: session.id,
+        fileName: session.name,
+        fileSignature: sig,
+        preview,
+        initialSheetName: session.sheet_name,
+        initialLapCol: session.lap_col,
+        initialTimeCol: session.time_col,
+        initialDistCol: session.dist_col,
+        initialGapTime: session.gap_time_threshold,
+        initialGapDist: session.gap_dist_threshold,
+        initialGroupOverrides: session.group_overrides,
+        initialRemember: remembered,
+      });
+    } catch (err) {
+      showToast(
+        'error',
+        `Could not open import settings: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   };
 
   const handleRemoveSession = async (sessionId: string) => {
     await telemetryClient.removeSession(sessionId);
     loadedFilesRef.current.delete(sessionId);
-    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    setSessions((prev) => {
+      const next = prev.filter((s) => s.id !== sessionId);
+      ensureValidXAxis(next);
+      return next;
+    });
     setSelectedLaps((prev) => prev.filter((l) => l.sessionId !== sessionId));
   };
+
   const reloadSessionFromFile = async (
     sessionId: string,
     freshFile: File,
@@ -595,29 +680,45 @@ export const App: React.FC = () => {
 
     setBusyMessage(`Reloading ${freshFile.name}...`);
     try {
-      const { fileToken, preview } = await telemetryClient.inspectFile(freshFile);
-      const signature = await computeFileSignature(freshFile.name, preview.columns);
+      const inspected = await telemetryClient.inspectFile(freshFile);
+      const { fileToken } = inspected;
+      let preview = inspected.preview;
+
+      if (
+        session.sheet_name &&
+        preview.sheets &&
+        preview.sheets.includes(session.sheet_name) &&
+        preview.selectedSheet !== session.sheet_name
+      ) {
+        const sheetRes = await telemetryClient.inspectExcelSheet(fileToken, session.sheet_name);
+        preview = sheetRes.preview;
+      }
+
+      const signature = await computeFileSignature(
+        freshFile.name,
+        preview.columns,
+        preview.selectedSheet ?? session.sheet_name,
+      );
       const cfg = {
-        preset_slug: session.preset_slug,
-        mapping: session.mapping,
-        local_calculated_channels: session.local_calculated_channels,
+        sheet_name: session.sheet_name,
+        lap_col: session.lap_col,
+        time_col: session.time_col,
+        dist_col: session.dist_col,
         gap_time_threshold: session.gap_time_threshold,
         gap_dist_threshold: session.gap_dist_threshold,
       };
 
-      if (stateManager.isFileMappingValidForColumns(cfg, preview.columns)) {
+      if (stateManager.isFileImportValidForColumns(cfg, preview.columns)) {
         const summary = await telemetryClient.importSession(fileToken, {
           session_id: sessionId,
           file_name: freshFile.name,
-          mapping: session.mapping,
-          local_calculated_channels: session.local_calculated_channels,
-          lap_slug: STD_CH_LAP_NUM_SLUG,
-          time_slug: STD_CH_LAP_TIME_SLUG,
-          dist_slug: STD_CH_LAP_DIST_SLUG,
-          preset_slug: session.preset_slug,
-          preset_name: session.preset_name,
+          sheet_name: session.sheet_name,
+          lap_col: session.lap_col,
+          time_col: session.time_col,
+          dist_col: session.dist_col,
           gap_time_threshold: session.gap_time_threshold ?? DEFAULT_GAP_TIME_THRESHOLD,
           gap_dist_threshold: session.gap_dist_threshold ?? DEFAULT_GAP_DIST_THRESHOLD,
+          group_overrides: session.group_overrides,
         });
         loadedFilesRef.current.set(sessionId, {
           name: freshFile.name,
@@ -626,7 +727,11 @@ export const App: React.FC = () => {
           signature,
           ...(handle ? { handle } : {}),
         });
-        setSessions((prev) => prev.map((s) => (s.id === summary.id ? summary : s)));
+        setSessions((prev) => {
+          const next = prev.map((s) => (s.id === summary.id ? summary : s));
+          ensureValidXAxis(next);
+          return next;
+        });
         const validLapNums = new Set(summary.laps.map((l) => l.lap_number));
         setSelectedLaps((prev) =>
           prev.filter((l) => l.sessionId !== summary.id || validLapNums.has(l.lapNumber)),
@@ -640,7 +745,9 @@ export const App: React.FC = () => {
           ...(handle ? { handle } : {}),
         });
         setRecentFiles(updatedRecent);
-        showToast('info', `Reloaded '${freshFile.name}' (${summary.laps.length} laps).`);
+        if (!checkGroupCollisions([summary])) {
+          showToast('info', `Reloaded '${freshFile.name}' (${summary.laps.length} laps).`);
+        }
       } else {
         setWizardJob({
           mode: 'import',
@@ -649,14 +756,13 @@ export const App: React.FC = () => {
           fileName: freshFile.name,
           fileSignature: signature,
           preview,
-          initialPresetSlug: session.preset_slug,
-          initialMapping: { ...session.mapping },
-          initialLocalCalcs: session.local_calculated_channels.map((c) => ({
-            ...c,
-            inputs: { ...c.inputs },
-          })),
+          initialSheetName: session.sheet_name,
+          initialLapCol: session.lap_col,
+          initialTimeCol: session.time_col,
+          initialDistCol: session.dist_col,
           initialGapTime: session.gap_time_threshold,
           initialGapDist: session.gap_dist_threshold,
+          initialGroupOverrides: session.group_overrides,
           initialRemember: true,
           fileEntry: {
             size: freshFile.size,
@@ -746,7 +852,6 @@ export const App: React.FC = () => {
     reloadFileInputRef.current?.click();
   };
 
-
   const handleClearWorkspace = async () => {
     await telemetryClient.clearSessions();
     loadedFilesRef.current.clear();
@@ -762,11 +867,6 @@ export const App: React.FC = () => {
   const handleSetThemeMode = async (mode: ThemeMode) => {
     setThemeMode(mode);
     await stateManager.saveSettings({ themeMode: mode });
-  };
-
-  const handleUpdateGraphSettings = async (partial: Partial<typeof graphSettings>) => {
-    const updated = await stateManager.updateGraphSettings(partial);
-    setGraphSettings(updated);
   };
 
   const handleChangeSelectedChannels = (nextChannels: string[]) => {
@@ -796,32 +896,63 @@ export const App: React.FC = () => {
     if (mode === 'lap') {
       if (selectedLaps.length > MAX_STACKED_PLOTS) {
         setSelectedLaps((prev) => prev.slice(0, MAX_STACKED_PLOTS));
-        showToast('info', `By Lap mode supports up to ${MAX_STACKED_PLOTS} stacked laps; trimmed selection.`);
+        showToast(
+          'info',
+          `By Lap mode supports up to ${MAX_STACKED_PLOTS} stacked laps; trimmed selection.`,
+        );
       }
       handleChangeSelectedChannels(selectedChannels);
     } else if (selectedChannels.length > MAX_STACKED_PLOTS) {
       setSelectedChannels((prev) => prev.slice(0, MAX_STACKED_PLOTS));
-      showToast('info', `By Channel mode supports up to ${MAX_STACKED_PLOTS} stacked channels; trimmed selection.`);
+      showToast(
+        'info',
+        `By Channel mode supports up to ${MAX_STACKED_PLOTS} stacked channels; trimmed selection.`,
+      );
     }
     await handleUpdateGraphSettings({ groupingMode: mode });
   };
-  const handleChannelsUpdated = async () => {
-    const calcSlugs = Array.from(stateManager.getCalculatedChannelSlugs());
-    await telemetryClient.clearCalculatedCache(calcSlugs);
+
+  const reconcileSelectionWithGroups = useCallback(() => {
+    const groups = stateManager.getChannelGroups();
+    const groupIds = new Set(groups.map((g) => g.id));
+    setSelectedChannels((prev) => {
+      const next: string[] = [];
+      const seen = new Set<string>();
+      for (const key of prev) {
+        if (groupIds.has(key)) {
+          if (!seen.has(key)) {
+            seen.add(key);
+            next.push(key);
+          }
+          continue;
+        }
+        const grp = stateManager.getGroupForRawChannel(key);
+        const resolved = grp ? grp.id : key;
+        if (!seen.has(resolved)) {
+          seen.add(resolved);
+          next.push(resolved);
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const handleGroupsUpdated = useCallback(() => {
     setChannelsVersion((v) => v + 1);
+    reconcileSelectionWithGroups();
+    checkGroupCollisions(sessions);
+  }, [checkGroupCollisions, reconcileSelectionWithGroups, sessions]);
+
+  const handleQuickAddToGroup = async (groupId: string, rawChannels: string[]) => {
+    await stateManager.addChannelsToGroup(groupId, rawChannels);
+    handleGroupsUpdated();
   };
 
-  const handleSaveGlobalCalc = async (ch: ChannelDef) => {
-    const defs = stateManager.getChannelDefs();
-    const idx = defs.findIndex((d) => d.slug === ch.slug);
-    if (idx >= 0) {
-      defs[idx] = ch;
-    } else {
-      defs.push(ch);
-    }
-    await stateManager.saveChannelDefs(defs);
-    setGlobalCalcModal({ open: false, editing: null });
-    await handleChannelsUpdated();
+  const handleDeleteChannelGroup = async (groupId: string) => {
+    if (isRequiredChannelGroupId(groupId)) return;
+    await stateManager.deleteChannelGroup(groupId);
+    setSelectedChannels((prev) => prev.filter((c) => c !== groupId));
+    setChannelsVersion((v) => v + 1);
   };
 
   const handleExportConfig = () => {
@@ -838,9 +969,12 @@ export const App: React.FC = () => {
   const handleImportConfigFile = async (file: File) => {
     try {
       const text = await file.text();
-      const { presetsImported, channelsImported } = await stateManager.importConfigJson(text);
-      await handleChannelsUpdated();
-      showToast('info', `Imported ${presetsImported} preset(s) and ${channelsImported} channel(s).`);
+      const { groupsImported, aliasesImported } = await stateManager.importConfigJson(text);
+      handleGroupsUpdated();
+      showToast(
+        'info',
+        `Imported ${groupsImported} channel group(s) and ${aliasesImported} role alias(es).`,
+      );
     } catch (err) {
       showToast(
         'error',
@@ -952,7 +1086,17 @@ export const App: React.FC = () => {
       />
 
       {/* Left Sidebar */}
-      <div style={{ width: sidebarWidth, minWidth: 220, maxWidth: 540, height: '100%', flexShrink: 0, position: 'relative', zIndex: 30 }}>
+      <div
+        style={{
+          width: sidebarWidth,
+          minWidth: 220,
+          maxWidth: 540,
+          height: '100%',
+          flexShrink: 0,
+          position: 'relative',
+          zIndex: 30,
+        }}
+      >
         <Sidebar
           isDark={isDark}
           themeMode={themeMode}
@@ -990,9 +1134,16 @@ export const App: React.FC = () => {
           onClearWorkspace={() => void handleClearWorkspace()}
           onImportConfig={() => importConfigInputRef.current?.click()}
           onExportConfig={handleExportConfig}
-          onOpenManagePresets={() => setPresetsOpen(true)}
-          onOpenManageChannels={() => setChannelsOpen(true)}
-          onOpenManageFileMappings={() => setFileMappingsOpen(true)}
+          onOpenManageChannelGroups={(opts) =>
+            setGroupModal({
+              open: true,
+              focusGroupId: opts?.focusGroupId ?? null,
+              draftChannels: opts?.draftChannels ?? null,
+            })
+          }
+          onOpenManageRememberedImports={() => setRememberedImportsOpen(true)}
+          onQuickAddToGroup={(gid, chs) => void handleQuickAddToGroup(gid, chs)}
+          onDeleteChannelGroup={(gid) => void handleDeleteChannelGroup(gid)}
           onOpenManageMaps={() => setMapsOpen(true)}
           onSetThemeMode={(mode) => void handleSetThemeMode(mode)}
           onUpdateGraphSettings={(partial) => void handleUpdateGraphSettings(partial)}
@@ -1002,7 +1153,7 @@ export const App: React.FC = () => {
           onChangeChannelColor={(slug, color) =>
             setChannelColors((prev) => ({ ...prev, [slug]: color }))
           }
-          onEditSessionMapping={(id) => void handleEditSessionMapping(id)}
+          onEditSessionMapping={(id) => void handleEditSessionImport(id)}
           onReloadSession={(id) => void handleReloadSession(id)}
           onRemoveSession={(id) => void handleRemoveSession(id)}
           onBottomTabChange={(idx) => {
@@ -1104,6 +1255,7 @@ export const App: React.FC = () => {
       {/* Toast */}
       {toast && (
         <div
+          role="status"
           style={{
             position: 'fixed',
             bottom: 18,
@@ -1111,11 +1263,24 @@ export const App: React.FC = () => {
             zIndex: 1700,
             padding: '10px 14px',
             borderRadius: 6,
-            backgroundColor: toast.kind === 'error' ? 'var(--danger)' : 'var(--bg-elevated)',
-            color: toast.kind === 'error' ? '#FFFFFF' : 'var(--text-primary)',
-            border: '1px solid var(--border-strong)',
+            backgroundColor:
+              toast.kind === 'error'
+                ? 'var(--danger)'
+                : toast.kind === 'warning'
+                  ? 'var(--bg-elevated)'
+                  : 'var(--bg-elevated)',
+            color:
+              toast.kind === 'error'
+                ? '#FFFFFF'
+                : toast.kind === 'warning'
+                  ? 'var(--warning)'
+                  : 'var(--text-primary)',
+            border:
+              toast.kind === 'warning'
+                ? '1px solid var(--warning)'
+                : '1px solid var(--border-strong)',
             fontSize: 13,
-            maxWidth: 420,
+            maxWidth: 460,
             boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
           }}
         >
@@ -1129,42 +1294,33 @@ export const App: React.FC = () => {
           isOpen
           mode={wizardJob.mode}
           fileName={wizardJob.fileName}
-          fileSignature={wizardJob.fileSignature}
+          fileToken={wizardJob.fileToken}
+          sessionId={wizardJob.sessionId}
           preview={wizardJob.preview}
-          initialPresetSlug={wizardJob.initialPresetSlug}
-          initialMapping={wizardJob.initialMapping}
-          initialLocalCalcs={wizardJob.initialLocalCalcs}
+          initialSheetName={wizardJob.initialSheetName}
+          initialLapCol={wizardJob.initialLapCol}
+          initialTimeCol={wizardJob.initialTimeCol}
+          initialDistCol={wizardJob.initialDistCol}
           initialGapTime={wizardJob.initialGapTime}
           initialGapDist={wizardJob.initialGapDist}
+          initialGroupOverrides={wizardJob.initialGroupOverrides}
           initialRemember={wizardJob.initialRemember}
           onSubmit={(res) => void handleWizardSubmit(res)}
           onCancel={() => void handleWizardCancel()}
         />
       )}
-
-      <PresetManagerModal
-        isOpen={presetsOpen}
-        onClose={() => setPresetsOpen(false)}
+      <ChannelGroupManagerModal
+        isOpen={groupModal.open}
+        sessions={sessions}
+        initialFocusGroupId={groupModal.focusGroupId}
+        initialDraftChannels={groupModal.draftChannels}
+        onClose={() => setGroupModal({ open: false, focusGroupId: null, draftChannels: null })}
+        onGroupsUpdated={() => handleGroupsUpdated()}
       />
 
-      <ChannelManagerModal
-        isOpen={channelsOpen}
-        onClose={() => setChannelsOpen(false)}
-        onChannelsUpdated={() => void handleChannelsUpdated()}
-        onOpenGlobalCalc={(editing) => setGlobalCalcModal({ open: true, editing: editing ?? null })}
-      />
-
-      <GlobalCalcModal
-        isOpen={globalCalcModal.open}
-        availableChannels={stateManager.getChannelDefs()}
-        initialChannel={globalCalcModal.editing}
-        onSave={(ch) => void handleSaveGlobalCalc(ch)}
-        onClose={() => setGlobalCalcModal({ open: false, editing: null })}
-      />
-
-      <FileMappingManagerModal
-        isOpen={fileMappingsOpen}
-        onClose={() => setFileMappingsOpen(false)}
+      <RememberedImportsModal
+        isOpen={rememberedImportsOpen}
+        onClose={() => setRememberedImportsOpen(false)}
       />
 
       <TrackMapManagerModal
@@ -1186,6 +1342,14 @@ export const App: React.FC = () => {
           setCustomChannelLabels(nextChannels);
         }}
         onClose={() => setRenameLegendOpen(false)}
+      />
+
+      <WelcomeStartupModal
+        isOpen={ready && welcomeOpen && sessions.length === 0 && wizardJob === null && !busyMessage}
+        recentFiles={recentFiles}
+        onOpenFiles={() => void handleOpenFiles()}
+        onOpenRecentFile={(entry) => void handleOpenRecentFile(entry)}
+        onClose={() => setWelcomeOpen(false)}
       />
     </div>
   );

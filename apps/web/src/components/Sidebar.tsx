@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderOpen,
+  Layers,
   ListX,
   MoreVertical,
   RotateCw,
@@ -13,6 +14,7 @@ import {
 import {
   GraphViewSettings,
   GroupingMode,
+  isRequiredChannelGroupId,
   LAP_COLORS,
   MAX_STACKED_PLOTS,
   RecentFileEntry,
@@ -42,9 +44,13 @@ export interface SidebarProps {
   onClearWorkspace: () => void;
   onImportConfig: () => void;
   onExportConfig: () => void;
-  onOpenManagePresets: () => void;
-  onOpenManageChannels: () => void;
-  onOpenManageFileMappings: () => void;
+  onOpenManageChannelGroups: (opts?: {
+    focusGroupId?: string | null;
+    draftChannels?: string[] | null;
+  }) => void;
+  onOpenManageRememberedImports: () => void;
+  onQuickAddToGroup: (groupId: string, channels: string[]) => void;
+  onDeleteChannelGroup: (groupId: string) => void;
   onOpenManageMaps: () => void;
   onSetThemeMode: (mode: ThemeMode) => void;
   onUpdateGraphSettings: (partial: Partial<GraphViewSettings>) => void;
@@ -100,9 +106,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onClearWorkspace,
   onImportConfig,
   onExportConfig,
-  onOpenManagePresets,
-  onOpenManageChannels,
-  onOpenManageFileMappings,
+  onOpenManageChannelGroups,
+  onOpenManageRememberedImports,
+  onQuickAddToGroup,
+  onDeleteChannelGroup,
   onOpenManageMaps,
   onSetThemeMode,
   onUpdateGraphSettings,
@@ -120,6 +127,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
   const [contextMenu, setContextMenu] = useState<{
     sessionId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [channelContextMenu, setChannelContextMenu] = useState<{
+    key: string;
     x: number;
     y: number;
   } | null>(null);
@@ -201,6 +213,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (contextMenu && !target?.closest('[data-sidebar-context-menu="true"]')) {
         setContextMenu(null);
       }
+      if (channelContextMenu && !target?.closest('[data-channel-context-menu="true"]')) {
+        setChannelContextMenu(null);
+      }
       if (colorPickerTarget && !target?.closest('[data-lap-color-picker="true"]')) {
         setColorPickerTarget(null);
       }
@@ -210,6 +225,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         setOpenMenu(null);
         setRecentSubmenuOpen(false);
         setContextMenu(null);
+        setChannelContextMenu(null);
         setColorPickerTarget(null);
       }
     };
@@ -228,7 +244,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [openMenu, contextMenu, colorPickerTarget]);
+  }, [openMenu, contextMenu, channelContextMenu, colorPickerTarget]);
 
   // Flat list of all laps in display order for Shift+Click & drag range selection
   const flatLaps = useMemo<LapKey[]>(() => {
@@ -354,7 +370,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setContextMenu(null);
   };
 
-  // Available channels across loaded sessions + global calculated channels whose dependencies are available
+  // Channel Groups + ungrouped raw channels across loaded sessions
+  const channelGroups = useMemo(() => {
+    void channelsVersion;
+    return stateManager.getChannelGroups();
+  }, [channelsVersion]);
+
+  const groupById = useMemo(() => {
+    const map = new Map<string, (typeof channelGroups)[number]>();
+    for (const g of channelGroups) {
+      map.set(g.id, g);
+    }
+    return map;
+  }, [channelGroups]);
+
   const availableChannels = useMemo(() => {
     const rawSet = new Set<string>();
     for (const s of sessions) {
@@ -362,36 +391,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
         rawSet.add(ch);
       }
     }
-    const defs = stateManager.getChannelDefs();
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const def of defs) {
-        if (def.type === 'calculated' && def.slug && !rawSet.has(def.slug)) {
-          const deps = Object.values(def.inputs ?? {});
-          if (deps.length > 0 && deps.every((d) => rawSet.has(d))) {
-            rawSet.add(def.slug);
-            changed = true;
-          }
+
+    const groupedRaw = new Set<string>();
+    const visibleIds: string[] = [];
+
+    for (const g of channelGroups) {
+      const hasAnyMember = g.channels.some((c) => rawSet.has(c));
+      if (hasAnyMember) {
+        visibleIds.push(g.id);
+        for (const c of g.channels) {
+          groupedRaw.add(c);
         }
       }
     }
-    const list = Array.from(rawSet);
-    list.sort((a, b) =>
-      stateManager.getDisplayNameBySlug(a).localeCompare(stateManager.getDisplayNameBySlug(b)),
-    );
-    return list;
-  }, [sessions, channelsVersion]);
+    for (const raw of rawSet) {
+      if (!groupedRaw.has(raw)) {
+        visibleIds.push(raw);
+      }
+    }
+
+    visibleIds.sort((a, b) => {
+      const aIsGroup = groupById.has(a);
+      const bIsGroup = groupById.has(b);
+      if (aIsGroup !== bIsGroup) {
+        return aIsGroup ? -1 : 1;
+      }
+      return stateManager
+        .getDisplayNameByKey(a)
+        .localeCompare(stateManager.getDisplayNameByKey(b));
+    });
+    return visibleIds;
+  }, [sessions, channelGroups, groupById]);
 
   const filteredChannels = useMemo(() => {
     const q = channelSearch.trim().toLowerCase();
     if (!q) return availableChannels;
-    return availableChannels.filter((slug) => {
-      const display = stateManager.getDisplayNameBySlug(slug).toLowerCase();
-      return display.includes(q) || slug.toLowerCase().includes(q);
+    return availableChannels.filter((key) => {
+      const display = stateManager.getDisplayNameByKey(key).toLowerCase();
+      const grp = groupById.get(key);
+      const memberHit = grp ? grp.channels.some((m) => m.toLowerCase().includes(q)) : false;
+      return display.includes(q) || key.toLowerCase().includes(q) || memberHit;
     });
-  }, [availableChannels, channelSearch]);
-
+  }, [availableChannels, channelSearch, groupById]);
   const triggerChannelLimitNotice = () => {
     setChannelLimitNotice(true);
     window.setTimeout(() => setChannelLimitNotice(false), 2500);
@@ -690,30 +731,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 style={menuItemStyle()}
                 onClick={() => {
                   setOpenMenu(null);
-                  onOpenManagePresets();
+                  onOpenManageChannelGroups();
                 }}
               >
-                <span>Manage Presets...</span>
+                <span>Manage Channel Groups...</span>
               </button>
               <button
                 type="button"
                 style={menuItemStyle()}
                 onClick={() => {
                   setOpenMenu(null);
-                  onOpenManageChannels();
+                  onOpenManageRememberedImports();
                 }}
               >
-                <span>Manage Global Channels...</span>
-              </button>
-              <button
-                type="button"
-                style={menuItemStyle()}
-                onClick={() => {
-                  setOpenMenu(null);
-                  onOpenManageFileMappings();
-                }}
-              >
-                <span>Manage File Mappings...</span>
+                <span>Remembered File Imports...</span>
               </button>
               <button
                 type="button"
@@ -1228,7 +1259,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <ListX size={13} />
                 </button>
               </div>
-
               {channelLimitNotice && (
                 <div
                   style={{
@@ -1271,7 +1301,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 ) : (
                   filteredChannels.map((slug) => {
                     const checked = selectedChannels.includes(slug);
-                    const label = stateManager.getDisplayNameBySlug(slug);
+                    const label = stateManager.getDisplayNameByKey(slug);
+                    const groupDef = groupById.get(slug);
                     const chColor = channelColors[slug] ?? LAP_COLORS[0];
                     return (
                       <div
@@ -1282,6 +1313,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         className="channel-row"
                         onPointerDown={(e) => handleChannelPointerDown(e, slug)}
                         onPointerEnter={() => handleChannelPointerEnter(slug)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setChannelContextMenu({
+                            key: slug,
+                            x: e.clientX,
+                            y: e.clientY,
+                          });
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === ' ' || e.key === 'Enter') {
                             e.preventDefault();
@@ -1349,7 +1389,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           />
                         )}
                         <span
-                          title={label}
+                          title={
+                            groupDef
+                              ? `${label}\nGroup members: ${groupDef.channels.join(', ')}`
+                              : label
+                          }
                           style={{
                             flex: 1,
                             minWidth: 0,
@@ -1359,9 +1403,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                             color: 'var(--text-primary)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
                           }}
                         >
-                          {label}
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {label}
+                          </span>
+                          {groupDef && (
+                            <Layers
+                              size={11}
+                              style={{ color: 'var(--accent)', flexShrink: 0, opacity: 0.85 }}
+                            />
+                          )}
                         </span>
                         <button
                           type="button"
@@ -1490,7 +1545,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onEditSessionMapping(sid);
             }}
           >
-            <span>Edit Channel Mapping...</span>
+            <span>Edit Import Settings...</span>
           </button>
           <button
             type="button"
@@ -1504,6 +1559,118 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>Remove Session</span>
             <Trash2 size={13} />
           </button>
+        </div>
+      )}
+
+      {/* Channel Context Menu */}
+      {channelContextMenu && (
+        <div
+          data-channel-context-menu="true"
+          style={{
+            position: 'fixed',
+            top: channelContextMenu.y,
+            left: channelContextMenu.x,
+            minWidth: 210,
+            maxWidth: 280,
+            background: 'var(--bg-menu)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.4)',
+            padding: '4px 0',
+            zIndex: 1200,
+          }}
+        >
+          {groupById.has(channelContextMenu.key) ? (
+            <>
+              <button
+                type="button"
+                style={menuItemStyle()}
+                onClick={() => {
+                  const gid = channelContextMenu.key;
+                  setChannelContextMenu(null);
+                  onOpenManageChannelGroups({ focusGroupId: gid });
+                }}
+              >
+                <span>Edit Group...</span>
+              </button>
+              {!isRequiredChannelGroupId(channelContextMenu.key) && (
+                <button
+                  type="button"
+                  style={{ ...menuItemStyle(), color: 'var(--danger)' }}
+                  onClick={() => {
+                    const gid = channelContextMenu.key;
+                    setChannelContextMenu(null);
+                    onDeleteChannelGroup(gid);
+                  }}
+                >
+                  <span>Delete Group</span>
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              {(() => {
+                const ungroupedSelected = selectedChannels.filter((c) => !groupById.has(c));
+                const useBatch =
+                  ungroupedSelected.length >= 2 &&
+                  ungroupedSelected.includes(channelContextMenu.key);
+                const draft = useBatch ? ungroupedSelected : [channelContextMenu.key];
+                return (
+                  <button
+                    type="button"
+                    style={menuItemStyle()}
+                    onClick={() => {
+                      setChannelContextMenu(null);
+                      onOpenManageChannelGroups({ draftChannels: draft });
+                    }}
+                  >
+                    <span>
+                      {useBatch
+                        ? `Create Group from ${draft.length} Selected...`
+                        : 'Create Channel Group...'}
+                    </span>
+                  </button>
+                );
+              })()}
+              {channelGroups.length > 0 && (
+                <>
+                  <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 0' }} />
+                  <div
+                    style={{
+                      padding: '3px 12px',
+                      fontSize: 11,
+                      color: 'var(--text-muted)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    Add to Group
+                  </div>
+                  {channelGroups.map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      style={menuItemStyle()}
+                      onClick={() => {
+                        const ungroupedSelected = selectedChannels.filter((c) => !groupById.has(c));
+                        const targetChannels =
+                          ungroupedSelected.length >= 2 &&
+                          ungroupedSelected.includes(channelContextMenu.key)
+                            ? ungroupedSelected
+                            : [channelContextMenu.key];
+                        setChannelContextMenu(null);
+                        onQuickAddToGroup(g.id, targetChannels);
+                      }}
+                    >
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {g.name}
+                      </span>
+                    </button>
+                  ))}
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
 

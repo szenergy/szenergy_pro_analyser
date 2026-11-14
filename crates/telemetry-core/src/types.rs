@@ -1,10 +1,18 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilePreview {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheets: Option<Vec<String>>,
+    #[serde(rename = "selectedSheet", skip_serializing_if = "Option::is_none")]
+    pub selected_sheet: Option<String>,
+    #[serde(rename = "finiteCounts")]
+    pub finite_counts: Vec<usize>,
+    #[serde(rename = "totalRows")]
+    pub total_rows: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -26,59 +34,65 @@ impl RawTable {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalCalcDef {
-    #[serde(default)]
-    pub name: String,
-    pub target_slug: String,
-    #[serde(default)]
-    pub target_label: String,
-    pub formula: String,
-    pub inputs: HashMap<String, String>,
+fn default_factor() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GlobalCalcDef {
-    pub slug: String,
-    pub label: String,
-    #[serde(rename = "type")]
-    pub kind: String, // "system" | "custom" | "calculated"
+pub struct ChannelTransform {
+    #[serde(default = "default_factor")]
+    pub factor: f64,
+    #[serde(default)]
+    pub offset: f64,
+}
+
+impl Default for ChannelTransform {
+    fn default() -> Self {
+        Self {
+            factor: 1.0,
+            offset: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupChannelOverride {
+    pub channel: String,
+    #[serde(default = "default_factor")]
+    pub factor: f64,
+    #[serde(default)]
+    pub offset: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelGroupDef {
+    pub id: String,
+    pub name: String,
     #[serde(default)]
     pub unit: String,
     #[serde(default)]
-    pub formula: String,
+    pub channels: Vec<String>,
     #[serde(default)]
-    pub inputs: HashMap<String, String>,
+    pub transforms: HashMap<String, ChannelTransform>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseSessionConfig {
     pub session_id: String,
     pub file_name: String,
-    /// { raw_column_name -> standard_channel_slug }
-    pub mapping: HashMap<String, String>,
     #[serde(default)]
-    pub local_calculated_channels: Vec<LocalCalcDef>,
-    #[serde(default = "default_lap_slug")]
-    pub lap_slug: String,
-    #[serde(default = "default_time_slug")]
-    pub time_slug: String,
-    #[serde(default = "default_dist_slug")]
-    pub dist_slug: String,
-    pub preset_slug: Option<String>,
-    pub preset_name: Option<String>,
+    pub sheet_name: Option<String>,
+    pub lap_col: String,
+    #[serde(default)]
+    pub time_col: Option<String>,
+    #[serde(default)]
+    pub dist_col: Option<String>,
+    #[serde(default)]
     pub gap_time_threshold: Option<f64>,
+    #[serde(default)]
     pub gap_dist_threshold: Option<f64>,
-}
-
-fn default_lap_slug() -> String {
-    "lap_num".to_string()
-}
-fn default_time_slug() -> String {
-    "lap_time".to_string()
-}
-fn default_dist_slug() -> String {
-    "lap_dist".to_string()
+    #[serde(default)]
+    pub group_overrides: HashMap<String, GroupChannelOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,16 +107,21 @@ pub struct LapSummary {
 pub struct SessionSummary {
     pub id: String,
     pub name: String,
+    pub sheet_name: Option<String>,
     pub channels: Vec<String>,
+    pub skipped_channels: Vec<String>,
+    pub available_columns: Vec<String>,
+    pub lap_col: String,
+    pub time_col: Option<String>,
+    pub dist_col: Option<String>,
+    pub has_time: bool,
+    pub has_dist: bool,
     pub laps: Vec<LapSummary>,
-    pub mapping: HashMap<String, String>,
-    pub local_calculated_channels: Vec<LocalCalcDef>,
-    pub preset_slug: Option<String>,
-    pub preset_name: Option<String>,
     pub gap_time_threshold: Option<f64>,
     pub gap_dist_threshold: Option<f64>,
+    #[serde(default)]
+    pub group_overrides: HashMap<String, GroupChannelOverride>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapData {
     pub x: Vec<f64>,

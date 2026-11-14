@@ -54,51 +54,104 @@ fn extract_headers(header_row: &[Data]) -> Vec<String> {
         .collect()
 }
 
-pub fn preview_excel(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String> {
+pub fn preview_excel(
+    bytes: &[u8],
+    sheet_name: Option<&str>,
+    max_rows: usize,
+) -> Result<FilePreview, String> {
     let cursor = Cursor::new(bytes);
     let mut workbook = open_workbook_auto_from_rs(cursor)
         .map_err(|e| format!("Failed to open Excel workbook: {e}"))?;
 
+    let sheets = workbook.sheet_names();
+    if sheets.is_empty() {
+        return Err("Workbook has no worksheets".to_string());
+    }
+
+    let selected = match sheet_name {
+        Some(name) if !name.trim().is_empty() => {
+            if sheets.iter().any(|s| s == name) {
+                name.to_string()
+            } else {
+                return Err(format!("Worksheet '{name}' not found in workbook"));
+            }
+        }
+        _ => sheets[0].clone(),
+    };
+
     let range = workbook
-        .worksheet_range_at(0)
-        .ok_or_else(|| "Workbook has no worksheets".to_string())?
-        .map_err(|e| format!("Failed to read worksheet: {e}"))?;
+        .worksheet_range(&selected)
+        .map_err(|e| format!("Failed to read worksheet '{selected}': {e}"))?;
 
     let mut rows_iter = range.rows();
     let header_row = rows_iter
         .next()
-        .ok_or_else(|| "Worksheet is empty".to_string())?;
+        .ok_or_else(|| format!("Worksheet '{selected}' is empty"))?;
 
     let columns = extract_headers(header_row);
     let num_cols = columns.len();
     let mut rows = Vec::new();
+    let mut finite_counts = vec![0usize; num_cols];
+    let mut total_rows = 0usize;
 
-    for row in rows_iter.take(max_rows) {
-        let mut formatted = Vec::with_capacity(num_cols);
-        for col_idx in 0..num_cols {
-            let val = row.get(col_idx).map(cell_to_string).unwrap_or_default();
-            formatted.push(val);
+    for row in rows_iter {
+        total_rows += 1;
+        if rows.len() < max_rows {
+            let mut formatted = Vec::with_capacity(num_cols);
+            for col_idx in 0..num_cols {
+                let val = row.get(col_idx).map(cell_to_string).unwrap_or_default();
+                formatted.push(val);
+            }
+            rows.push(formatted);
         }
-        rows.push(formatted);
+        for col_idx in 0..num_cols {
+            if let Some(cell) = row.get(col_idx) {
+                if cell_to_f64(cell).is_finite() {
+                    finite_counts[col_idx] += 1;
+                }
+            }
+        }
     }
 
-    Ok(FilePreview { columns, rows })
+    Ok(FilePreview {
+        columns,
+        rows,
+        sheets: Some(sheets),
+        selected_sheet: Some(selected),
+        finite_counts,
+        total_rows,
+    })
 }
 
-pub fn parse_excel(bytes: &[u8]) -> Result<RawTable, String> {
+pub fn parse_excel(bytes: &[u8], sheet_name: Option<&str>) -> Result<RawTable, String> {
     let cursor = Cursor::new(bytes);
     let mut workbook = open_workbook_auto_from_rs(cursor)
         .map_err(|e| format!("Failed to open Excel workbook: {e}"))?;
 
+    let sheets = workbook.sheet_names();
+    if sheets.is_empty() {
+        return Err("Workbook has no worksheets".to_string());
+    }
+
+    let selected = match sheet_name {
+        Some(name) if !name.trim().is_empty() => {
+            if sheets.iter().any(|s| s == name) {
+                name.to_string()
+            } else {
+                return Err(format!("Worksheet '{name}' not found in workbook"));
+            }
+        }
+        _ => sheets[0].clone(),
+    };
+
     let range = workbook
-        .worksheet_range_at(0)
-        .ok_or_else(|| "Workbook has no worksheets".to_string())?
-        .map_err(|e| format!("Failed to read worksheet: {e}"))?;
+        .worksheet_range(&selected)
+        .map_err(|e| format!("Failed to read worksheet '{selected}': {e}"))?;
 
     let mut rows_iter = range.rows();
     let header_row = rows_iter
         .next()
-        .ok_or_else(|| "Worksheet is empty".to_string())?;
+        .ok_or_else(|| format!("Worksheet '{selected}' is empty"))?;
 
     let columns = extract_headers(header_row);
     let num_cols = columns.len();
@@ -137,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_invalid_excel_bytes_returns_err() {
-        assert!(preview_excel(b"not an excel file", 10).is_err());
-        assert!(parse_excel(b"not an excel file").is_err());
+        assert!(preview_excel(b"not an excel file", None, 10).is_err());
+        assert!(parse_excel(b"not an excel file", None).is_err());
     }
 }

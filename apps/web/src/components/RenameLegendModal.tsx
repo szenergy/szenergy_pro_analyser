@@ -210,7 +210,7 @@ export const RenameLegendModal: React.FC<RenameLegendModalProps> = ({
                       Channels
                     </div>
                     {selectedChannels.map((slug) => {
-                      const defaultName = stateManager.getDisplayNameBySlug(slug);
+                      const defaultName = stateManager.getDisplayNameByKey(slug);
                       const value = channelDraft[slug] ?? '';
                       const color = channelColors[slug] ?? LAP_COLORS[0];
 

@@ -333,9 +333,9 @@ fn decode_string_chunk(
     Ok(out)
 }
 
-/// Converts a TDMS object path like `/'Group'/'Channel'` into `Some("Group/Channel")`.
+/// Converts a TDMS object path like `/'Group'/'Channel'` into `Some(("Group", "Channel"))`.
 /// Returns `None` for root (`"/"`) or group (`"/'Group'"`) objects.
-fn parse_channel_name(object_path: &str) -> Option<String> {
+fn parse_channel_parts(object_path: &str) -> Option<(String, String)> {
     let rest = object_path.strip_prefix('/')?;
     if rest.is_empty() {
         return None;
@@ -352,7 +352,7 @@ fn parse_channel_name(object_path: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("{group}/{channel}"))
+    Some((group, channel))
 }
 
 fn parse_path_component(input: &str) -> Option<(String, &str)> {
@@ -482,8 +482,8 @@ fn parse_lead_in(bytes: &[u8], seg_start: usize) -> Result<ParsedLeadIn, String>
 }
 
 struct TdmsState {
-    columns: Vec<String>,
-    channel_map: HashMap<String, usize>,
+    channel_pairs: Vec<(String, String)>,
+    channel_map: HashMap<(String, String), usize>,
     last_raw_indices: HashMap<String, RawDataIndex>,
     active_objects: Vec<ActiveObject>,
 }
@@ -491,7 +491,7 @@ struct TdmsState {
 impl TdmsState {
     fn new() -> Self {
         Self {
-            columns: Vec::new(),
+            channel_pairs: Vec::new(),
             channel_map: HashMap::new(),
             last_raw_indices: HashMap::new(),
             active_objects: Vec::new(),
@@ -499,15 +499,32 @@ impl TdmsState {
     }
 
     fn ensure_channel(&mut self, object_path: &str) -> Option<usize> {
-        let name = parse_channel_name(object_path)?;
-        if let Some(&idx) = self.channel_map.get(&name) {
+        let parts = parse_channel_parts(object_path)?;
+        if let Some(&idx) = self.channel_map.get(&parts) {
             Some(idx)
         } else {
-            let idx = self.columns.len();
-            self.columns.push(name.clone());
-            self.channel_map.insert(name, idx);
+            let idx = self.channel_pairs.len();
+            self.channel_pairs.push(parts.clone());
+            self.channel_map.insert(parts, idx);
             Some(idx)
         }
+    }
+
+    fn resolve_columns(&self) -> Vec<String> {
+        let mut counts: HashMap<&str, usize> = HashMap::with_capacity(self.channel_pairs.len());
+        for (_, ch) in &self.channel_pairs {
+            *counts.entry(ch.as_str()).or_insert(0) += 1;
+        }
+        self.channel_pairs
+            .iter()
+            .map(|(grp, ch)| {
+                if counts.get(ch.as_str()).copied().unwrap_or(0) > 1 {
+                    format!("{grp}/{ch}")
+                } else {
+                    ch.clone()
+                }
+            })
+            .collect()
     }
 
     fn process_metadata(
@@ -671,8 +688,7 @@ pub fn parse_tdms(bytes: &[u8]) -> Result<RawTable, String> {
             lead.toc_mask,
             lead.big_endian,
         )?;
-        channel_data.resize_with(state.columns.len(), Vec::new);
-
+        channel_data.resize_with(state.channel_pairs.len(), Vec::new);
         if (lead.toc_mask & K_TOC_RAW_DATA) != 0 {
             let segment_raw_bytes = lead.seg_end.saturating_sub(lead.raw_start);
             let (chunk_count, _) = compute_chunk_layout(
@@ -730,7 +746,7 @@ pub fn parse_tdms(bytes: &[u8]) -> Result<RawTable, String> {
     }
 
     Ok(RawTable {
-        columns: state.columns,
+        columns: state.resolve_columns(),
         data: channel_data,
         row_count: max_len,
     })
@@ -836,6 +852,7 @@ pub fn preview_tdms(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String
 
     let mut state = TdmsState::new();
     let mut channel_previews: Vec<Vec<String>> = Vec::new();
+    let mut channel_sample_counts: Vec<usize> = Vec::new();
     let mut seg_start = 0usize;
 
     while seg_start < bytes.len() {
@@ -848,26 +865,43 @@ pub fn preview_tdms(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String
             lead.toc_mask,
             lead.big_endian,
         )?;
-        channel_previews.resize_with(state.columns.len(), Vec::new);
+        channel_previews.resize_with(state.channel_pairs.len(), Vec::new);
+        channel_sample_counts.resize(state.channel_pairs.len(), 0);
 
-        if max_rows > 0 && (lead.toc_mask & K_TOC_RAW_DATA) != 0 {
-            let max_needed = state
-                .active_objects
-                .iter()
-                .filter_map(|obj| obj.channel_idx)
-                .map(|idx| max_rows.saturating_sub(channel_previews[idx].len()))
-                .max()
-                .unwrap_or(0);
+        if (lead.toc_mask & K_TOC_RAW_DATA) != 0 {
+            let segment_raw_bytes = lead.seg_end.saturating_sub(lead.raw_start);
+            let (chunk_count, _) = compute_chunk_layout(
+                &state.active_objects,
+                segment_raw_bytes,
+                lead.next_seg_pos.is_none(),
+            )?;
 
-            if max_needed > 0 {
-                let segment_raw_bytes = lead.seg_end.saturating_sub(lead.raw_start);
-                let (chunk_count, _) = compute_chunk_layout(
-                    &state.active_objects,
-                    segment_raw_bytes,
-                    lead.next_seg_pos.is_none(),
-                )?;
+            if chunk_count > 0 {
+                for obj in &state.active_objects {
+                    if let Some(ch_idx) = obj.channel_idx {
+                        if obj.raw_index.data_type != TDS_TYPE_STRING
+                            && fixed_type_byte_size(obj.raw_index.data_type).unwrap_or(0) > 0
+                        {
+                            let per_chunk = obj.raw_index.value_count()?;
+                            channel_sample_counts[ch_idx] = channel_sample_counts[ch_idx]
+                                .saturating_add(per_chunk.saturating_mul(chunk_count));
+                        }
+                    }
+                }
 
-                if chunk_count > 0 {
+                let max_needed = if max_rows > 0 {
+                    state
+                        .active_objects
+                        .iter()
+                        .filter_map(|obj| obj.channel_idx)
+                        .map(|idx| max_rows.saturating_sub(channel_previews[idx].len()))
+                        .max()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                if max_needed > 0 {
                     let interleaved = (lead.toc_mask & K_TOC_INTERLEAVED_DATA) != 0;
                     let mut pos = lead.raw_start;
 
@@ -902,6 +936,7 @@ pub fn preview_tdms(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String
         }
     }
 
+    let columns = state.resolve_columns();
     let preview_row_count = channel_previews
         .iter()
         .map(|c| c.len())
@@ -911,7 +946,7 @@ pub fn preview_tdms(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String
 
     let mut rows = Vec::with_capacity(preview_row_count);
     for r in 0..preview_row_count {
-        let mut row = Vec::with_capacity(state.columns.len());
+        let mut row = Vec::with_capacity(columns.len());
         for col in &channel_previews {
             if r < col.len() {
                 row.push(col[r].clone());
@@ -922,9 +957,15 @@ pub fn preview_tdms(bytes: &[u8], max_rows: usize) -> Result<FilePreview, String
         rows.push(row);
     }
 
+    let total_rows = channel_sample_counts.iter().copied().max().unwrap_or(0);
+
     Ok(FilePreview {
-        columns: state.columns,
+        columns,
         rows,
+        sheets: None,
+        selected_sheet: None,
+        finite_counts: channel_sample_counts,
+        total_rows,
     })
 }
 
@@ -1188,34 +1229,19 @@ mod tests {
         let table = parse_tdms(&file).unwrap();
         assert_eq!(table.row_count, 2);
         assert_eq!(table.columns.len(), 12);
-        assert_eq!(table.columns[0], "Test'Group/c_i8");
-        assert_eq!(table.column("Test'Group/c_i8").unwrap(), &[-5.0, 5.0]);
-        assert_eq!(
-            table.column("Test'Group/c_i16").unwrap(),
-            &[-1000.0, 1000.0]
-        );
-        assert_eq!(
-            table.column("Test'Group/c_i32").unwrap(),
-            &[-100_000.0, 100_000.0]
-        );
-        assert_eq!(
-            table.column("Test'Group/c_i64").unwrap(),
-            &[-1e12, 1e12]
-        );
-        assert_eq!(table.column("Test'Group/c_u8").unwrap(), &[0.0, 255.0]);
-        assert_eq!(table.column("Test'Group/c_u16").unwrap(), &[10.0, 65000.0]);
-        assert_eq!(
-            table.column("Test'Group/c_u32").unwrap(),
-            &[1.0, 3_000_000_000.0]
-        );
-        assert_eq!(
-            table.column("Test'Group/c_u64").unwrap(),
-            &[2.0, 5_000_000_000.0]
-        );
-        assert_eq!(table.column("Test'Group/c_f32").unwrap(), &[1.5, -2.25]);
-        assert_eq!(table.column("Test'Group/c_f64").unwrap(), &[3.125, -9.5]);
-        assert_eq!(table.column("Test'Group/c_bool").unwrap(), &[1.0, 0.0]);
-        assert_eq!(table.column("Test'Group/c_ts").unwrap(), &[10.5, 20.25]);
+        assert_eq!(table.columns[0], "c_i8");
+        assert_eq!(table.column("c_i8").unwrap(), &[-5.0, 5.0]);
+        assert_eq!(table.column("c_i16").unwrap(), &[-1000.0, 1000.0]);
+        assert_eq!(table.column("c_i32").unwrap(), &[-100_000.0, 100_000.0]);
+        assert_eq!(table.column("c_i64").unwrap(), &[-1e12, 1e12]);
+        assert_eq!(table.column("c_u8").unwrap(), &[0.0, 255.0]);
+        assert_eq!(table.column("c_u16").unwrap(), &[10.0, 65000.0]);
+        assert_eq!(table.column("c_u32").unwrap(), &[1.0, 3_000_000_000.0]);
+        assert_eq!(table.column("c_u64").unwrap(), &[2.0, 5_000_000_000.0]);
+        assert_eq!(table.column("c_f32").unwrap(), &[1.5, -2.25]);
+        assert_eq!(table.column("c_f64").unwrap(), &[3.125, -9.5]);
+        assert_eq!(table.column("c_bool").unwrap(), &[1.0, 0.0]);
+        assert_eq!(table.column("c_ts").unwrap(), &[10.5, 20.25]);
     }
 
     #[test]
@@ -1282,20 +1308,10 @@ mod tests {
         ));
 
         let table = parse_tdms(&file).unwrap();
-        assert_eq!(
-            table.columns,
-            vec!["Measurements/Time", "Measurements/Speed"]
-        );
+        assert_eq!(table.columns, vec!["Time", "Speed"]);
         assert_eq!(table.row_count, 5);
-        assert_eq!(
-            table.column("Measurements/Time").unwrap(),
-            &[0.0, 1.0, 2.0, 3.0, 4.0]
-        );
-        assert_eq!(
-            table.column("Measurements/Speed").unwrap(),
-            &[10.0, 20.0, 30.0, 40.0, 50.0]
-        );
-
+        assert_eq!(table.column("Time").unwrap(), &[0.0, 1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(table.column("Speed").unwrap(), &[10.0, 20.0, 30.0, 40.0, 50.0]);
         let preview = preview_tdms(&file, 3).unwrap();
         assert_eq!(preview.columns, table.columns);
         assert_eq!(
@@ -1381,17 +1397,16 @@ mod tests {
         ));
 
         let table = parse_tdms(&file).unwrap();
-        assert_eq!(table.columns, vec!["G/Ch1", "G/Ch2"]);
+        assert_eq!(table.columns, vec!["Ch1", "Ch2"]);
         assert_eq!(table.row_count, 8);
-        let ch1 = table.column("G/Ch1").unwrap();
+        let ch1 = table.column("Ch1").unwrap();
         assert_eq!(&ch1[0..6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert!(ch1[6].is_nan());
         assert!(ch1[7].is_nan());
         assert_eq!(
-            table.column("G/Ch2").unwrap(),
+            table.column("Ch2").unwrap(),
             &[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]
         );
-
         let preview = preview_tdms(&file, 7).unwrap();
         assert_eq!(preview.rows.len(), 7);
         assert_eq!(preview.rows[5], vec!["6", "60"]);
@@ -1435,15 +1450,47 @@ mod tests {
         );
 
         let table = parse_tdms(&file).unwrap();
-        assert_eq!(table.columns, vec!["BE/Val", "BE/Tag"]);
-        assert_eq!(table.column("BE/Val").unwrap(), &[12.5, -3.75]);
-        assert!(table.column("BE/Tag").unwrap().iter().all(|v| v.is_nan()));
-
+        assert_eq!(table.columns, vec!["Val", "Tag"]);
+        assert_eq!(table.column("Val").unwrap(), &[12.5, -3.75]);
+        assert!(table.column("Tag").unwrap().iter().all(|v| v.is_nan()));
         let preview = preview_tdms(&file, 5).unwrap();
         assert_eq!(
             preview.rows,
             vec![vec!["12.5", "hi"], vec!["-3.75", "ok!"]]
         );
+    }
+
+    #[test]
+    fn test_tdms_group_prefix_kept_only_on_conflict() {
+        let mut meta = Vec::new();
+        push_u32(&mut meta, 3, false);
+        for path in ["/'GrpA'/'Speed'", "/'GrpB'/'Speed'", "/'GrpB'/'Unique'"] {
+            push_str(&mut meta, path, false);
+            push_u32(&mut meta, 20, false);
+            push_u32(&mut meta, TDS_TYPE_DOUBLE_FLOAT, false);
+            push_u32(&mut meta, 1, false);
+            push_u64(&mut meta, 1, false);
+            push_u32(&mut meta, 0, false);
+        }
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&10.0f64.to_le_bytes());
+        raw.extend_from_slice(&20.0f64.to_le_bytes());
+        raw.extend_from_slice(&99.0f64.to_le_bytes());
+
+        let file = build_segment(
+            K_TOC_META_DATA | K_TOC_NEW_OBJ_LIST | K_TOC_RAW_DATA,
+            &meta,
+            &raw,
+            false,
+        );
+        let preview = preview_tdms(&file, 5).unwrap();
+        assert_eq!(preview.columns, vec!["GrpA/Speed", "GrpB/Speed", "Unique"]);
+        assert_eq!(preview.finite_counts, vec![1, 1, 1]);
+        let table = parse_tdms(&file).unwrap();
+        assert_eq!(table.columns, vec!["GrpA/Speed", "GrpB/Speed", "Unique"]);
+        assert_eq!(table.column("GrpA/Speed").unwrap(), &[10.0]);
+        assert_eq!(table.column("GrpB/Speed").unwrap(), &[20.0]);
+        assert_eq!(table.column("Unique").unwrap(), &[99.0]);
     }
 
     #[test]
